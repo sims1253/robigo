@@ -81,13 +81,12 @@ gen2 <- function(x) { x; UseMethod("gen") }
 cat("UseMethod (forced):", gen2(hr()), "\n")
 options(expressions = 5000L)
 
-# INTERIM(S1), closing with item A (eval.c:setup_bcframe_prom): the same
-# retry at the depths where the overflow lands on byte code's inlined force
-# of a promise of byte code. GNU R leaves that promise PRSEEN 1 (not yet
-# pending), so its retry ends in "promise already under evaluation" after
-# fewer restart warnings; robigo-rt marks every interrupted promise PRSEEN 2
-# until A, and its retry succeeds. (The sections above are
-# promise-eval-depth.R's, which this case shares up to here.)
+# The same retry at the depths where the overflow lands on byte code's
+# inlined force of a promise of byte code (eval.c:setup_bcframe_prom): GNU R
+# leaves that promise PRSEEN 1 (not yet pending), so the retry ends in
+# "promise already under evaluation" after fewer restart warnings. (The
+# sections above are promise-eval-depth.R's, which this case shares up to
+# here.)
 k.default <- function(x, d) x
 last <- NULL
 options(expressions = 25L)

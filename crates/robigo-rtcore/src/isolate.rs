@@ -119,6 +119,10 @@ pub struct Isolate {
     pub(crate) locale: Cell<Locale>,
     /// The locale's names per category (`Sys.getlocale`).
     pub(crate) locale_names: std::cell::RefCell<crate::clib::LocaleNames>,
+    /// GNU R's `R_TempDir` (and `Sys_TempDir`): the session's temporary
+    /// directory, made at startup (`InitTempDir`), removed at the end
+    /// (`R_CleanTempDir`, [`Cx::clean_temp_dir`]).
+    pub(crate) temp_dir: std::cell::RefCell<Option<(u32, Vec<u8>)>>,
     /// The embedder's grant of the process environment's writes
     /// (`clib::EnvWrites`, [`OwnedIsolate::grant_env_writes`]): without
     /// it `Sys.setenv`/`Sys.unsetenv` refuse.
@@ -667,6 +671,36 @@ impl Cx {
     /// Set the locale's names (startup's, `Sys.setlocale`'s).
     pub fn set_locale_names(&mut self, n: crate::clib::LocaleNames) {
         *self.iso().locale_names.borrow_mut() = n;
+    }
+
+    /// GNU R's `R_TempDir`: the session's temporary directory, if made.
+    pub fn temp_dir(&self) -> Option<Vec<u8>> {
+        self.iso().temp_dir.borrow().as_ref().map(|(_, d)| d.clone())
+    }
+
+    /// Set `R_TempDir` (and `Sys_TempDir`) to the directory `dir` this
+    /// process made, or forget it (`R_TempDir = NULL`, for
+    /// `tempdir(check = TRUE)`'s remaking: the old one is then left as it is,
+    /// as GNU R leaves it). The current one is removed at the end
+    /// ([`Cx::clean_temp_dir`]: robigo-rt's R_CleanUp, which every orderly
+    /// end goes through, or the isolate's drop; a panic past the session's
+    /// reset or an abort removes nothing, as a crash of GNU R's does not).
+    pub fn set_temp_dir(&self, dir: Option<Vec<u8>>) {
+        *self.iso().temp_dir.borrow_mut() = dir.map(|d| (std::process::id(), d));
+    }
+
+    /// `R_CleanTempDir()`: the session's temporary directory removed, once
+    /// (a second call does nothing), and only by the process that made it:
+    /// a forked child shares its parent's session directory
+    /// (sysutils.c's note on `R_tmpnam2`) and leaves it.
+    // R: platform.c:R_CleanTempDir
+    pub fn clean_temp_dir(&self) {
+        let d = self.iso().temp_dir.borrow_mut().take();
+        if let Some((pid, d)) = d
+            && pid == std::process::id()
+        {
+            crate::clib::remove_temp_dir(&d);
+        }
     }
 
     /// GNU R's `R_warn_partial_match_args`: argument matching warns of
@@ -1268,6 +1302,7 @@ impl OwnedIsolate {
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
             locale_names: Default::default(),
+            temp_dir: Default::default(),
             env_writes: std::cell::OnceCell::new(),
             warn_partial_match_args: Cell::new(false),
             no_inplace: Cell::new(false),
@@ -1331,6 +1366,8 @@ impl Default for OwnedIsolate {
 
 impl Drop for OwnedIsolate {
     fn drop(&mut self) {
+        // Rf_endEmbeddedR's R_CleanTempDir
+        self.cx().clean_temp_dir();
         // SAFETY: made by `Box::leak` in `with_options` and freed once, here.
         // A capability cannot be moved out of its storage (`Cx` is
         // unsized), so this owner's still names its isolate, and every

@@ -579,9 +579,17 @@ pub struct RtState {
     /// `assign` and `as.name` of a name that does not translate), raised
     /// once the compile is over ([`crate::cenv::CompileWarnings`]).
     pub compile_warnings: crate::cenv::CompileWarnings,
+    /// The translation cache's per-isolate state: its writer's capture and
+    /// a verification under way (`crate::tcache`).
+    pub tcache: crate::tcache::State,
     /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
     /// definitions from on first use ([`crate::base::load`]).
-    pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,
+    /// (A `OnceCell`, set once by the boot's load: 8 bytes smaller than a
+    /// `RefCell<Option<_>>`, so `RtState` keeps main's size with the
+    /// translation cache's word. A start's instruction count follows the
+    /// heap's layout, which `RtState`'s size is one lever on: see the
+    /// ledger, "A start's count follows the heap's layout" (H, #984).)
+    pub base_src: std::cell::OnceCell<std::path::PathBuf>,
 }
 
 impl RtState {

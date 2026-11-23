@@ -504,3 +504,38 @@ fn an_empty_r_translations_is_fatal() {
     assert_eq!(String::from_utf8_lossy(&err), "");
     assert_eq!(status, 2);
 }
+
+/// R_CleanTempDir at every orderly end (repl.rs `clean_up_tail`): with
+/// `TMPDIR` a fresh directory, nothing is left in it after the end of `-e`,
+/// `quit()`, an error at the top level (the halt) or BindDomain's suicide;
+/// and an exit finalizer, which runs first, still sees the directory. (A
+/// panic or an abort removes nothing, as in GNU R.)
+#[test]
+fn the_session_temp_dir_is_removed_at_every_orderly_end() {
+    let fin = "e <- new.env(); reg.finalizer(e, function(e) cat('fin', dir.exists(tempdir()), '\\n'), onexit = TRUE)";
+    let cases: [(&str, &[&str], &[(&str, &str)]); 5] = [
+        ("the end", &["--vanilla", "-e", "cat(dir.exists(tempdir()), '\\n')"], &[]),
+        ("quit()", &["--vanilla", "-e", "invisible(tempdir()); quit('no', 3)"], &[]),
+        ("an error", &["--vanilla", "-e", "invisible(tempdir()); stop('x')"], &[]),
+        ("BindDomain's suicide", &["--vanilla", "-e", "1"], &[("R_TRANSLATIONS", "")]),
+        ("an exit finalizer", &["--vanilla", "-e", fin], &[]),
+    ];
+    for (k, (what, args, env)) in cases.iter().enumerate() {
+        let tmp = std::env::temp_dir().join(format!("robigo-tmpdir-test-{}-{k}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let t = tmp.to_str().unwrap().to_owned();
+        let mut env: Vec<(&str, &str)> = env.to_vec();
+        env.push(("TMPDIR", &t));
+        let (out, err, status) = run_env(&std::env::temp_dir(), args, None, &env);
+        let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().map(|e| e.file_name()).collect();
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (out, err) = (String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+        assert!(left.is_empty(), "{what}: {left:?} left in TMPDIR (status {status}; stdout {out:?}; stderr {err:?})");
+        if *what == "an exit finalizer" {
+            assert!(out.contains("fin TRUE"), "{what}: the finalizer did not see the directory: {out:?} {err:?}");
+        }
+        if *what == "the end" {
+            assert!(out.contains("TRUE"), "{what}: no session directory: {out:?} {err:?}");
+        }
+    }
+}

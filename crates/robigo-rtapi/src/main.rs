@@ -507,6 +507,13 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     cx.set_locale_names(env_loc.names);
     // R_NoEcho before InitOptions, whose `echo` is its negation
     cx.set_no_echo(!echo);
+    // srand(TimeToSeed()), then InitTempDir, before the rest of the boot;
+    // its failure is R_Suicide's (R_CleanUp(SA_SUICIDE, 2, 0))
+    robigo_rtbuiltins::sysutils::seed_rand();
+    if let Err(m) = robigo_rtbuiltins::sysutils::init_temp_dir(cx, true) {
+        eprintln!("Fatal error: {m}");
+        std::process::exit(2);
+    }
     robigo_rt::install(cx);
     // R_Interactive, as Rf_initialize_R left it, before base and the profiles
     robigo_rtbuiltins::sysutils::set_interactive(cx, interactive);
@@ -616,11 +623,35 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
     // end_Rmainloop's R_CleanUp(SA_DEFAULT, 0, 1) runs .Last; after an
     // error, check_session_exit's R_CleanUp(SA_NOSAVE, 1, 0) does not
     // (end_Rmainloop's newline unless R_NoEcho, then .Last: run_session)
-    let ok = if stdin {
+    let mut ok = if stdin {
         run_session(cx, &mut robigo_rt::repl::Input::Stdin(robigo_rt::repl::StdinBuf::new()))
     } else {
         run_session(cx, &mut robigo_rt::repl::Input::Bytes(&src))
     };
+    // the translation cache's writer (scripts/rt-home-db.sh): every closure
+    // of base's and the compiler's databases translated, then the files
+    if ok && robigo_rt::writing_translation_cache() {
+        ok = robigo_rt::compile::translate_for_cache(cx).is_ok() && robigo_rt::write_translation_cache(cx);
+    }
+    // its verify pass: every closure's cached translation compared with a
+    // fresh one (each hit verified); any difference fails the run
+    if ok && robigo_rt::verifying_translation_cache() {
+        // (a writer's own run never reads the cache, so its verify pass
+        // would find every body already translated by the write pass and
+        // compare nothing: the combination is refused, not faked)
+        if robigo_rt::writing_translation_cache() {
+            cx.reprintf(
+                b"robigo: ROBIGO_TRANSLATION_CACHE_WRITE and ROBIGO_TRANSLATION_CACHE=verify together verify nothing: \
+                  write the cache, then verify it in a run of its own\n",
+            );
+            ok = false;
+        } else {
+            ok = robigo_rt::compile::translate_for_cache(cx).is_ok() && robigo_rt::translation_cache_mismatches() == 0;
+        }
+    }
+    // (the translation cache's counts, under ROBIGO_TRANSLATION_CACHE_STATS:
+    // before the exits below, which do not return)
+    robigo_rt::report_translation_cache();
     if !ok {
         // R: main.c:check_session_exit
         cx.reprintf(b"Execution halted\n");

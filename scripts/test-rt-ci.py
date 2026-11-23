@@ -23,6 +23,16 @@ def meta(*pkgs):
 
 
 class RtCi(unittest.TestCase):
+    def test_the_cache_mutation_starts_are_memory_capped(self):
+        # every robigo-rt start of scripts/rt-tcache-mutate.py goes through
+        # its capped `start` (RLIMIT_AS), and the script checks at its own
+        # start that the cap is in force
+        src = (HERE / "rt-tcache-mutate.py").read_text()
+        self.assertEqual(src.count("subprocess.run("), 1)
+        self.assertIn("preexec_fn=cap_memory", src)
+        self.assertIn("resource.RLIMIT_AS", src)
+        self.assertIn("check_cap(cmd, home, env)", src)
+
     def test_crates_follow_the_selection_rule(self):
         m = meta(pkg("robigo-rt", "crates/robigo-rt"), pkg("robigo-rtcore", "crates/robigo-rtcore"),
                  pkg("robigo-heap", "crates/robigo-heap"), pkg("robigo-heap-derive", "crates/robigo-heap-derive"),
@@ -71,6 +81,9 @@ class RtCi(unittest.TestCase):
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
                          ["conformance under ROBIGO_RETRY_TORTURE=1 (E9: every build's retry runs once)",
+                          "base's database tree for ROBIGO_RETRY_TORTURE's build (scripts/rt-home-db.sh)",
+                          "a translation-cache verification under ROBIGO_RETRY_TORTURE=1 compares nothing for a "
+                          "retry (tests/boot_db.rs)",
                           "ROBIGO_POISON_DEAD=1 (dead slots poisoned), robigo-rt's tests and the planted early clear",
                           "ROBIGO_POISON_DEAD=1, conformance"])
 
@@ -123,12 +136,15 @@ class RtCi(unittest.TestCase):
                 self.assertTrue(built and built[0] < tree[0], shard)
 
     def test_the_rdb_boot_runs_the_conformance_plain_and_crosschecked_after_its_tree(self):
+        # plain, crosschecked, and with the translation cache off (the tree's
+        # cache must change nothing a case sees)
         steps = rt.steps(["robigo-rt", "robigo-rtapi"])
         titles = [t for t, _, _ in steps]
         rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
                and "--skip" not in c]
-        # plain, crosschecked, and with the boot heap's freeze off
-        self.assertEqual(len(rdb), 3)
+        # plain, crosschecked, with the boot heap's freeze off, and without
+        # the translation cache
+        self.assertEqual(len(rdb), 4)
         tree = titles.index("base's database tree, written by this robigo-rt (scripts/rt-home-db.sh)")
         self.assertTrue(all(tree < i for i in rdb))
         self.assertEqual({rt.shard_of(titles[i]) for i in rdb}, {"modes"})
@@ -136,7 +152,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual(sorted(sorted(k for k in steps[i][1] if k != "ROBIGO_CONF_TIMEOUTS") for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE", "ROBIGO_RT_BOOT"],
-                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"]])
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT", "ROBIGO_TRANSLATION_CACHE"]])
+        self.assertEqual(sum(steps[i][1].get("ROBIGO_TRANSLATION_CACHE") == "0" for i in rdb), 1)
 
     def test_every_crate_test_step_builds_what_the_first_built(self):
         # cargo turns a selected crate's dev-dependency features on, so a
@@ -322,6 +340,83 @@ class RtCi(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertIsNone(rt.conf_slots_dir({"XDG_RUNTIME_DIR": f}))
         self.assertIn("not a private directory", out.getvalue())
+
+    def test_the_crates_tests_take_their_threads_from_the_slot_pool(self):
+        import contextlib, fcntl, io, shutil, subprocess, tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.chmod(d, 0o700)
+        crate = ["cargo", "test", "--profile", "quick", "--locked", "-p", "x", "--", "--skip", rt.CONFORMANCE]
+        seen = []
+
+        def fake_run(cmd, cwd=None, env=None):
+            # the slots a step holds while it runs, as another run sees them
+            busy = 0
+            for i in range(4):
+                with open(os.path.join(d, f"slot-{i}"), "a") as f:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        busy += 1
+            seen.append((cmd, env.get("ROBIGO_CONF_SLOTS_DIR"), busy))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        def run(cmd, env):
+            seen.clear()
+            with mock.patch.object(rt.subprocess, "run", fake_run), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.dict(os.environ, env, clear=False):
+                self.assertEqual(rt.run_steps([("step", {}, cmd)], []), 0)
+            return seen[0]
+
+        pool = {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "4"}
+        # a quiet pool: every slot, as many threads; its tests get no pool
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=4"], "", 4))
+        # another run holds one slot: the step takes the other three
+        other = open(os.path.join(d, "slot-1"), "a")
+        fcntl.flock(other, fcntl.LOCK_EX)
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=3"], "", 4))
+        other.close()
+        # no pool (CI, or the caller's empty one): the command as it was
+        self.assertEqual(run(crate, {"ROBIGO_CONF_SLOTS_DIR": ""}), (crate, "", 0))
+        # the conformance steps take a slot per case in the runner, and a
+        # build runs no test: neither changes
+        conf = rt.conformance_command()
+        self.assertEqual(run(conf, pool), (conf, d, 0))
+        build = ["cargo", "test", "--release", "--locked", "--no-run"]
+        self.assertEqual(run(build, pool), (build, d, 0))
+
+    def test_a_take_that_fails_fails_the_step_cleanly(self):
+        # Pool.take checks the directory again on every take: its PoolError
+        # is the step's ::error::, with the group closed and the step's line
+        import contextlib, io, shutil, tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.chmod(d, 0o700)
+        crate = ["cargo", "test", "-p", "x", "--", "--skip", rt.CONFORMANCE]
+        done, out = [], io.StringIO()
+        def fail(*a, **k):
+            raise rt.conf_slots.PoolError("ROBIGO_CONF_SLOTS_DIR gone")
+        with mock.patch.object(rt.conf_slots.Pool, "take", fail), \
+                mock.patch.object(rt.subprocess, "run") as run, contextlib.redirect_stdout(out), \
+                mock.patch.dict(os.environ, {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "2"}):
+            self.assertEqual(rt.run_steps([("step", {}, crate)], done), 2)
+        run.assert_not_called()
+        self.assertIn("::error::rt: step: ROBIGO_CONF_SLOTS_DIR gone", out.getvalue())
+        self.assertIn("::endgroup::", out.getvalue())
+        self.assertEqual(done, [("step", 0.0, False)])
+
+    def test_every_crate_test_step_is_one_the_pool_bounds(self):
+        # every cargo test step that runs tests other than the conformance
+        # has a `--` for the thread count to follow (a step with none would
+        # run unbounded beside other runs)
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        for shard in rt.SHARDS:
+            for title, _env, cmd in rt.shard_steps(crates, shard):
+                if cmd[:2] == ["cargo", "test"] and "--no-run" not in cmd \
+                        and not (rt.CONFORMANCE in cmd and "--exact" in cmd):
+                    self.assertTrue(rt.crate_test_threads(cmd), f"{shard}: {title}: {cmd}")
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
@@ -559,7 +654,14 @@ class RtCi(unittest.TestCase):
         # ROBIGO_POISON_DEAD on robigo-rt's tests and the conformance
         steps = rt.steps(["robigo-rt", "robigo-rtcore"])
         featured = [i for i, (_, _, cmd) in enumerate(steps) if "--features" in cmd]
-        self.assertEqual(featured, list(range(len(steps) - 3, len(steps))), "the feature builds come last")
+        # the feature builds come last: retry torture's conformance, the
+        # database tree its build's binary writes (no flag of its own: the
+        # step before built that binary), the cache's verification under the
+        # knob (#979), then the poison-dead steps
+        n = len(steps)
+        self.assertEqual(featured, [n - 5, n - 3, n - 2, n - 1], "the feature builds come last")
+        self.assertEqual(steps[n - 4][2][:3], ["scripts/rt-home-db.sh", "--robigo-rt", rt.rt_binary()])
+        self.assertIn("boot_db", steps[featured[1]][2])
         for i in featured:
             cmd = steps[i][2]
             self.assertEqual(cmd[cmd.index("--features") + 1], rt.CHECK_FEATURES)
@@ -568,9 +670,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual([t for t, e, _ in steps if "ROBIGO_RETRY_TORTURE" in e], retry)
         self.assertEqual(steps[featured[0]][1].get("ROBIGO_CONF_TIMEOUT"), "600")
         poison = [t for t, e, _ in steps if e.get("ROBIGO_POISON_DEAD") == "1"]
-        self.assertEqual(poison, [steps[i][0] for i in featured[1:]])
-        self.assertIn("robigo-rt", steps[featured[1]][2])
-        self.assertIn(rt.CONFORMANCE, steps[featured[2]][2])
+        self.assertEqual(poison, [steps[i][0] for i in featured[2:]])
+        self.assertIn("robigo-rt", steps[featured[2]][2])
+        self.assertIn(rt.CONFORMANCE, steps[featured[3]][2])
         # each feature exists where the steps name it
         for f in rt.CHECK_FEATURES.split(","):
             crate, feature = f.split("/")
