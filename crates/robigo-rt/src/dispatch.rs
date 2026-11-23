@@ -1043,7 +1043,8 @@ pub fn do_usemethod(
             Some(a) => a,
             None => {
                 let sy = syms(cx);
-                crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?
+                let v = crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?;
+                [v[0], v[1]]
             }
         };
         let missing = cx.missing_arg().sexp();
@@ -1058,8 +1059,9 @@ pub fn do_usemethod(
         let g = generic.bind(cx);
         let gname = match g.as_vector::<Char<'_>>().filter(|v| g.sexptype() == STRSXP && v.len() == 1) {
             // translateChar(STRING_ELT(generic, 0)): an ASCII name is its own
-            Some(v) if v.get(0).is_ascii() => v.get(0).bytes().to_vec(),
-            Some(_) => class_elt_slow(cx, generic, 0)?,
+            // (on the stack: GNU R reads the CHARSXP in place)
+            Some(v) if v.get(0).is_ascii() => robigo_rtcore::NameBuf::new(v.get(0).bytes()),
+            Some(_) => robigo_rtcore::NameBuf::from(class_elt_slow(cx, generic, 0)?),
             None => return Err(cx.error_call(Some(call), "'generic' argument must be a character string")),
         };
         // the environments dispatch needs: callenv where the generic was
@@ -1081,7 +1083,7 @@ pub fn do_usemethod(
         }
         let ans = s.out(cx).root();
         let o = ans.reset(cx);
-        if cx.with_pp_excess(3, |cx| usemethod(cx, &gname, obj, call, env, callenv, defenv, cptr, None, o))? {
+        if cx.with_pp_excess(3, |cx| usemethod(cx, &gname[..], obj, call, env, callenv, defenv, cptr, None, o))? {
             return Err(cx.find_context(ctxt::RETURN, env, Some(ans)));
         }
         // no method found
@@ -1089,7 +1091,7 @@ pub fn do_usemethod(
         let o = klass.reset(cx);
         data_class2(cx, obj, o)?;
         let nclass = klass.bind(cx).len().unwrap_or(0);
-        let gs = String::from_utf8_lossy(&gname).into_owned();
+        let gs = String::from_utf8_lossy(&gname[..]).into_owned();
         if nclass == 0 {
             let m = format!("illegal class of length 0 when using method for '{gs}'");
             return Err(cx.error_call(Some(call), &m));
@@ -1105,24 +1107,25 @@ pub fn do_usemethod(
 /// `generic` and `object` by position, with nothing to warn of. None for
 /// any other call (the general matching then runs, with its errors).
 // R: match.c:matchArgs_NR
-fn usemethod_positional<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>) -> Option<Vec<Root<'s>>> {
+fn usemethod_positional<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>) -> Option<[Root<'s>; 2]> {
     let dots = prims::state(cx).syms.dots;
     let mut a = call.bind(cx).as_cons()?.cdr();
-    let mut vals = Vec::with_capacity(2);
+    // (a fixed pair, not a Vec: GNU R's matched arguments are no
+    // allocation of the C heap)
+    let mut vals = [cx.missing_arg(); 2];
+    let mut n = 0;
     while let Some(c) = a.as_cons() {
-        if vals.len() == 2 || c.tag().sexptype() != NILSXP || c.car().sexp() == dots {
+        if n == 2 || c.tag().sexptype() != NILSXP || c.car().sexp() == dots {
             return None;
         }
-        vals.push(c.car());
+        vals[n] = c.car();
+        n += 1;
         a = c.cdr();
     }
-    if vals.is_empty() {
+    if n == 0 {
         return None;
     }
-    if vals.len() == 1 {
-        vals.push(cx.missing_arg());
-    }
-    Some(vals.into_iter().map(|v| s.root(cx, v)).collect())
+    Some([s.root(cx, vals[0]), s.root(cx, vals[1])])
 }
 
 /// do_usemethod's class text: the class, or `c('a', 'b', ...)` within

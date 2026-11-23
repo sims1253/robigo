@@ -89,6 +89,80 @@ impl Cx {
         self.flush_gc_report();
     }
 
+    /// Whether the boot heap's freeze runs here: `ROBIGO_GC_FREEZE=1`, and
+    /// not under ROBIGO_GC_MOVE's modes.
+    pub fn freeze_enabled(&self) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.freeze_enabled()
+    }
+
+    /// Turn the boot heap's freeze on or off before the boot boundary, as
+    /// `ROBIGO_GC_FREEZE` does (the tests' switch).
+    ///
+    /// # Panics
+    /// Once the boundary is drawn or anything is frozen.
+    pub fn set_freeze_enabled(&mut self, on: bool) {
+        // SAFETY: one call on the core, no collection.
+        unsafe { self.iso().core() }.set_freeze_enabled(on)
+    }
+
+    /// How many objects are frozen.
+    pub fn frozen_count(&self) -> usize {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.frozen_count()
+    }
+
+    /// Whether `x` is one of the freeze's objects.
+    pub fn is_frozen(&self, x: crate::Ref<'_>) -> bool {
+        // SAFETY: one read of the core.
+        unsafe { self.iso().core() }.is_frozen_at(x.sexp().addr())
+    }
+
+    /// The freeze's invariant, checked (`ROBIGO_GC_FREEZE_CHECK`'s check):
+    /// panics if a frozen object that is not logged points to an ordinary
+    /// one.
+    pub fn check_frozen(&self) {
+        // SAFETY: outside a collection, frozen objects and their fields are
+        // live; one read of the core.
+        unsafe { self.iso().core().check_frozen() }
+    }
+
+    /// Log `x` as a root, once (robigo-heap's `Core::remember`): a frozen
+    /// object whose fields C may write without the barrier.
+    ///
+    /// # Safety
+    /// `x` is a live object of this isolate.
+    pub unsafe fn remember_raw(&self, x: Sexp) {
+        // SAFETY: the caller's contract; one call into the core, which
+        // calls nothing of ours.
+        unsafe { self.iso().core().remember(x) }
+    }
+
+    /// The boot heap's freeze (robigo-heap's `freeze.rs`,
+    /// docs/ledger/g3/2026-11-21-h-boot-freeze-bar.md and its amendments),
+    /// when `ROBIGO_GC_FREEZE=1` turns it on: the boot boundary, drawn by
+    /// the front end once, at the end of the boot. Only the boot's blocks
+    /// are marked here; the first collection after it freezes every boot
+    /// object reachable from the freeze roots (the base environment and
+    /// namespace, the symbols' cells, the namespace registry, the
+    /// `Globals`, the C API's constants), the global environment and its
+    /// frame left out. Nothing when the freeze is off (the default) or
+    /// under the moving collector's modes.
+    pub fn freeze_boot_heap(&mut self) {
+        let iso = self.iso();
+        // SAFETY: one read of the core.
+        if !unsafe { iso.core() }.freeze_enabled() {
+            return;
+        }
+        // a frame pooled before the boundary and taken after it would be a
+        // session's frame at a boot object's address (Sol r9 S15): the pool
+        // is emptied, as a collection empties it
+        iso.envs().clear_frame_pool();
+        let global = iso.envs().global_raw();
+        // SAFETY: one call on the core, no collection: it marks blocks.
+        unsafe { iso.core() }.freeze_boundary(global.addr());
+    }
+
     /// Move every movable object at every collection from now on, or stop
     /// (`ROBIGO_GC_MOVE=1` sets it for every isolate: docs/g3.md §3
     /// "Checks"). A debug check: a raw `Sexp` kept across a safepoint
