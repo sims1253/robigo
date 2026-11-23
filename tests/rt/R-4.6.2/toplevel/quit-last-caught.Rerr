@@ -1,0 +1,3 @@
+Error in stop("L") : no function to return from, jumping to top level
+Calls: .Last
+Execution halted

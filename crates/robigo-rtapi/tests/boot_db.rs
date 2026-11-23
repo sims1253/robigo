@@ -57,12 +57,22 @@ fn tree_made() -> bool {
 /// robigo-rt booted from the tree with `args` and the extra environment
 /// `env`: (stdout, stderr, status).
 fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String, String, Option<i32>) {
+    boot_bin(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env)
+}
+
+/// [`boot`] with the robigo-rt at `bin` (its R_HOME the install layout's:
+/// `lib/robigo` beside its `bin`).
+fn boot_bin(
+    bin: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> (String, String, Option<i32>) {
     // one directory per run (the tests run in parallel)
     static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+    let o = Command::new(bin)
         .args(args)
         .current_dir(&home)
         // a private cwd and HOME: no caller's .Renviron or .Rprofile
@@ -327,5 +337,73 @@ fn a_named_profile_that_does_not_open_is_no_profile() {
         &["--no-save".as_ref(), "--no-restore".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
         &[("R_PROFILE", missing), ("R_PROFILE_USER", missing)],
     );
+    assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
+}
+
+#[test]
+fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
+    if !tree_made() {
+        return;
+    }
+    // R_init_jit_enabled's loadCompilerNamespace fails: check_session_exit
+    // halts R, or with options(error) lets it go on to R_Suicide("unable to
+    // initialize the JIT") (main.c:1205-1214, eval.c:1415); GNU R 4.6.2's
+    // output with its compiler's .rdb and .rdx removed (an emptied .rdb is
+    // not a case: GNU R's readRawFromFile then copies the record from past
+    // its zero-length cache, serialize.c:3146, and inflates what it read)
+    let tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home-db");
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    // (the install layout robigo-rt finds its R_HOME by: DIR/bin/robigo-rt,
+    // DIR/lib/robigo, a copy of the tree; an R_HOME in the environment is
+    // ignored, as GNU R's is)
+    let copy = |what: &str| {
+        let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("robigo-boot-db-{what}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_robigo-rt"), dir.join("bin/robigo-rt")).unwrap();
+        let ok = Command::new("cp").arg("-a").arg(&tree).arg(dir.join("lib/robigo")).status().unwrap().success();
+        assert!(ok, "copying {}", tree.display());
+        dir
+    };
+    let ran: &[&std::ffi::OsStr] =
+        &["--vanilla".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()];
+    // (removed when the test ends, an assertion's panic included)
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = copy("removed");
+    let _gone = Gone(dir.clone());
+    let bin = dir.join("bin/robigo-rt");
+    let home = std::fs::canonicalize(dir.join("lib/robigo")).unwrap();
+    std::fs::remove_file(home.join("library/compiler/R/compiler.rdb")).unwrap();
+    std::fs::remove_file(home.join("library/compiler/R/compiler.rdx")).unwrap();
+    let errors = format!(
+        "Error in gzfile(file, \"rb\") : cannot open the connection\nIn addition: Warning message:\n\
+         In gzfile(file, \"rb\") :\n  cannot open compressed file '{}/library/compiler/R/compiler.rdx', probable reason 'No such file or directory'\n\
+         Error: unable to load R code in package ‘compiler’\n",
+        home.display()
+    );
+    // check_session_exit halts R
+    let (out, err, status) = boot_bin(&bin, ran, &[]);
+    assert_eq!((out.as_str(), err, status), ("", format!("{errors}Execution halted\n"), Some(1)));
+    // with options(error) it lets R go on, to R_Suicide
+    let prof = dir.join("prof.R");
+    std::fs::write(&prof, "options(error = function() NULL)\n").unwrap();
+    let (out, err, status) = boot_bin(
+        &bin,
+        &["--no-save".as_ref(), "--no-restore".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
+        &[("R_PROFILE_USER", prof.as_os_str())],
+    );
+    assert_eq!(
+        (out.as_str(), err, status),
+        ("", format!("{errors}Fatal error: unable to initialize the JIT\n\n"), Some(2))
+    );
+    // the JIT off: no compiler at the start
+    let (out, err, status) = boot_bin(&bin, ran, &[("R_ENABLE_JIT", "0".as_ref())]);
     assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
 }

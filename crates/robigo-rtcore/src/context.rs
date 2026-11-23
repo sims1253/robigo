@@ -504,8 +504,9 @@ impl Rec {
 /// The isolate's context state: the chain's ends and the globals GNU R
 /// saves in a record when it is pushed and restores when an exit stops at
 /// it (`begincontext`, `R_restore_globals`). Part of the isolate's roots
-/// (its `Trace` walks the chain); every field is a `Cell`, read and written
-/// one call at a time.
+/// (its `Trace` walks the chain); every field is a `Cell` (the detached
+/// segments' list a `RefCell`, borrowed for a push or a copy, never across
+/// a call), read and written one call at a time.
 pub(crate) struct Contexts {
     /// R_GlobalContext
     pub(crate) global: Cell<*mut Context>,
@@ -513,6 +514,13 @@ pub(crate) struct Contexts {
     pub(crate) toplevel: Cell<*mut Context>,
     /// R_ExitContext (null: none)
     pub(crate) exit_context: Cell<*mut Context>,
+    /// The innermost record of each segment [`Cx::reset_to_session`] cut
+    /// off the chain, in order (a `.Last` may call `quit()` again): the
+    /// records from each down to the base are no longer walked as contexts
+    /// but are still traced, since state the reset kept (R_ExitContext, a
+    /// parked exit) can still reach their fields. The segments are
+    /// disjoint: each holds records pushed after the one before was cut.
+    detached: std::cell::RefCell<Vec<*mut Context>>,
     /// R_Toplevel, the session's base record (freed with the isolate)
     base: NonNull<Context>,
     /// Where the Rust drivers' records live (`records.rs`): not traced
@@ -599,6 +607,7 @@ impl Contexts {
             global: Cell::new(base.as_ptr()),
             toplevel: Cell::new(base.as_ptr()),
             exit_context: Cell::new(null_mut()),
+            detached: std::cell::RefCell::new(Vec::new()),
             base,
             records: Records::new(),
             nil,
@@ -641,6 +650,31 @@ impl Contexts {
         Rec(self.base)
     }
 
+    /// Every record a collection traces: the chain's, then those
+    /// [`Cx::reset_to_session`] cut off it, down to (not again) the base.
+    fn traced(&self) -> impl Iterator<Item = Rec> + use<> {
+        let base = self.base.as_ptr();
+        let heads = self.detached.borrow().clone();
+        // (each segment ends where it links to the base, as the chain
+        // does; a null link before it is a corrupted segment)
+        let segments = heads.into_iter().flat_map(move |mut c| {
+            std::iter::from_fn(move || {
+                if c == base {
+                    return None;
+                }
+                let Some(p) = NonNull::new(c) else {
+                    debug_assert!(false, "robigo: a detached context segment does not reach the base");
+                    return None;
+                };
+                let r = Rec(p);
+                debug_assert!(!r.poisoned(), "robigo: a popped context record is in a detached segment");
+                c = r.nextcontext();
+                Some(r)
+            })
+        });
+        self.chain().chain(segments)
+    }
+
     /// Every record from the innermost to the base, hidden ones included.
     pub(crate) fn chain(&self) -> impl Iterator<Item = Rec> + use<> {
         let mut c = self.global.get();
@@ -667,7 +701,7 @@ impl Contexts {
         f(self.srcref.get());
         f(self.bc_expr.get());
         f(self.early_frame.get());
-        for r in self.chain() {
+        for r in self.traced() {
             let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
             // collector only uses the edges it is shown, and `f` cannot pop
@@ -715,7 +749,7 @@ impl Trace for Contexts {
         let mut x = self.early_frame.get();
         v.edge(&mut x);
         self.early_frame.set(x);
-        for r in self.chain() {
+        for r in self.traced() {
             // SAFETY: a collection has the isolate's roots exclusively, and
             // records are read and written only by their owners, C code and
             // collections, never at the same time as one (no record is
@@ -2005,6 +2039,38 @@ impl Cx {
         // SAFETY: R_ToplevelContext is always a live record of the chain.
         let rec = Rec(unsafe { NonNull::new_unchecked(self.ctxs().toplevel.get()) });
         CtxRef { rec, cx: self }
+    }
+
+    /// `R_GlobalContext = R_ToplevelContext = R_SessionContext =
+    /// &R_Toplevel` (R_dot_Last's first line, main.c, as `quit()` runs it):
+    /// the chain cut back to the session's base record. The records above
+    /// it leave the chain but stay in their owners' slots, still traced (a
+    /// collection keeps their objects and rewrites their fields): no
+    /// context walk sees them (`sys.calls`, an exit's search for its
+    /// target: an exiting handler whose function is among them finds "no
+    /// function to return from"), but what GNU R keeps pointing at them
+    /// still reads them (`R_ExitContext`: `returnValue()` in a `.Last` that
+    /// `on.exit(quit())` runs). The condition stacks are kept, as in GNU R.
+    ///
+    /// # Safety
+    /// The caller never lets an owner of a record that was above the base
+    /// run again (pop it, return to it) on any path out of what it does
+    /// after the reset, unwinding included: it ends the process first
+    /// (`repl::clean_up` runs everything after the reset under a guard
+    /// whose normal end is `exit` and which turns a panic into `abort`; a
+    /// nested quit() resets again inside it and ends the process itself).
+    /// Records pushed after the reset are pushed and popped as usual.
+    // R: main.c:R_dot_Last
+    pub unsafe fn reset_to_session(&self) {
+        let st = self.ctxs();
+        let base = st.base().0.as_ptr();
+        // (a second reset, quit() from a .Last that quit() runs, cuts the
+        // records pushed since the first: a new segment, the first kept)
+        if st.global.get() != base {
+            st.detached.borrow_mut().push(st.global.get());
+        }
+        st.global.set(base);
+        st.toplevel.set(base);
     }
 
     /// The session's base record (`R_Toplevel`, `R_SessionContext`).
