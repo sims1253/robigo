@@ -30,3 +30,11 @@ f2 <- function(a, d) signif(a, d); f2(123.456)
 f3 <- function(...) round(..., 1); f3(); f3(2.25)
 f <- function(v, k) round(v, k); for (i in 1:3) print(f(pi, i))
 g <- function(v) signif(v, 3); for (i in 1:3) print(g(pi * 10^i))
+# fprec: digits out of int range (C's (int): INT_MIN, so 1 digit); the large-x
+# branch rounds while log10(DBL_MAX) - log10(x) >= 10^-dig
+print(signif(1.234, 1e20))
+print(signif(1.234, 2147483648))
+print(signif(c(1.234, -5.678), c(2147483647, 2147483648)))
+print(signif(1.09e308, 2))
+print(signif(1.49e308, 1))
+print(signif(1.59e308, 1))
