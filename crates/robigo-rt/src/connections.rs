@@ -34,10 +34,11 @@ use robigo_rtcore::{Args, Char, Cx, Encoding, Global, Out, RResult, RSym, Ref, R
 use std::cell::{Cell, RefCell};
 use std::ffi::{CString, c_char, c_int};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 
 pub mod readers;
 pub mod scan;
+mod stdio;
 
 /// `NCONNECTIONS`.
 const NCONNECTIONS: usize = 128;
@@ -256,11 +257,41 @@ enum Imp {
     Gzcon(Box<GzconConn>),
 }
 
+/// `struct fileconn`: the C library's buffered stream ([`stdio::Stream`])
+/// and the read and write positions a stream open for both keeps apart.
 struct FileConn {
-    fp: Option<File>,
-    rpos: u64,
-    wpos: u64,
+    fp: Option<stdio::Stream<File>>,
+    rpos: i64,
+    wpos: i64,
     last_was_write: bool,
+}
+
+impl FileConn {
+    /// The stream moved to the read position after writing (`file_read`'s
+    /// and `file_fgetc_internal`'s start).
+    // R: connections.c:file_read
+    fn to_read(&mut self) -> Option<&mut stdio::Stream<File>> {
+        let fp = self.fp.as_mut()?;
+        if self.last_was_write {
+            self.wpos = fp.ftello();
+            self.last_was_write = false;
+            fp.fseeko(self.rpos, stdio::Whence::Set);
+        }
+        Some(fp)
+    }
+
+    /// The stream moved to the write position after reading
+    /// (`file_write`'s and `file_vfprintf`'s start).
+    // R: connections.c:file_write
+    fn to_write(&mut self) -> Option<&mut stdio::Stream<File>> {
+        let fp = self.fp.as_mut()?;
+        if !self.last_was_write {
+            self.rpos = fp.ftello();
+            self.last_was_write = true;
+            fp.fseeko(self.wpos, stdio::Whence::Set);
+        }
+        Some(fp)
+    }
 }
 
 /// A text connection's input (`struct textconn`): every string followed
@@ -476,12 +507,24 @@ pub fn strerror(e: &std::io::Error) -> String {
     }
 }
 
+/// `strerror(errno)`.
+fn errno_text(errno: i32) -> String {
+    strerror(&std::io::Error::from_raw_os_error(errno))
+}
+
 fn is_dir(name: &[u8]) -> bool {
     std::fs::metadata(path_of(name)).is_ok_and(|m| m.is_dir())
 }
 
-/// `fopen(name, mode)`'s file.
-fn fopen(name: &[u8], mode: &str) -> std::io::Result<File> {
+/// `fopen(name, mode)`: the file opened as the mode says, as a buffered
+/// stream.
+// glibc: libio/fileops.c:_IO_new_file_fopen
+fn fopen(name: &[u8], mode: &str) -> std::io::Result<stdio::Stream<File>> {
+    stdio::Stream::open(open_file(name, mode)?, mode)
+}
+
+/// The file `fopen(name, mode)` opens (`open(2)` with the mode's flags).
+fn open_file(name: &[u8], mode: &str) -> std::io::Result<File> {
     let m = mode.as_bytes();
     let plus = m.get(1) == Some(&b'+') || m.get(2) == Some(&b'+');
     let mut o = std::fs::OpenOptions::new();
@@ -509,11 +552,11 @@ fn file_open(c: &mut Conn) -> OpenResult {
         return Err("robigo: 'file(\"stdin\")' is not implemented yet".into());
     }
     let shown = String::from_utf8_lossy(&name).into_owned();
-    let fp = match fopen(&name, &c.mode()) {
+    let mut fp = match fopen(&name, &c.mode()) {
         Ok(f) => f,
         Err(e) => return Err(format!("cannot open file '{shown}': {}", strerror(&e))),
     };
-    if fp.metadata().is_ok_and(|m| m.is_dir()) {
+    if fp.fd().metadata().is_ok_and(|m| m.is_dir()) {
         return Err(format!("cannot open file '{shown}': it is a directory"));
     }
     let mode = c.mode();
@@ -529,11 +572,10 @@ fn file_open(c: &mut Conn) -> OpenResult {
     c.set_text(!(mlen >= 2 && m[mlen - 1] == b'b'));
     // set_buffer: a text connection read from a regular file is buffered
     // (shouldBuffer: fstat's S_ISREG)
-    if c.canread() && c.text() && fp.metadata().is_ok_and(|md| md.is_file()) {
+    if c.canread() && c.text() && fp.fd().metadata().is_ok_and(|md| md.is_file()) {
         buff_init(c);
     }
-    let mut fp = fp;
-    let wpos = if c.canwrite() { fp.stream_position().unwrap_or(0) } else { 0 };
+    let wpos = if c.canwrite() { fp.ftello() } else { 0 };
     let canread = c.canread();
     if let Imp::File(f) = &mut c.imp {
         f.fp = Some(fp);
@@ -600,7 +642,7 @@ fn gzfile_open(c: &mut Conn) -> OpenResult {
     let write = mode.contains('w') || mode.starts_with('a');
     let Imp::Gz(g) = &mut c.imp else { unreachable!() };
     let io = if write {
-        let f = if mode.starts_with('a') { fopen(&name, "ab") } else { fopen(&name, "wb") };
+        let f = if mode.starts_with('a') { open_file(&name, "ab") } else { open_file(&name, "wb") };
         match f {
             Ok(f) => GzIo::Write(GzWriter::new(f, g.compress)),
             Err(e) => return Err(format!("cannot open compressed file '{shown}', probable reason '{}'", strerror(&e))),
@@ -668,7 +710,8 @@ fn open_conn(c: &mut Conn) -> OpenResult {
     }
 }
 
-/// `con->close(con)`, and `con_close1`'s release of the buffer.
+/// `con->close(con)`, and `con_close1`'s release of the buffer: the
+/// warning `checkClose` gives, if any.
 fn close_conn(c: &mut Conn) -> Option<String> {
     let mut err = None;
     buff_free(c);
@@ -676,28 +719,35 @@ fn close_conn(c: &mut Conn) -> Option<String> {
         Imp::Std | Imp::Text(_) => {}
         Imp::File(f) => {
             // (c.c's fields: the file's private part stays borrowed)
-            // con->status = fclose(this->fp): the writes went to the file as
-            // they were made (no stdio buffer), so there is nothing left to
-            // flush, and fclose does not sync to the disk; closing it is
-            // dropping it (a close(2) error is not reported, as no write is
-            // pending)
-            if c.c.isopen != 0 {
-                drop(f.fp.take());
-                c.c.status = 0;
+            // con->status = fclose(this->fp): the buffered output written,
+            // then the descriptor closed; checkClose's warning when either
+            // failed, with errno (cleared first) as the failure left it
+            // R: connections.c:file_close, checkClose
+            if c.c.isopen != 0
+                && let Some(mut fp) = f.fp.take()
+            {
+                fp.errno = 0;
+                c.c.status = fp.fclose();
+                if c.c.status < 0 {
+                    err = Some(match fp.errno {
+                        0 => "Problem closing connection".to_string(),
+                        e => format!("Problem closing connection:  {}", errno_text(e)),
+                    });
+                }
             }
         }
         Imp::Gz(g) => {
             if let Some(GzIo::Write(w)) = g.io.take()
                 && let Err(e) = w.finish()
             {
-                err = Some(strerror(&e));
+                err = Some(format!("Problem closing connection:  {}", strerror(&e)));
             }
         }
         Imp::Gzcon(g) => {
             if let Some(GzconIo::Write(w)) = g.io.take()
                 && w.finish().is_err()
             {
-                err = Some("writing error whilst flushing 'gzcon' connection".into());
+                err = Some("Problem closing connection:  writing error whilst flushing 'gzcon' connection".into());
             }
             g.io = None;
             if g.inner.isopen() {
@@ -733,23 +783,15 @@ fn conn_read_raw(c: &mut Conn, buf: &mut [u8]) -> std::io::Result<usize> {
         Imp::Std => Err(std::io::Error::other("robigo: reading the standard connections is not implemented yet")),
         // null_read
         Imp::Text(_) => Err(std::io::Error::other("'read' not enabled for this connection")),
+        // R: connections.c:file_read
         Imp::File(f) => {
-            let fp = f.fp.as_mut().ok_or_else(|| std::io::Error::other("not open"))?;
-            if f.last_was_write {
-                f.wpos = fp.stream_position()?;
-                f.last_was_write = false;
-                fp.seek(SeekFrom::Start(f.rpos))?;
+            let fp = f.to_read().ok_or_else(|| std::io::Error::other("not open"))?;
+            let res = fp.fread(buf);
+            if res != buf.len() && fp.feof() {
+                // see file_fgetc_internal
+                fp.clearerr();
             }
-            let mut n = 0;
-            while n < buf.len() {
-                match fp.read(&mut buf[n..]) {
-                    Ok(0) => break,
-                    Ok(k) => n += k,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(n)
+            Ok(res)
         }
         Imp::Gz(g) => match &mut g.io {
             Some(GzIo::Read(r)) => r.read_full(buf),
@@ -771,16 +813,10 @@ fn conn_write(c: &mut Conn, buf: &[u8]) -> std::io::Result<usize> {
         Imp::Std => Err(std::io::Error::other("robigo: writing the standard connections is not implemented yet")),
         // null_write
         Imp::Text(_) => Err(std::io::Error::other("'write' not enabled for this connection")),
+        // R: connections.c:file_write
         Imp::File(f) => {
-            let fp = f.fp.as_mut().ok_or_else(|| std::io::Error::other("not open"))?;
-            if !f.last_was_write {
-                f.rpos = fp.stream_position()?;
-                f.last_was_write = true;
-                fp.seek(SeekFrom::Start(f.wpos))?;
-            }
-            fp.write_all(buf)?;
-            f.wpos += buf.len() as u64;
-            Ok(buf.len())
+            let fp = f.to_write().ok_or_else(|| std::io::Error::other("not open"))?;
+            Ok(fp.fwrite(buf))
         }
         Imp::Gz(g) => match &mut g.io {
             Some(GzIo::Write(w)) => w.write_data(buf),
@@ -856,6 +892,22 @@ fn buff_fgetc(c: &mut Conn) -> Result<c_int, String> {
 /// `con->fgetc_internal(con)`: one byte of the stream, `R_EOF` at its end.
 // R: connections.c:file_fgetc_internal (and the other classes')
 fn fgetc_internal(c: &mut Conn) -> Result<c_int, String> {
+    // R: connections.c:file_fgetc_internal
+    if let Imp::File(f) = &mut c.imp
+        && let Some(fp) = f.to_read()
+    {
+        return Ok(match fp.fgetc() {
+            Some(b) => b as c_int,
+            None => {
+                // Clear the end-of-file indicator so that data appended to
+                // the file may be read by later calls.
+                if fp.feof() {
+                    fp.clearerr();
+                }
+                R_EOF
+            }
+        });
+    }
     let mut b = [0u8; 1];
     match conn_read_raw(c, &mut b) {
         Ok(0) => Ok(R_EOF),
@@ -893,9 +945,8 @@ fn r_is_na(x: f64) -> bool {
 }
 
 /// `con->seek(con, where, origin, rw)` of a file: the position before
-/// (the read position for `rw` 1, the write one for 2), then the move
-/// (none for `where` NA; a move the system refuses, as to a negative
-/// offset, leaves the position).
+/// (the read position for `rw` 1, the write one for 2; buffered output
+/// counted), then the move (none for `where` NA).
 // R: connections.c:file_seek
 fn file_seek(c: &mut Conn, where_: f64, origin: c_int, rw: c_int) -> Result<f64, String> {
     let (canread, canwrite) = (c.canread(), c.canwrite());
@@ -904,7 +955,7 @@ fn file_seek(c: &mut Conn, where_: f64, origin: c_int, rw: c_int) -> Result<f64,
     };
     let Some(fp) = f.fp.as_mut() else { return Err("connection is not open".into()) };
     // make sure both positions are set
-    let mut pos = fp.stream_position().unwrap_or(0);
+    let mut pos = fp.ftello();
     if f.last_was_write {
         f.wpos = pos;
     } else {
@@ -927,21 +978,14 @@ fn file_seek(c: &mut Conn, where_: f64, origin: c_int, rw: c_int) -> Result<f64,
     if r_is_na(where_) {
         return Ok(pos as f64);
     }
-    let w = where_ as i64;
-    let to = match origin {
-        2 => SeekFrom::Current(w),
-        3 => SeekFrom::End(w),
-        _ => {
-            if w < 0 {
-                // fseeko's EINVAL: no move
-                SeekFrom::Current(0)
-            } else {
-                SeekFrom::Start(w as u64)
-            }
-        }
+    let whence = match origin {
+        2 => stdio::Whence::Cur,
+        3 => stdio::Whence::End,
+        _ => stdio::Whence::Set,
     };
-    let _ = fp.seek(to);
-    let now = fp.stream_position().unwrap_or(0);
+    // (a move the system refuses leaves the stream where it was)
+    fp.fseeko(where_ as i64, whence);
+    let now = fp.ftello();
     if f.last_was_write {
         f.wpos = now;
     } else {
@@ -1050,14 +1094,43 @@ pub fn c_write(cx: &mut Cx, buf: &[u8], size: usize, con: *mut RconnC) -> RResul
     with_c(cx, con, |c| conn_write(c, buf).map(|n| n.checked_div(size).unwrap_or(0)).map_err(|e| e.to_string()))
 }
 
-/// `con->fflush(con)`: a file's stream has no buffer of its own here (0,
-/// fflush's success); the other classes' are not implemented yet.
-// R: connections.c:file_fflush
+/// `con->fflush(con)`.
 pub fn c_fflush(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
-    with_c(cx, con, |c| match c.imp {
-        Imp::File(_) => Ok(0),
-        _ => Err(format!("robigo: fflush of a '{}' connection is not implemented yet", c.class)),
-    })
+    match with_c(cx, con, |c| Ok(conn_fflush(c)))? {
+        Some(r) => Ok(r),
+        None => {
+            cx.flush_console();
+            Ok(0)
+        }
+    }
+}
+
+/// `con->fflush(con)`: a file's stream flushed, `fflush`'s 0 or `EOF`
+/// (none open: `fflush(NULL)`, which flushes the C library's streams,
+/// none of them robigo's); 0 for the classes without a buffer of their
+/// own; None for the standard connections, which flush the console.
+// R: connections.c:file_fflush, null_fflush, gzfile_fflush, stdout_fflush,
+//    stderr_fflush
+fn conn_fflush(c: &mut Conn) -> Option<c_int> {
+    match &mut c.imp {
+        Imp::File(f) => Some(f.fp.as_mut().map_or(0, |fp| fp.fflush())),
+        Imp::Std => None,
+        Imp::Text(_) | Imp::Gz(_) | Imp::Gzcon(_) => Some(0),
+    }
+}
+
+/// `flush(con)`: a connection open for writing flushed; what the flush
+/// returns is not looked at.
+// R: connections.c:do_flush
+pub fn do_flush(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "flush", 1, true)?;
+    let i = conn_number(cx, args.root(0))?;
+    let r = with_conn(cx, i, |c| if c.canwrite() { Some(conn_fflush(c)) } else { None })?;
+    if r == Some(None) {
+        cx.flush_console();
+    }
+    out.set(cx, cx.nil());
+    Ok(())
 }
 
 /// `Rconn_fgetc(con)`, C's entry.
@@ -1623,38 +1696,78 @@ pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
     r.map_err(|m| cx.error(&m))
 }
 
-/// `Rconn_printf(con, ...)`'s write of `buf` as `writeLines` uses it: a
-/// write the system fails raises nothing (robigo-rt's own refusals do).
-fn write_ignoring_os_errors(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
-    let refused = with_conn(cx, n, |c| match conn_write(c, buf) {
-        Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
-        _ => None,
-    })?;
-    match refused {
-        Some(m) => Err(cx.error(&m)),
-        None => Ok(()),
+/// `Rconn_printf(con, ...)` of the bytes `parts` (what the format made):
+/// `con->vfprintf`, and its error when that failed: "Error writing to
+/// connection:  <strerror(errno)>", with errno cleared first. A file's
+/// write is buffered ([`stdio::Stream::vfprintf`]), so the call that fails
+/// is the one whose bytes do not fit and whose flush fails; the other
+/// classes write at once (`dummy_vfprintf`'s `con->write`).
+// R: connections.c:Rconn_printf, file_vfprintf
+fn rconn_printf(c: &mut Conn, parts: &[&[u8]]) -> Result<(), String> {
+    if c.reencode {
+        // (con->outconv: dummy_vfprintf's re-encoding)
+        return Err("robigo: re-encoding a connection is not implemented yet".into());
     }
+    let (res, errno) = match &mut c.imp {
+        Imp::File(f) => {
+            let Some(fp) = f.to_write() else { return Err("not open".into()) };
+            fp.errno = 0;
+            let res = fp.vfprintf(parts);
+            (res, fp.errno)
+        }
+        _ => match conn_write(c, &parts.concat()) {
+            Ok(_) => (0, 0),
+            Err(e) => match e.raw_os_error() {
+                Some(errno) => (-1, errno),
+                // robigo-rt's own refusals
+                None => return Err(e.to_string()),
+            },
+        },
+    };
+    if res < 0 {
+        return Err(match errno {
+            0 => "Error writing to connection".to_string(),
+            e => format!("Error writing to connection:  {}", errno_text(e)),
+        });
+    }
+    Ok(())
 }
 
-/// `Rconn_printf(con, ...)`'s write of `buf` as the serialize streams use
-/// it: a write the system fails is `Rconn_printf`'s error, "Error writing
-/// to connection:  <strerror>". GNU R's raises it when stdio flushes its
-/// buffer inside the call (in the probed environment, a 4 KiB buffer: a
-/// write that fills it); a write that stays in the buffer succeeds there,
-/// and `close()` warns. robigo-rt's file connection has no stdio buffer,
-/// so here every failed write raises (INTERIM: the connection layer's
-/// stdio buffer).
-// R: connections.c:Rconn_printf
-pub fn printf_write(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
-    let r = with_conn(cx, n, |c| match conn_write(c, buf) {
-        Ok(_) => None,
-        Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
-        Err(e) => Some(format!("Error writing to connection:  {}", strerror(&e))),
-    })?;
-    match r {
-        Some(m) => Err(cx.error(&m)),
-        None => Ok(()),
+/// [`rconn_printf`] of each of `buf`'s pieces (each ends at an `ends`
+/// entry), in order, up to the first that fails. A file's strings that fit
+/// in its buffer's room together are copied there at once: one at a time,
+/// `vfprintf` would copy each and flush none of them.
+fn rconn_printf_each(c: &mut Conn, buf: &[u8], ends: &[usize]) -> Result<(), String> {
+    let mut start = 0;
+    let mut i = 0;
+    while i < ends.len() {
+        if !c.reencode
+            && let Imp::File(f) = &mut c.imp
+            && let Some(fp) = f.to_write()
+        {
+            let room = fp.room();
+            let mut j = i;
+            while j < ends.len() && ends[j] - start <= room {
+                j += 1;
+            }
+            if j > i {
+                fp.put(&buf[start..ends[j - 1]]);
+                start = ends[j - 1];
+                i = j;
+                continue;
+            }
+        }
+        rconn_printf(c, &[&buf[start..ends[i]]])?;
+        start = ends[i];
+        i += 1;
     }
+    Ok(())
+}
+
+/// [`rconn_printf`] on connection `n`, its error raised.
+pub fn printf_write(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
+    let r = with_conn(cx, n, |c| rconn_printf(c, &[buf]))?;
+    r.map_err(|m| cx.error(&m))
 }
 
 /// Run an open `f` on connection `n`, after the warnings `R_ExpandFileName`
@@ -1717,8 +1830,8 @@ fn con_destroy(cx: &mut Cx, i: usize) -> RResult<i32> {
     let err = if c.isopen() { close_conn(&mut c) } else { None };
     let status = c.status();
     c.clear_push_back();
-    if let Some(e) = err {
-        cx.warning(&format!("Problem closing connection:  {e}"))?;
+    if let Some(w) = err {
+        cx.warning(&w)?;
     }
     if let Some(g) = c.ex_ptr.take() {
         cx.release_global(g);
@@ -2283,7 +2396,9 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         let altrep = |cx: &mut Cx| {
             robigo_rtbuiltins::util::not_yet(cx, Some(call), "writeLines() of a package ALTREP character vector")
         };
+        // every string and `sep`, and where each such pair ends
         let mut buf = Vec::new();
+        let mut ends = Vec::new();
         {
             let Some(sep) = args.get(cx, 2).as_vector::<Char<'_>>() else { return Err(altrep(cx)) };
             // STRING_ELT(sep, 0) of an empty vector is R_NilValue, which
@@ -2297,22 +2412,25 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             for i in 0..text.len() {
                 buf.extend_from_slice(&bytes_of(cx, text.get(i)));
                 buf.extend_from_slice(&sep);
+                ends.push(buf.len());
             }
         }
-        // Rconn_printf's result is not looked at
         match n {
             1 => cx.rprintf(&buf),
             2 => cx.reprintf(&buf),
             _ => {
-                write_ignoring_os_errors(cx, n, &buf)?;
+                // Rconn_printf(con, "%s%s", ...) for each string: the first
+                // that fails raises its error, the rest are not written
+                let r = with_conn(cx, n, |c| rconn_printf_each(c, &buf, &ends))?;
+                r.map_err(|m: String| cx.error(&m))?;
             }
         }
         Ok(())
     })();
     if !wasopen {
-        let err = with_conn(cx, n, close_conn)?;
-        if let Some(e) = err {
-            cx.warning(&format!("Problem closing connection:  {e}"))?;
+        // checkClose (con_cleanup's, on an error)
+        if let Some(w) = with_conn(cx, n, close_conn)? {
+            cx.warning(&w)?;
         }
     }
     r?;
@@ -2326,7 +2444,7 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
     with_conn(cx, n, |c| match &mut c.imp {
         Imp::File(f) => match f.fp.as_mut() {
-            Some(fp) if !f.last_was_write => fp.seek(SeekFrom::Current(-(k as i64))).is_ok(),
+            Some(fp) if !f.last_was_write => fp.fseeko(-(k as i64), stdio::Whence::Cur) == 0,
             _ => false,
         },
         _ => false,

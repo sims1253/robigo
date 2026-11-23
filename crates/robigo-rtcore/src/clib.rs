@@ -1831,6 +1831,17 @@ pub fn is_writeable_dir(path: Option<&[u8]>) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
+/// `close(fd)` of `f`'s descriptor, with its result: a dropped `File`
+/// closes without one (glibc's `fclose` returns `close`'s failure,
+/// libio/fileops.c `_IO_new_file_close_it`).
+pub fn close_file(f: std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::IntoRawFd;
+    let fd = f.into_raw_fd();
+    // SAFETY: `into_raw_fd` gave up the descriptor, which nothing else owns,
+    // so closing it here is its one close.
+    if unsafe { libc::close(fd) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
 /// `mkdtemp(template)`: the directory made from `template` (its trailing
 /// `XXXXXX` replaced), or None when it could not be.
 pub fn mkdtemp(template: &[u8]) -> Option<Vec<u8>> {

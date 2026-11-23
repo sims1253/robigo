@@ -22,3 +22,6 @@ tryCatch(.Internal(tempfile("a", "b")), error = function(e) conditionMessage(e))
 # which no user can write to (a mode the owner cannot write still lets root)
 file.remove(d); d2 <- tempdir(check = TRUE); d2 != d; grepl("/Rtmp[A-Za-z0-9]{6}$", d2); dir.exists(d2)
 identical(Sys.getenv("R_SESSION_TMPDIR"), d2); identical(tempdir(), d2)
+# a pattern with a separator: do_tempfile does not check it, so the name
+# is in a subdirectory of the session's directory
+print(dirname(tempfile("a/b")) == file.path(tempdir(), "a"))
