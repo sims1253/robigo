@@ -523,14 +523,18 @@ class RowCollections(unittest.TestCase):
     class Fake:
         robigo, robigo_identity, r_bin, valgrind = "rt", None, "R", "valgrind"
 
-        def __init__(self, robigo=(0, 0), gnur=(0, 0), shifted=None):
+        def __init__(self, robigo=(0, 0), gnur=(0, 0), shifted=None, fails=None):
             self.robigo_env, self.gnur_env = {}, {}
             self.counts = {"robigo": robigo, "gnur": gnur}
             self.shifted = shifted
+            # {side: message}: that side's script fails (RowFailed)
+            self.fails = fails or {}
             self.envs = []
             self.measured = []
 
         def pick(self, side, setup, k):
+            if side in self.fails:
+                raise ivr.RowFailed(side, self.fails[side])
             c = self.shifted if self.shifted and setup != "s <- 1" else self.counts[side]
             return c[0] if k == 10 else c[1]
 
@@ -593,6 +597,79 @@ class RowCollections(unittest.TestCase):
         msg = str(cm.exception.code)
         self.assertIn("row `a`", msg)
         self.assertIn("row `b`", msg)
+
+    def test_a_failing_script_on_either_side_refuses_the_row_by_name_before_measuring(self):
+        for side, msg in (("robigo", "robigo-rt exits 1: Error: package ‘utils’ does not have a namespace"),
+                          ("gnur", "GNU R exits 1: Error in f() : boom")):
+            with self.subTest(side=side):
+                fake = self.Fake(fails={side: msg})
+                with tempfile.TemporaryDirectory() as tmp:
+                    rows = Path(tmp, "rows.toml")
+                    rows.write_text(self.ROWS.format(name="source5k", extra="")
+                                    + self.ROWS.format(name="ok", extra="").replace('body = "x"', 'body = "y"'))
+                    a = SimpleNamespace(rows=str(rows), filter=None, no_r=False, no_robigo=False, cycles=False,
+                                        shifts=None, json=None)
+                    with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()), \
+                            patch.dict(os.environ, {"ROBIGO_RT_BOOT": "rdb"}):
+                        ivr.cmd_rows(a, fake)
+                got = str(cm.exception.code)
+                self.assertIn(f"row `source5k`: {msg}", got)
+                self.assertIn("must run clean on both sides", got)
+                self.assertEqual("(boot rdb)" in got, side == "robigo")
+                self.assertEqual(fake.measured, [])
+
+    def test_a_collects_row_is_refused_when_its_script_fails(self):
+        msg = self.refused(self.Fake(fails={"robigo": "robigo-rt exits 1: Error: x"}), "collects = true\n")
+        self.assertIn("row `r`: robigo-rt exits 1: Error: x", msg)
+
+    def test_a_heap_shift_whose_script_fails_refuses_the_row_by_name(self):
+        class Shifty(self.Fake):
+            def pick(self, side, setup, k):
+                if setup != "s <- 1":
+                    raise ivr.RowFailed("robigo", "robigo-rt exits 1: Error: shifted")
+                return 0
+        msg = self.refused(Shifty(), "address_sensitive = true\n", shifts=[0, 300])
+        self.assertIn("row `r`: robigo-rt exits 1: Error: shifted (heap shift k = 300)", msg)
+
+    def test_row_failure_reads_the_exit_and_the_error_lines(self):
+        run = lambda code, err: SimpleNamespace(returncode=code, stderr=err)  # noqa: E731
+        self.assertIsNone(ivr.row_failure("GNU R", run(0, "Garbage collection 1 = 1+0+0 (level 0) ... \n")))
+        self.assertIsNone(ivr.row_failure("robigo-rt", run(0, "robigo gc: collections 0 (entry 0)\nErrors: none\n")))
+        # an error printed with a clean exit still fails the row
+        self.assertEqual(ivr.row_failure("GNU R", run(0, "Error in f() : boom\n")), "GNU R exits 0: Error in f() : boom")
+        self.assertEqual(ivr.row_failure("robigo-rt", run(1, "Error: a\nExecution halted\n")), "robigo-rt exits 1: Error: a")
+        # a non-zero exit with no error line names stderr's last line
+        self.assertEqual(ivr.row_failure("robigo-rt", run(139, "x\nSegmentation fault\n")),
+                         "robigo-rt exits 139: Segmentation fault")
+        self.assertEqual(ivr.row_failure("GNU R", run(2, "")), "GNU R exits 2: no output")
+
+    def test_a_failed_run_is_refused_though_its_heap_report_reads_zero(self):
+        # robigo-rt prints its heap report after an error too: a failed run
+        # must not read as 0 → 0 (source5k on main 5d961809e)
+        stderr = ("Error: package ‘utils’ does not have a namespace\nExecution halted\n"
+                  "robigo gc: collections 0 (entry 0, loop 0, return 0)\n")
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ivr.subprocess, "run", return_value=SimpleNamespace(returncode=1, stderr=stderr)):
+            m = SimpleNamespace(robigo="rt", robigo_env={}, r_script=lambda setup, body, k: os.path.join(tmp, "s.R"))
+            with self.assertRaises(ivr.RowFailed) as cm:
+                ivr.Meter.robigo_collections(m, "s <- 1", "source(src)", 4)
+        self.assertEqual(str(cm.exception), "robigo-rt exits 1: Error: package ‘utils’ does not have a namespace")
+        self.assertEqual(cm.exception.side, "robigo")
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ivr.subprocess, "run", return_value=SimpleNamespace(returncode=1, stderr="Error: e\n")):
+            m = SimpleNamespace(tmp=tmp, r_bin="R", gnur_run_env=lambda env: {})
+            with self.assertRaises(ivr.RowFailed) as cm:
+                ivr.Meter.gnur_collections(m, "s <- 1", "x", 4)
+        self.assertEqual(cm.exception.side, "gnur")
+
+    def test_the_boot_hint_follows_the_failing_side_not_the_messages_wording(self):
+        for side, hinted in (("robigo", True), ("gnur", False)):
+            with self.subTest(side=side), patch.dict(os.environ, {"ROBIGO_RT_BOOT": "rdb"}):
+                with self.assertRaises(SystemExit) as cm:
+                    self.rows(self.Fake(fails={side: "crashed"}), no_r=False)
+                msg = str(cm.exception.code)
+                self.assertIn("row `r`: crashed", msg)
+                self.assertEqual("(boot rdb)" in msg, hinted)
 
     def test_a_row_marked_collects_is_measured_and_its_counts_reported(self):
         doc, table = self.rows(self.Fake(robigo=(5, 9), gnur=(21, 42)), "collects = true\n", no_r=False)
@@ -772,8 +849,16 @@ class EveryRunNamesItsBoot(unittest.TestCase):
         def memory(cmd, env, syscalls):
             envs.append(env)
             return 100, 5000, 0, b"", 0
+        def massif(cmd, env, valgrind):
+            envs.append(env)
+            return 1
+
+        def gc(cmd, env):
+            envs.append(env)
+            return None
         with tempfile.TemporaryDirectory() as home, patch.object(su, "instructions", instr), \
-                patch.object(su, "memory", memory):
+                patch.object(su, "memory", memory), patch.object(su, "malloc_peak", massif), \
+                patch.object(su, "gc_peak", gc):
             su.run("bin", None, home, 1, trees=False)
         self.assertGreater(len(envs), 0)
         self.assertTrue(all("ROBIGO_RT_BOOT" in e for e in envs))

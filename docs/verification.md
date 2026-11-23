@@ -1071,13 +1071,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
           others), with its boot named for both binaries, is measured at 15
           heap layouts: a home path 35 to 133 characters long, with glibc
           malloc's `top_pad`, the same for both binaries;
-        - instructions and the peak anonymous memory are the mean over
-          them, in a fixed environment (`scripts/rt-startup.py`,
+        - instructions are the mean over them, in a fixed environment (`scripts/rt-startup.py`,
           `docs/ledger/g3/2026-11-23-startup-layout.md`);
-        - against main: instructions +0.5%, anonymous memory
-          +max(2%, 128 KiB) (a coarse tripwire for gross regressions:
-          physical pages follow glibc's placement by tens of KiB; to be
-          replaced by a logical peak), peak RSS +5%.
+        - against main: instructions +0.5%; memory as the peak of malloc'd
+          bytes (DHAT's t-gmax, exact; robigo-heap's chunks included; one
+          run at the first shift) +max(0.5%, 16 KiB); peak RSS +5%.
+          The anonymous peak (physical pages, which glibc's placement moves
+          by tens of KiB) and robigo-heap's own peak in use are reported
+          only.
 
         Tables built at a start are pre-sized; a start that steps by ~80k
         instructions is realloc/memcpy until shown otherwise.
@@ -1094,6 +1095,10 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         of both sides with `heap = { R_VSIZE = "..." }`. GNU R's counts
         are reported beside robigo-rt's, not enforced
         (`docs/ledger/g3/2026-11-23-row-collections.md`).
+      - **No failing row:** the same runs refuse a row whose script exits
+        non-zero or prints an R error (a line starting `Error`) on either
+        side, by name, before anything is measured, `collects = true` or
+        not.
       - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
         binary they measure, in the report and the JSON: its sha256, GNU
         build ID and modification time, and the checkout's `git describe`
