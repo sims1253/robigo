@@ -57,10 +57,15 @@ const START: Pos = Pos { line: 1, byte: 0, col: 0, parsed: 1 };
 impl Positions {
     /// The state after each byte of `src` (as the lexer reads it; `in_string`
     /// says whether a byte lies inside a string constant, where a `#` is no
-    /// comment and so no `#line` directive). `known_utf8`: gram.y's
-    /// `known_to_be_utf8`.
+    /// comment and so no `#line` directive). Two flags, each GNU R's:
+    /// `known_utf8` is the parse's `known_to_be_utf8` (whether a byte from
+    /// 0x80 advances the column only as a UTF-8 lead byte), and `mbcs` the
+    /// session's `mbcslocale` (a UTF-8 locale here: whether a string's
+    /// multibyte characters count their bytes twice). They differ: text of
+    /// unknown encoding in a UTF-8 session has the double count and a
+    /// column per byte (recorded on GNU R 4.6.2, C.UTF-8 and C).
     // R: gram.y:xxgetc, SkipComment, processLineDirective
-    pub(crate) fn new(src: &[u8], known_utf8: bool, in_string: impl Fn(usize) -> bool) -> Positions {
+    pub(crate) fn new(src: &[u8], known_utf8: bool, mbcs: bool, in_string: impl Fn(usize) -> bool) -> Positions {
         let mut after = Vec::with_capacity(src.len());
         let mut aliases = Vec::new();
         let mut s = START;
@@ -100,7 +105,7 @@ impl Positions {
             // (not in the column). GNU R 4.6.2 records `s <- "éé"` as
             // ending at byte 13.
             // R: gram.y:StringValue, RawStringValue, mbcs_get_next
-            if known_utf8 && c >= 0xC0 && in_string(i) {
+            if mbcs && c >= 0xC0 && in_string(i) {
                 s.byte += utf8_len(c) - 1;
             }
             after.push(s);
@@ -223,7 +228,7 @@ mod tests {
     use super::*;
 
     fn pos(src: &str) -> Positions {
-        Positions::new(src.as_bytes(), true, |_| false)
+        Positions::new(src.as_bytes(), true, true, |_| false)
     }
 
     /// GNU R 4.6.2's srcrefs for `f <- function(x) {\n  y <- x + 1\n  y * 2\n}`
@@ -274,14 +279,24 @@ mod tests {
     /// (recorded: `s <- "éé"; t <- 1` gives 1 1 1 13 1 9 1 1 and
     /// 1 16 1 21 12 17 1 1).
     #[test]
-    fn a_multibyte_character_in_a_string_counts_its_bytes_twice() {
+    fn a_multibyte_character_in_a_string_counts_its_bytes_twice_in_a_multibyte_locale() {
         let src = "s <- \"\u{e9}\u{e9}\"; t <- 1\n";
         let open = src.find('"').unwrap();
         let close = src.rfind('"').unwrap();
-        let p = Positions::new(src.as_bytes(), true, |i| i >= open && i <= close);
-        assert_eq!(p.fields(0, close), [1, 1, 1, 13, 1, 9, 1, 1]);
+        let in_str = |i: usize| i >= open && i <= close;
         let t = src.find("t <-").unwrap();
+        // a UTF-8 session, the text known to be UTF-8
+        let p = Positions::new(src.as_bytes(), true, true, in_str);
+        assert_eq!(p.fields(0, close), [1, 1, 1, 13, 1, 9, 1, 1]);
         assert_eq!(p.fields(t, t + 5), [1, 16, 1, 21, 12, 17, 1, 1]);
+        // a UTF-8 session, text of unknown encoding: a column per byte
+        let p = Positions::new(src.as_bytes(), false, true, in_str);
+        assert_eq!(p.fields(0, close), [1, 1, 1, 13, 1, 11, 1, 1]);
+        assert_eq!(p.fields(t, t + 5), [1, 16, 1, 21, 14, 19, 1, 1]);
+        // the C locale: neither
+        let p = Positions::new(src.as_bytes(), false, false, in_str);
+        assert_eq!(p.fields(0, close), [1, 1, 1, 11, 1, 11, 1, 1]);
+        assert_eq!(p.fields(t, t + 5), [1, 14, 1, 19, 14, 19, 1, 1]);
     }
 
     /// A `#` inside a string, or not first on its line, is no directive.
@@ -290,7 +305,7 @@ mod tests {
         let src = "x <- \"\n#line 9\"\ny <- 1 #line 9\n";
         let open = src.find('"').unwrap();
         let close = src.rfind('"').unwrap();
-        let p = Positions::new(src.as_bytes(), true, |i| i > open && i < close);
+        let p = Positions::new(src.as_bytes(), true, true, |i| i > open && i < close);
         assert!(p.aliases.is_empty());
         let y = src.find("y <-").unwrap();
         assert_eq!(p.after(y).line, 3);
