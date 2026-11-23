@@ -888,6 +888,72 @@ def crate_test_threads(cmd):
             and not (CONFORMANCE in cmd and "--exact" in cmd))
 
 
+# CI's base-subset job (scripts/base-subset.sh --check, in the oracle image)
+# checks that the base subset still traces from the tree's inputs. A local
+# run (no --shard) runs it too when the branch changes one of those inputs
+# against its merge base with origin/main (about 7 min, on those branches
+# only), so the push does not find out first.
+BASE_SUBSET_INPUTS = (
+    "tests/rt/**/*.R",
+    "benchmarks/rt/calls-rows.toml",
+    "scripts/base-subset*",
+    "crates/robigo-rt/proto/base-*.txt",
+    "scripts/r-src.sh",
+)
+BASE_SUBSET_STEP = ("base subset, its inputs changed on this branch (scripts/base-subset.sh --check)", {},
+                    ["scripts/base-subset.sh", "--check"])
+ORACLE_IMAGE = "robigo-oracle:4.6.2"
+
+
+def branch_changes(root=ROOT, base="origin/main"):
+    """The paths this checkout changes against its merge base with `base`:
+    commits, staged and unstaged edits, and untracked files. None when git
+    cannot say (no `base`): the caller then owes every check."""
+    def git(*args):
+        p = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+        return p.stdout if p.returncode == 0 else None
+    mb = git("merge-base", "HEAD", base)
+    if mb is None:
+        return None
+    diff = git("diff", "--name-only", "-z", "--no-renames", mb.strip())
+    new = git("ls-files", "--others", "--exclude-standard", "-z")
+    if diff is None or new is None:
+        return None
+    return sorted({p for p in (diff + new).split("\0") if p})
+
+
+def base_subset_owed(changed):
+    """Why base-subset's check is owed (the first changed input, or that git
+    could not say), or None."""
+    if changed is None:
+        return "git cannot compare this checkout with origin/main"
+    pats = [ci_select.glob_re(p) for p in BASE_SUBSET_INPUTS]
+    for path in changed:
+        if any(r.match(path) for r in pats):
+            return path
+    return None
+
+
+def oracle_problem():
+    """None when scripts/base-subset.sh can run GNU R 4.6.2 (its Rscript on
+    PATH, or docker's ORACLE_IMAGE), else what is missing and the cure."""
+    try:
+        p = subprocess.run(["Rscript", "-e", "cat(format(getRversion()))"], capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip() == "4.6.2":
+            return None
+    except FileNotFoundError:
+        pass
+    try:
+        if subprocess.run(["docker", "image", "inspect", ORACLE_IMAGE], capture_output=True).returncode == 0:
+            return None
+    except FileNotFoundError:
+        return (f"there is no docker for {ORACLE_IMAGE} (and no GNU R 4.6.2 Rscript on PATH): "
+                "install docker, or run on a machine with it")
+    return (f"there is no {ORACLE_IMAGE} image (and no GNU R 4.6.2 Rscript on PATH). The cure, two minutes: "
+            "scripts/build-oracle.sh --pull 4.6.2 (docker pull of CI's image, the oracle_4_6_2= line of "
+            f"scripts/ci-image.sh refs, tagged {ORACLE_IMAGE}); or build it: scripts/build-oracle.sh --image 4.6.2")
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -953,6 +1019,15 @@ def main(argv):
             print(f"::error::{problem}")
             return 2
     plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else builds_first(steps(crates)))
+    if not (a.full_move or a.freeze_check or a.shard):
+        owed = base_subset_owed(branch_changes())
+        if owed:
+            problem = oracle_problem()
+            if problem:
+                print(f"::error::rt-ci: this branch changes base-subset's inputs ({owed}), so its check is owed, "
+                      f"and {problem}")
+                return 2
+            plan = [*plan, BASE_SUBSET_STEP]
     done = []
     try:
         return run_steps(plan, done)

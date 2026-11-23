@@ -27,6 +27,7 @@ def meta(*pkgs):
 # (every ROBIGO_CONF_* variable, and these)
 CALLER_ENV = ("GITHUB_ACTIONS", "XDG_RUNTIME_DIR", "RT_CI_MIN_FREE_GB")
 CPUS = 8
+BRANCH_CHANGES = rt.branch_changes
 
 
 class RtCi(unittest.TestCase):
@@ -52,6 +53,11 @@ class RtCi(unittest.TestCase):
         cpus = mock.patch.object(os, "cpu_count", return_value=CPUS)
         cpus.start()
         self.addCleanup(cpus.stop)
+        # main() looks at this checkout's own branch for base-subset's
+        # inputs: no test may depend on what the branch under test changes
+        changes = mock.patch.object(rt, "branch_changes", return_value=[])
+        changes.start()
+        self.addCleanup(changes.stop)
 
     def test_the_cache_mutation_starts_are_memory_capped(self):
         # every robigo-rt start of scripts/rt-tcache-mutate.py goes through
@@ -515,6 +521,81 @@ class RtCi(unittest.TestCase):
                         if k.startswith("ROBIGO_CONF_") or k.startswith("ROBIGO_BC_CROSSCHECK") or k in harmless:
                             continue
                         self.assertIn(k, cleared, f"{shard}: {title}: {k} is not in MODE_VARS")
+
+    def test_base_subsets_check_is_owed_when_a_branch_changes_its_inputs(self):
+        owed = rt.base_subset_owed
+        for path in ("tests/rt/env/large-frames.R", "tests/rt/a.R", "benchmarks/rt/calls-rows.toml",
+                     "scripts/base-subset.sh", "scripts/base-subset-trace.R", "crates/robigo-rt/proto/base-wide.txt",
+                     "scripts/r-src.sh"):
+            self.assertEqual(owed(["docs/x.md", path]), path)
+        for path in ("tests/rt/env/large-frames.Rout", "tests/r/basics/a.R", "benchmarks/rt/other.toml",
+                     "crates/robigo-rt/proto/other.txt", "crates/robigo-rt/src/base-subset.rs", "scripts/rt-ci.py"):
+            self.assertIsNone(owed([path]), path)
+        self.assertIsNone(owed([]))
+        # git cannot say: owed
+        self.assertIn("cannot compare", owed(None))
+
+    def test_branch_changes_see_commits_edits_and_new_files(self):
+        import subprocess, shutil, tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, check=True,
+                           capture_output=True)
+        git("init", "-q", "-b", "main")
+        for f in ("kept", "edited"):
+            open(os.path.join(d, f), "w").write("1\n")
+        git("add", "kept", "edited")
+        git("commit", "-q", "-m", "base")
+        git("branch", "base")
+        open(os.path.join(d, "committed"), "w").write("1\n")
+        git("add", "committed")
+        git("commit", "-q", "-m", "change")
+        open(os.path.join(d, "edited"), "w").write("2\n")
+        open(os.path.join(d, "untracked"), "w").write("1\n")
+        self.assertEqual(BRANCH_CHANGES(d, "base"), ["committed", "edited", "untracked"])
+        self.assertIsNone(BRANCH_CHANGES(d, "no-such-branch"))
+
+    def test_a_local_run_adds_base_subsets_check_or_stops_with_the_cure(self):
+        import contextlib, io
+        from unittest import mock
+        def main(owed, problem, argv=()):
+            out = io.StringIO()
+            with mock.patch.object(rt, "branch_changes", return_value=[]), \
+                    mock.patch.object(rt, "base_subset_owed", return_value=owed), \
+                    mock.patch.object(rt, "oracle_problem", return_value=problem), \
+                    mock.patch.object(rt, "run_steps", return_value=0) as run, \
+                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}), contextlib.redirect_stdout(out):
+                status = rt.main(list(argv))
+            plan = run.call_args[0][0] if run.called else None
+            return status, plan, out.getvalue()
+        status, plan, _ = main(None, None)
+        self.assertEqual(status, 0)
+        self.assertNotIn(rt.BASE_SUBSET_STEP, plan)
+        status, plan, _ = main("tests/rt/a.R", None)
+        self.assertEqual(plan[-1], rt.BASE_SUBSET_STEP)
+        # no oracle: the run fails at its start (never a warning), naming the cure
+        status, plan, out = main("tests/rt/a.R", "there is no robigo-oracle:4.6.2 image; scripts/build-oracle.sh --pull 4.6.2")
+        self.assertEqual((status, plan), (2, None))
+        self.assertIn("tests/rt/a.R", out)
+        self.assertIn("scripts/build-oracle.sh --pull 4.6.2", out)
+        # CI's shards never run it (CI has its own base-subset job)
+        status, plan, _ = main("tests/rt/a.R", "missing", ["--shard", "modes"])
+        self.assertEqual(status, 0)
+        self.assertNotIn(rt.BASE_SUBSET_STEP, plan)
+
+    def test_the_oracle_cure_names_the_pull(self):
+        from unittest import mock
+        import subprocess
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+        with mock.patch.object(rt.subprocess, "run", fake):
+            problem = rt.oracle_problem()
+        self.assertIn("robigo-oracle:4.6.2", problem)
+        self.assertIn("scripts/build-oracle.sh --pull 4.6.2", problem)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", problem)
+        with mock.patch.object(rt.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertIn("no docker", rt.oracle_problem())
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
