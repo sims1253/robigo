@@ -686,8 +686,8 @@ impl Cx {
         if !early.is_null() {
             self.early_taken(f);
             // SAFETY: a delayed slot's expression is live.
-            let (bc, call) = unsafe { (s.has(layout::META_BYTECODE), s.aux().typ() == LANGSXP) };
-            if (self.iso().hooks.get().early_force)(self, bc, call) {
+            let (bc, kind) = unsafe { (s.has(layout::META_BYTECODE), s.aux().typ()) };
+            if (self.iso().hooks.get().early_force)(self, bc, kind) {
                 let iso = self.iso();
                 // SAFETY: the slot holds the value; it becomes the forced
                 // value (nothing ran since it was read).

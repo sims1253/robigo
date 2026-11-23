@@ -38,8 +38,12 @@ const MAX_REGS: usize = 12;
 /// no code and has no effect: a symbol bound to a value, or a call whose
 /// byte code, compiled by an earlier force ([`crate::eval::expr_code`]'s
 /// cache; this compiles nothing), only loads constants, reads such
-/// variables and does arithmetic on its fast path. `Ok(None)` when it is not
-/// such an expression. Allocates the boxed result.
+/// variables and does arithmetic on its fast path; or a translated call's
+/// promise code (a BCODESXP, `Op::CallCodes`'s arguments) whose translation
+/// an earlier force made ([`crate::compile::bytecode_code`]'s cache; this
+/// translates nothing, and a translation cache's stub is no translation)
+/// and passes the same check. `Ok(None)` when it is not such an expression.
+/// Allocates the boxed result.
 pub(crate) fn value<'s>(
     cx: &mut Cx,
     s: robigo_rtcore::Scope<'s>,
@@ -58,6 +62,27 @@ pub(crate) fn value<'s>(
             // SAFETY: the rooted call's 4th word is R_NilValue or its code
             // cache; the code object it holds is live, the environment
             // rooted, and nothing collects before the run ends.
+            match unsafe { crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| run(cx, c, rho.bind(cx).sexp())) }
+            {
+                Some(x) => x,
+                None => return Ok(None),
+            }
+        }
+        // `eval` of byte code (eval.rs's BCODESXP arm): its translation,
+        // unless that arm would evaluate the source instead (the Eval
+        // profile forced, byte code disabled, a version bcEval does not run)
+        BCODESXP => {
+            let st = crate::prims::state(cx);
+            if st.forced == Some(Profile::Eval)
+                || st.jit.get().disable_bytecode
+                || !robigo_rtbuiltins::bytecode::version_ok(expr.bind(cx))
+            {
+                return Ok(None);
+            }
+            // SAFETY: the rooted byte code's 4th word is R_NilValue, its
+            // translation's code object, or a translation cache's stub (no
+            // code object: None); the code is live, the environment rooted,
+            // and nothing collects before the run ends.
             match unsafe { crate::code::cached(cx, e.aux(), Profile::Bc).and_then(|c| run(cx, c, rho.bind(cx).sexp())) }
             {
                 Some(x) => x,
@@ -261,14 +286,19 @@ unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
 }
 
 /// [`robigo_rtcore::hooks::EarlyForceFn`]: the counts the evaluation of a
-/// delayed argument's expression makes in `eval::eval_bytecode` (the path
-/// a force without an early value takes), made in place: for a symbol
-/// `eval`'s `R_Visible`, evaluation count and depth check; for a call the
-/// code's `vm::exec` entry: `R_Visible`, the depth check and `bcEval`'s
-/// entry poll count. False, with nothing counted, when either count would
-/// poll or the depth would pass `R_Expressions`.
+/// delayed argument's expression (of SEXPTYPE `kind`) makes in
+/// `eval::eval_in` (the path a force without an early value takes), made in
+/// place, with `R_Visible` and the depth check:
+/// - a symbol: `eval`'s evaluation count;
+/// - a call: its code's `vm::exec` entry, `bcEval`'s entry poll count;
+/// - byte code (a translated call's promise code): both, `eval`'s count
+///   (eval.rs's `tick` before the BCODESXP arm) and then `bcEval`'s entry
+///   poll (`vm::exec`, or `run_single_read`'s).
+///
+/// False, with nothing counted, when any count would poll or the depth
+/// would pass `R_Expressions`.
 // R: eval.c:eval, eval.c:bcEval (the entry's BC_CHECK_SIGINT)
-pub fn early_force(cx: &mut Cx, bytecode: bool, call: bool) -> bool {
+pub fn early_force(cx: &mut Cx, bytecode: bool, kind: u8) -> bool {
     // (only compiled code's arguments are computed early: their promises
     // hold byte code, evaluated under the `Bc` profile)
     if !bytecode {
@@ -277,12 +307,22 @@ pub fn early_force(cx: &mut Cx, bytecode: bool, call: bool) -> bool {
     if cx.eval_depth() + 1 > cx.expressions() {
         return false;
     }
-    let count = if call { cx.bc_evalcount() } else { cx.evalcount() };
-    let n = count.get() + 1;
-    if n > if call { 1023 } else { 1000 } {
+    let (eval_count, bc_count) = match kind {
+        LANGSXP => (false, true),
+        BCODESXP => (true, true),
+        _ => (true, false),
+    };
+    let e = cx.evalcount().get() + 1;
+    let b = cx.bc_evalcount().get() + 1;
+    if (eval_count && e > 1000) || (bc_count && b > 1023) {
         return false;
     }
-    count.set(n);
+    if eval_count {
+        cx.evalcount().set(e);
+    }
+    if bc_count {
+        cx.bc_evalcount().set(b);
+    }
     cx.set_visible(true);
     true
 }
