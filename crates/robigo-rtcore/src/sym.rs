@@ -377,6 +377,10 @@ impl SymCells {
         if i >= self.internals.len() {
             self.internals.resize(i + 1, Sexp::NULL);
         }
+        // a freeze root (the boot heap's freeze): a frozen value replaced
+        // leaves the frozen graph
+        // SAFETY: the table's values are null or live.
+        unsafe { robigo_heap::note_overwritten(self.internals[i]) };
         self.internals[i] = x;
     }
 

@@ -73,8 +73,11 @@ fn a_frozen_object_with_a_finalizer_dies_after_its_last_reference_goes() {
 
 /// A frozen list that base binds holds an environment, a finalizer is put
 /// on the environment, and the list's binding goes: the environment dies at
-/// a collection (Sol S3). Its frozen referrer, the list, was made ordinary
-/// with it, so only reachability decides; a log entry would have kept it.
+/// a collection (Sol S3). The next collection's frozen-reachability pass
+/// thaws the environment; the list stays frozen and logged while base binds
+/// it (the environment is reachable then, in GNU R too). Rebinding the base
+/// binding is a dirty event, so the next pass thaws the list, and only
+/// reachability decides: no log entry keeps the environment.
 #[test]
 #[cfg(not(miri))]
 fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
@@ -99,7 +102,8 @@ fn a_frozen_container_does_not_keep_an_unfrozen_object_alive() {
         // SAFETY: `e` is rooted; the reference is rooted by the collector.
         unsafe { cx.new_weak_ref_raw(e.bind(cx).sexp(), nil, cx.base_env().sexp(), false) }.expect("room");
         cx.collect();
-        assert!(!cx.is_frozen(e.bind(cx)) && !cx.is_frozen(l.bind(cx)), "the key and its frozen referrer thawed");
+        assert!(!cx.is_frozen(e.bind(cx)), "the key thawed");
+        assert!(cx.is_frozen(l.bind(cx)), "its referrer stays frozen (logged) while base binds it");
         cx.check_frozen();
         let nilr = s.root(cx, cx.nil());
         cx.define_var(sym, nilr, base)?;
@@ -232,6 +236,112 @@ fn a_frame_pooled_before_the_boundary_is_not_reused_after_it() {
         let c = out.root();
         cx.new_closure_frame(sh, g, g, &[], out)?;
         assert_ne!(c.bind(cx).sexp().addr(), b_addr, "a frame pooled before the boundary was reused after it");
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// The deferred search-path test (the pass's bar, (b)): an environment
+/// attached before the freeze is frozen; attaching and detaching an
+/// ordinary one in front of it keeps it on the search path, so it stays
+/// frozen; detaching it takes it off, and the next collection's pass thaws
+/// it. The test and the freeze roots walk the search path with one function
+/// (`Roots::trace_search_path`).
+#[test]
+#[cfg(not(miri))]
+fn a_detached_frozen_environment_thaws_and_one_still_attached_does_not() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let global = s.root(cx, cx.global_env());
+        // attach `f` behind the global environment, as attach() does
+        // SAFETY: the global environment is live, and so is its ENCLOS.
+        let old = s.root(cx, unsafe { crate::Ref::from_sexp(robigo_heap::env::enclos(global.bind(cx).sexp()), cx) });
+        let o = s.out(cx);
+        let f = o.root();
+        cx.build(o, |cx| cx.new_env(old.bind(cx), true, 0))?;
+        cx.set_enclos(global, f);
+        freeze_now(cx);
+        assert!(cx.is_frozen(f.bind(cx)), "an attached environment is a freeze root");
+        // an ordinary environment attached in front of it and detached,
+        // attach()'s and detach()'s order of writes, several times: the path
+        // is written each time, and its frozen members never change, so no
+        // pass runs (Sol r1 S7)
+        cx.collect();
+        let passes = cx.frozen_passes();
+        for _ in 0..3 {
+            let o = s.out(cx);
+            let u = o.root();
+            cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+            cx.set_enclos(global, u);
+            cx.set_enclos(u, f);
+            cx.collect();
+            assert!(cx.is_frozen(f.bind(cx)), "still on the search path behind an attached one: still frozen");
+            cx.set_enclos(global, f);
+            cx.collect();
+            assert!(cx.is_frozen(f.bind(cx)), "and after it is detached");
+        }
+        assert_eq!(cx.frozen_passes(), passes, "attaching and detaching in front of it ran no pass");
+        cx.check_frozen();
+        // `f` detached behind an ordinary environment that stays attached:
+        // the global environment is not the one written
+        let o = s.out(cx);
+        let u = o.root();
+        cx.build(o, |cx| cx.new_env(cx.base_env(), true, 0))?;
+        cx.set_enclos(global, u);
+        cx.set_enclos(u, f);
+        cx.collect();
+        assert!(cx.is_frozen(f.bind(cx)));
+        cx.set_enclos(u, old);
+        cx.collect();
+        assert!(!cx.is_frozen(f.bind(cx)), "a frozen environment detached behind an attached one thaws");
+        assert_eq!(cx.frozen_passes(), passes + 1, "one pass, for the one loss");
+        cx.check_frozen();
+        Ok::<(), crate::RError>(())
+    })
+    .unwrap();
+}
+
+/// A forced argument of a frozen closure frame, rebound: the slot's words
+/// are cleared raw (`retire_arg`), so the cleared expression and value are
+/// noted, and the next collection's pass thaws them (Sol r2 S9). Under the
+/// check, I2 would report them otherwise.
+#[test]
+#[cfg(not(miri))]
+fn a_retired_argument_of_a_frozen_frame_thaws() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    if !freeze_on(cx) {
+        return;
+    }
+    cx.scope(|cx, s| {
+        let base = s.root(cx, cx.base_env());
+        let x = cx.install(b"freeze_test_arg").unwrap();
+        let sh = s.root(cx, cx.new_shape(&[x]).expect("room"));
+        let expr = s.root(cx, cx.alloc_copy(&[1.0]).unwrap().finish());
+        let value = s.root(cx, cx.alloc_copy(&[2.0]).unwrap().finish());
+        let o = s.out(cx);
+        let frame = o.root();
+        cx.new_closure_frame(sh, base, base, &[crate::SlotInit::Forced { expr, value }], o)?;
+        let fsym = cx.install_rooted(s, b"freeze_test_frame")?;
+        cx.define_var(fsym, frame, base)?;
+        freeze_now(cx);
+        assert!(cx.is_frozen(frame.bind(cx)) && cx.is_frozen(value.bind(cx)) && cx.is_frozen(expr.bind(cx)));
+        // the argument rebound in the frozen frame
+        let xsym = cx.install_rooted(s, b"freeze_test_arg")?;
+        let nil = s.root(cx, cx.nil());
+        cx.define_var(xsym, nil, frame)?;
+        let o = value.reset(cx);
+        o.set(cx, cx.nil());
+        let o = expr.reset(cx);
+        o.set(cx, cx.nil());
+        let before = cx.frozen_passes();
+        cx.collect();
+        assert_eq!(cx.frozen_passes(), before + 1, "the cleared argument words were noted");
+        cx.check_frozen();
         Ok::<(), crate::RError>(())
     })
     .unwrap();

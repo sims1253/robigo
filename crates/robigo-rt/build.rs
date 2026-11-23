@@ -6,7 +6,12 @@
 fn main() {
     // Rerun when another checkout built last (.cargo/config.toml).
     println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/libdeflate");
+    // (the package's directory now, from cargo's environment, not
+    // `env!` when this script was compiled: cargo reuses a compiled build
+    // script across the checkouts that share a target directory, so a
+    // compile-time path would build another checkout's sources)
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("robigo-rt: cargo sets CARGO_MANIFEST_DIR");
+    let dir = std::path::Path::new(&manifest).join("../../vendor/libdeflate");
     println!("cargo:rerun-if-changed={}", dir.display());
     let lib = dir.join("lib");
     cc::Build::new()

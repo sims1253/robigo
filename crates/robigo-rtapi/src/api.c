@@ -312,7 +312,7 @@ void *(DATAPTR)(SEXP x)
         && (RB_IS_ALTREP(x) || RB_LEN(x) != 0)) {
         if (!(RB_FLAGS(x) & ROBIGO_FLAG_IMMORTAL))
             RB_EXTRA(x) |= RB_SEEN_BY_C;
-        else if (RB_FLAGS(x) & ROBIGO_FLAG_BARRIER)
+        else if (RB_FLAGS(x) & (ROBIGO_FLAG_BARRIER | ROBIGO_FLAG_FROZEN))
             robigo_rtapi_remember(x);
     }
     return dataptr(x);
