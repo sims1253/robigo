@@ -1128,7 +1128,8 @@ def cmd_rt_starts(a):
           f"{su.LAYOUT_LENGTHS[0]}-{su.LAYOUT_LENGTHS[-1]} characters long with glibc malloc's top_pad, the same for "
           f"both binaries); peak RSS, the median of {a.runs} runs; a fixed environment, address randomization off. "
           f"Boots named for both binaries (rt-startup.py's STARTS). Against main: instructions +{su.INSTR_LIMIT}%, "
-          f"anonymous memory +{su.ANON_LIMIT}% (at least {su.ANON_FLOOR_KIB} KiB), peak RSS +{su.RSS_LIMIT}%. "
+          f"peak malloc'd bytes (DHAT's t-gmax, one run at the first shift) +{su.HEAP_LIMIT}% (at least "
+          f"{su.HEAP_FLOOR_BYTES // 1024} KiB), peak RSS +{su.RSS_LIMIT}%; the anonymous peak reported only. "
           + ("GNU R's beside them, measured on this runner, report only." if gnur else "GNU R's not measured here.")
           + "\n")
     for ln in su.table(spec["startup"], new, main, gnur):

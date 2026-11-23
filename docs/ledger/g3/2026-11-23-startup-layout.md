@@ -203,3 +203,70 @@ to be replaced by a logical peak that no placement enters: the peak of
 malloc'd bytes, from a tool that counts requests, and robigo-heap's own
 bytes in use.
 
+## The memory clause: a logical peak (2026-11-23, later)
+
+The anonymous-peak tripwire above is replaced. Memory is now judged as
+**the peak of malloc'd bytes**: valgrind's DHAT, its t-gmax, the global
+maximum of live bytes as the program requested them. Valgrind tracks it
+exactly at every allocation and free. No page, alignment or placement
+enters it.
+
+- **Why DHAT, not massif.** Sol's review found that massif's marked peak
+  snapshot maximises useful bytes *plus* the allocator's overhead, and its
+  snapshots are thinned, so it can miss the useful maximum. A real case:
+  512 KiB freed, then 40,000 one-byte blocks and 2 MiB live at once.
+  Massif's parser read 2,126,430 bytes, while another of its snapshots held
+  2,610,718. DHAT reads exactly 2 MiB + 40,000, and that case is a test.
+- **robigo-heap's chunks are inside the figure:** its 1 MiB chunks come
+  from Rust's allocator (`std::alloc::alloc`, 64 KiB aligned), so they are
+  malloc requests that DHAT counts. Adding robigo-heap's own chunk count
+  to it would count them twice.
+- **The limit:** +max(0.5%, 16 KiB) against main's binary, one run per start
+  at the first layout shift. Instructions and peak RSS are unchanged. The
+  anonymous peak (physical pages) is reported, and fails nothing.
+
+On #991's runner binaries (PR f3cc6cee0, main e4a9fab22, each on its own
+trees):
+
+| start | t-gmax, first shift | PR − main | three runs, one shift | another shift (k = 7) | s/run |
+|---|---:|---:|---|---:|---:|
+| interim | 3,456,959 B | 0 bytes | identical | 3,457,390 B | 1.5 |
+| rdb-nocache | 9,947,143 B | +2 bytes | identical | 9,947,525 B | 3–4 |
+
+Against the same pair's anonymous peak, +56 KiB on rdb-nocache in CI's
+image, the logical figure's floor is the code's real allocations.
+
+The baselines on main a0440322a (after #1004's pre-sizing), first shift,
+this machine:
+
+| start | t-gmax | anonymous peak (report only) |
+|---|---:|---:|
+| interim | 3,444,091 B | 1,817 KiB |
+| rdb-jit | 9,823,037 B | 6,831 KiB |
+| rdb-nojit | 7,566,885 B | 4,562 KiB |
+| rdb-nocache | 9,925,874 B | 6,970 KiB |
+| GNU R 4.6.2, JIT on | 14,580,868 B | 10,148 KiB |
+| GNU R 4.6.2, JIT off | 11,295,325 B | 6,898 KiB |
+
+A second run: interim the same to the byte, rdb-nocache 8 bytes less
+(9,925,866 B), against the 16 KiB floor of the limit.
+
+How to read the figure:
+- **A realloc counts at its new size,** not old and new together:
+  growing 8 MiB to 16 MiB reads 16 MiB, measured. So a PR that pre-sizes a
+  table shows its effect on the peak only where the old and new sizes
+  differ in what is live at t-gmax. Sol corrected an earlier claim here.
+- **Why one fixed shift:** the figure moves across the shifts only by the
+  home path's own strings, a few hundred bytes over paths 35–133 characters
+  long. One shift, the same for both binaries, is enough, and it keeps the
+  cost to one run.
+- **GNU R's malloc peak** (its allocator goes through malloc too) is
+  reported beside it.
+- **robigo-heap's own peak line,** once a binary prints it under
+  `ROBIGO_GC_STATS=1`: `robigo gc: peak bytes in use N (objects A, block
+  overhead B, large L); peak chunk bytes mapped M`. N is reported beside
+  the clause, finer-grained than the chunk-sized steps in DHAT's figure.
+  A binary without the line shows "-".
+- **The cost:** one DHAT run (1.5–4 s) and one stats run per start per
+  binary: about +25 s for the four starts of two binaries, and a few
+  seconds for GNU R's two.

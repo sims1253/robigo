@@ -309,7 +309,11 @@ fn an_unknown_boot_is_an_error() {
         .unwrap();
     assert_eq!(
         (String::from_utf8_lossy(&o.stdout).as_ref(), String::from_utf8_lossy(&o.stderr).as_ref(), o.status.code()),
-        ("", "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'stage0', 'rdb' or unset (M1's loader)\n", Some(2))
+        (
+            "",
+            "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'stage0', 'rdb' or 'm1' (M1's loader, also when unset)\n",
+            Some(2)
+        )
     );
 }
 
@@ -743,10 +747,10 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
 
 /// The boot heap's freeze in steady state (step 2, the foreman's clause):
 /// once a workload has run once, running it again collects without a
-/// frozen-reachability pass. Each shape runs a warm-up and then 0 or 5 more
-/// rounds, a collection after each; the passes (`ROBIGO_GC_STATS`) must be
-/// the same, so a write that notes in a loop fails here and names its
-/// shape. Dispatch cycles 400 generics through S3's method memo (256
+/// frozen-reachability pass. Each shape runs a warm-up and then 0 or
+/// `ROUNDS` more rounds, a collection after each; the passes
+/// (`ROBIGO_GC_STATS`) must be the same, so a write that notes in a loop
+/// fails here and names its shape. Dispatch cycles 400 generics through S3's method memo (256
 /// entries), which replaced its entries' globals at every call: before
 /// globals stopped being freeze roots, a pass at every collection. Run with
 /// the freeze's check at every collection, so that a missed note (frozen
@@ -758,7 +762,11 @@ fn no_frozen_reachability_pass_in_steady_state() {
     }
     // (name, setup, body, iterations per round, gctorture: a collection at
     // every allocation, as rt-ci's E3 steps run: deep frames there were the
-    // case the foreman named, tests/r/lang/tailcall-frames.R)
+    // case the foreman named, tests/r/lang/tailcall-frames.R. Turned on by
+    // the script after its setup, `gctorture(TRUE)`, so the shape's own
+    // work runs under it and the boot does not: the boot under gctorture
+    // is E3's and the crates' gctorture step's, and it was most of this
+    // test's time with debug assertions on)
     const SHAPES: &[(&str, &str, &str, u32, bool)] = &[
         (
             "dispatch",
@@ -806,7 +814,7 @@ fn no_frozen_reachability_pass_in_steady_state() {
     let dir = Dir(std::env::temp_dir().join(format!("robigo-freeze-steady-{}", std::process::id())));
     std::fs::create_dir_all(&dir.0).unwrap();
     let dir = &dir.0;
-    let passes = |file: &std::path::Path, jit: &str, torture: bool| -> u64 {
+    let passes = |file: &std::path::Path, jit: &str| -> u64 {
         let (out, err, status) = boot(
             &[
                 std::ffi::OsStr::new("--vanilla"),
@@ -823,7 +831,7 @@ fn no_frozen_reachability_pass_in_steady_state() {
                 ("ROBIGO_GC_FREEZE_CHECK", "1".as_ref()),
                 ("ROBIGO_GC_STATS", "1".as_ref()),
                 ("R_ENABLE_JIT", jit.as_ref()),
-                ("ROBIGO_GCTORTURE", if torture { "1" } else { "0" }.as_ref()),
+                ("ROBIGO_GCTORTURE", "0".as_ref()),
             ],
         );
         assert!(status == Some(0) && out.contains("ok"), "{}: {out}\n{err}", file.display());
@@ -834,22 +842,34 @@ fn no_frozen_reachability_pass_in_steady_state() {
         let n = line.split(", ").find(|p| p.ends_with("frozen-reachability passes")).and_then(|p| p.split(' ').next());
         n.and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("unreadable: {line}"))
     };
+    // The steady rounds: 5, and 1 with debug assertions on (the
+    // debug-assertions shard's 5-minute budget: the five rounds took boot_db
+    // from 0.7 s to 25-38 s there). One round still fails on any write that
+    // notes each time the body runs, per iteration or per round: S3's memo,
+    // cycling 400 generics through 256 entries, refills every round. Only
+    // the release run's five rounds see a source with a longer period (none
+    // is known). Measured on the debug-assertions binary, seconds per shape
+    // (both JIT levels, 0 and ROUNDS rounds), on a 24-CPU workstation:
+    // dispatch 0.5, conditions 1.6, apply 0.9, environments 0.6, jit 0.3,
+    // deep frames under gctorture 10.7; 14.7 s in all, against 40.4 s with
+    // five rounds and the boot under gctorture.
+    const ROUNDS: u32 = if cfg!(debug_assertions) { 1 } else { 5 };
     for &(shape, setup, body, n, torture) in SHAPES {
         let file = |rounds: u32| {
             let f = dir.join(format!("{shape}-{rounds}.R"));
             std::fs::write(
                 &f,
-                format!("{setup}\ng <- function() {{ for (i in 1:{n}) {{ {body} }}; NULL }}\ninvisible(gc())\ng()\ninvisible(gc())\nfor (.r in seq_len({rounds})) {{ g(); invisible(gc()) }}\ncat('ok\\n')\n"),
+                format!("{setup}\ng <- function() {{ for (i in 1:{n}) {{ {body} }}; NULL }}\n{}invisible(gc())\ng()\ninvisible(gc())\nfor (.r in seq_len({rounds})) {{ g(); invisible(gc()) }}\ncat('ok\\n')\n", if torture { "gctorture(TRUE)\n" } else { "" }),
             )
             .unwrap();
             f
         };
         for jit in ["3", "0"] {
-            let (warm, steady) = (passes(&file(0), jit, torture), passes(&file(5), jit, torture));
+            let (warm, steady) = (passes(&file(0), jit), passes(&file(ROUNDS), jit));
             assert_eq!(
                 steady,
                 warm,
-                "{shape} (R_ENABLE_JIT={jit}): {} frozen-reachability passes in 5 steady rounds",
+                "{shape} (R_ENABLE_JIT={jit}): {} frozen-reachability passes in {ROUNDS} steady round(s)",
                 steady - warm
             );
         }

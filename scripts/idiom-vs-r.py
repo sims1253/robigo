@@ -48,6 +48,13 @@ collections inside most allocating rows' windows
 (docs/ledger/g3/2026-11-23-row-collections.md). Both sides' counts are in
 the table and the JSON.
 
+The same runs refuse a row whose script fails on either side: it exits
+non-zero, or prints an R error on stderr (a line starting `Error`). Every
+failing row is named with the side, its exit status and the error's first
+lines, before anything is measured: a row that stops at an error would
+measure the error, and robigo-rt's heap report reads zero collections
+from a failed run.
+
 robigo runs as `BIN SCRIPT` with ROBIGO_COMPILE=1 (the VM); --robigo-env
 K=V adds or overrides its environment, e.g. ROBIGO_JIT=0 for today's
 robigo with the JIT off, and --gnur-env K=V GNU R's. --robigo BIN can be
@@ -198,28 +205,29 @@ class Meter:
         """The collections robigo-rt makes in one run of the loop of `k`
         iterations (its heap's ROBIGO_GC_STATS=1 report), not under
         callgrind; None from a binary that makes no such report (today's
-        robigo, not robigo-rt)."""
+        robigo, not robigo-rt). RowFailed if the run fails (row_failure)."""
         script = self.r_script(setup, body, k)
         p = subprocess.run([self.robigo, script], capture_output=True, text=True,
                            env={**os.environ, **perf.BASE_ENV, "R_DEFAULT_PACKAGES": "NULL",
                                 **self.robigo_env, **(env or {}), "ROBIGO_GC_STATS": "1"})
-        if p.returncode:
-            raise SystemExit(f"{self.robigo} {script} failed:\n{p.stderr[-2000:]}")
+        if e := row_failure("robigo-rt", p):
+            raise RowFailed("robigo", e)
         m = re.search(r"^robigo gc: collections (\d+)", p.stderr, re.M)
         return int(m.group(1)) if m else None
 
     def gnur_collections(self, setup, body, k, env=None):
         """The collections GNU R makes in one run of the loop of `k`
         iterations: gcinfo(TRUE)'s report of each one, in a run of its own
-        (the measured script stays as it is), not under callgrind."""
+        (the measured script stays as it is), not under callgrind.
+        RowFailed if the run fails (row_failure)."""
         script = os.path.join(self.tmp, f"gcinfo-{k}.R")
         with open(script, "w") as f:
             f.write(f"invisible(gcinfo(TRUE))\n{setup}\n"
                     f"g <- function() {{ for (i in 1:{k}) {{ {body} }}; NULL }}\ng()\n")
         p = subprocess.run([self.r_bin, "--vanilla", "--no-echo", "-f", script], capture_output=True, text=True,
                            env={**os.environ, **perf.BASE_ENV, "R_DEFAULT_PACKAGES": "NULL", **self.gnur_run_env(env)})
-        if p.returncode:
-            raise SystemExit(f"{self.r_bin} {script} failed:\n{p.stderr[-2000:]}")
+        if e := row_failure("GNU R", p):
+            raise RowFailed("gnur", e)
         return len(re.findall(r"^Garbage collection \d+ ", p.stderr, re.M))
 
     def alloc_counts(self, script):
@@ -252,6 +260,27 @@ class Meter:
             f.write(c_source(idiom))
         subprocess.run([self.cc, *C_FLAGS, "-o", exe, src], check=True)
         return self.per_iteration(f"{idiom['name']}-floor", idiom["n"], lambda k, out: self.refs([exe, str(k)], out, {}))
+
+
+class RowFailed(Exception):
+    """A row's script failed on one side ("robigo" or "gnur", `side`): the
+    message names the exit status and the R error's first lines
+    (row_failure)."""
+
+    def __init__(self, side, message):
+        super().__init__(message)
+        self.side = side
+
+
+def row_failure(who, p):
+    """Why one run of a row's script fails, or None: a non-zero exit, or an
+    R error printed on stderr (a line starting `Error`), whatever the exit
+    status says."""
+    errs = [line for line in p.stderr.splitlines() if re.match(r"Error\b", line)]
+    if not p.returncode and not errs:
+        return None
+    tail = "; ".join(errs[:2]) or (p.stderr.strip().splitlines() or ["no output"])[-1]
+    return f"{who} exits {p.returncode}: {tail}"
 
 
 def ratio(a, b):
@@ -423,22 +452,29 @@ def cmd_rows(a, m):
     rows = load_rows(a.rows, a.filter)
     renv = {**m.robigo_env}
     # each row's collections at N and 2N, k = 0, checked before anything is
-    # measured: robigo-rt's refuse the row (collection_error), GNU R's are
-    # reported
+    # measured: a failing script refuses the row on either side
+    # (row_failure), robigo-rt's collections refuse it (collection_error),
+    # GNU R's are reported
     colls = {}
     errors = []
     for d in rows:
         heap = d.get("heap") or {}
         c = {}
-        if not a.no_robigo:
-            c["robigo"] = [m.robigo_collections(d["setup"], d["body"], k, heap) for k in (d["n"], 2 * d["n"])]
+        try:
+            if not a.no_robigo:
+                c["robigo"] = [m.robigo_collections(d["setup"], d["body"], k, heap) for k in (d["n"], 2 * d["n"])]
+            if not a.no_r:
+                c["gnur"] = [m.gnur_collections(d["setup"], d["body"], k, heap) for k in (d["n"], 2 * d["n"])]
+        except RowFailed as e:
+            where = f" ({boot_of({**renv, **heap})})" if e.side == "robigo" else ""
+            errors.append(f"row `{d['name']}`: {e}{where}: the script must run clean on both sides to be measured")
+            continue
+        if "robigo" in c:
             if c["robigo"][0] is None:
                 print(f"idiom-vs-r: {m.robigo} reports no collections (not robigo-rt?): the rows' windows are "
                       "not checked", file=sys.stderr)
             elif e := collection_error(d, c["robigo"], d["n"], {**renv, **heap}):
                 errors.append(e)
-        if not a.no_r:
-            c["gnur"] = [m.gnur_collections(d["setup"], d["body"], k, heap) for k in (d["n"], 2 * d["n"])]
         colls[d["name"]] = c
     if errors:
         raise SystemExit("\n".join(f"idiom-vs-r: {e}" for e in errors))
@@ -463,7 +499,10 @@ def cmd_rows(a, m):
                 if k:
                     # a shift's strings can move the collector's cycle into
                     # the window: checked again
-                    c = [m.robigo_collections(setup, d["body"], j, heap) for j in (d["n"], 2 * d["n"])]
+                    try:
+                        c = [m.robigo_collections(setup, d["body"], j, heap) for j in (d["n"], 2 * d["n"])]
+                    except RowFailed as e:
+                        raise SystemExit(f"idiom-vs-r: row `{d['name']}`: {e} (heap shift k = {k})")
                     if e := collection_error(d, c, d["n"], {**renv, **heap}):
                         raise SystemExit(f"idiom-vs-r: {e} (heap shift k = {k})")
                 r = m.robigo_iter(setup, d["body"], d["n"], f"{tag}{k}-", heap)
