@@ -68,30 +68,13 @@ pub(crate) fn value<'s>(
                 None => return Ok(None),
             }
         }
-        // `eval` of byte code (eval.rs's BCODESXP arm): its translation,
-        // unless that arm would evaluate the source instead. Its own arm, so
-        // that a call's arm is the one it was (merged, the arm's type test
-        // cost +0.1% on binarytrees; `run` is inlined into both)
-        // (the cheap refusals first: no translation yet, or code that is not
-        // early-pure, decided once at its build, before any variable is
-        // read: translated base code passes such arguments on every call,
-        // and lapply paid +0.25% for reading them to no end)
-        BCODESXP => {
-            // SAFETY: the rooted byte code's 4th word is R_NilValue, its
-            // translation's code object, or a translation cache's stub (no
-            // code object: None).
-            let Some(c) = (unsafe { crate::code::cached(cx, e.aux(), Profile::Bc) }) else { return Ok(None) };
-            // SAFETY: a live code object.
-            if !unsafe { crate::code::early_pure(c) } || !bytecode_runs(cx, expr) {
-                return Ok(None);
-            }
-            // SAFETY: the code is live, the environment rooted, and nothing
-            // collects before the run ends.
-            match unsafe { run(cx, c, rho.bind(cx).sexp()) } {
-                Some(x) => x,
-                None => return Ok(None),
-            }
-        }
+        // byte code itself (a translated call's promise code): out of line,
+        // so that `value` is the code it was for a symbol and a call (its
+        // arm inlined here moved the call arm's code: binarytrees +0.1%)
+        BCODESXP => match bytecode_value(cx, expr, rho) {
+            Some(x) => x,
+            None => return Ok(None),
+        },
         _ => return Ok(None),
     };
     let x = cx.retry_alloc(|cx| crate::vm::box_slot(cx, slot))?;
@@ -100,13 +83,36 @@ pub(crate) fn value<'s>(
     Ok(Some(s.root(cx, unsafe { Ref::from_sexp(x, cx) })))
 }
 
+/// The value of the byte code `expr` (eval.rs's BCODESXP arm) computed
+/// early, as [`value`]'s: its translation run by [`run`], when an earlier
+/// force made it (a translation cache's stub is none) and it is early-pure.
+/// The cheap refusals first, before any variable is read: no translation,
+/// or code [`crate::code::early_pure`] does not mark (translated base code
+/// passes such arguments on every call: lapply paid +0.25% reading them to
+/// no end), then the arm's own conditions ([`bytecode_runs`]).
+#[inline(never)]
+fn bytecode_value(cx: &Cx, expr: Root<'_>, rho: Root<'_>) -> Option<Slot> {
+    let e = expr.bind(cx).sexp();
+    // SAFETY: the rooted byte code's 4th word is R_NilValue, its
+    // translation's code object, or a translation cache's stub (no code
+    // object: None).
+    let c = unsafe { crate::code::cached(cx, e.aux(), Profile::Bc) }?;
+    // SAFETY: a live code object.
+    if !unsafe { crate::code::early_pure(c) } || !bytecode_runs(cx, expr) {
+        return None;
+    }
+    // SAFETY: the code is live, the environment rooted, and nothing
+    // collects before the run ends.
+    unsafe { run(cx, c, rho.bind(cx).sexp()) }
+}
+
 /// Whether eval.rs's BCODESXP arm would run the byte code `expr` (and so
 /// whether its early value is the one a force would make): not when the
 /// `Eval` profile is forced, byte code disabled, or its version is not one
 /// bcEval runs (the arm evaluates the source then); nor with early byte
-/// code turned off ([`crate::set_early_bytecode`], for tests). Out of line:
-/// `value`'s common case is a symbol or a call.
-#[inline(never)]
+/// code turned off ([`crate::set_early_bytecode`], for tests). Inlined into
+/// [`bytecode_value`], its one caller.
+#[inline]
 fn bytecode_runs(cx: &Cx, expr: Root<'_>) -> bool {
     let st = crate::prims::state(cx);
     st.early_bytecode.get()
@@ -216,8 +222,8 @@ pub fn poison_deaths(regs: &mut [Slot], i: &Ins, at: usize) {
 /// # Safety
 /// `code` is a live code object and `rho` a live environment; nothing may
 /// collect while this runs (it does not allocate).
-// (inlined into both of `value`'s arms: called from two places it was not,
-// +0.49% on binarytrees, step 1a)
+// (inlined into `value` and into `bytecode_value`: called from two places
+// it was not, +0.49% on binarytrees, step 1a)
 #[inline(always)]
 unsafe fn run(cx: &Cx, code: Sexp, rho: Sexp) -> Option<Slot> {
     // SAFETY: the caller's contract.
