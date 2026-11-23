@@ -271,15 +271,17 @@ The default flips there, when all four clauses hold on the three boots.
 
 What remains is the freeze's own walk in that collection, which the fold removes. #959's extra cost was mostly `thaw_with_referrers`: it built a reverse-edge map over the whole frozen set, a cost of the set's size, to thaw the few frozen referrers of weak keys and external data (about 20 under the rdb boot). It was not the freeze undoing itself.
 
-**The three starts' memory, this PR against main 0007ddf33** (`--vanilla -e 1`, `R_DEFAULT_PACKAGES=NULL`; medians, 21 runs for the peak, 61 for anonymous):
+**The three starts, this PR against main dff5cef65,** by X's `scripts/rt-startup.py` (#978): each binary boots from the trees its own build writes, in a scratch directory. Instructions are callgrind's, over the heap shifts; memory is the median:
 
-| boot | total peak (`VmHWM`), freeze off / on | anonymous (`RssAnon`) |
-|---|---|---|
-| interim loader | +4.3% / +4.4% (9,840 → 10,268 kB) | +0.8% (1,968 → 1,984 kB) |
-| rdb, JIT on | +1.5% / +1.5% | +1.2% (6,864 → 6,944 kB; main's interquartile range 6,854–6,938) |
-| rdb, JIT off | +1.4% / +1.3% | +0.2% |
+| boot | instructions | anonymous peak (`RssAnon`) | total peak RSS (`VmHWM`) |
+|---|---|---|---|
+| interim loader | 15,276,122 → 15,311,164 (+0.23%) | 1,880 → 1,884 KiB (+0.2%) | 10,156 → 9,824 KiB (−3.3%) |
+| rdb, JIT on | 92,449,565 → 92,342,593 (−0.12%) | 6,944 → 6,952 KiB (+0.1%) | 15,856 → 15,724 KiB (−0.8%) |
+| rdb, JIT off | 49,970,316 → 49,796,054 (−0.35%) | 4,684 → 4,688 KiB (+0.1%) | 13,596 → 13,396 KiB (−1.5%) |
 
-The total peak's growth is file-backed: +388 kB under the interim loader, while `.text` is 7 KB *smaller* than main's (4,810,593 against 4,817,889 bytes). It is the fault-around layout effect X measured for the whole binary (which pages of the text a start touches), not memory a session allocates. X's link-time function order addresses it for everyone. Anonymous memory moves within its run-to-run spread.
+With `ROBIGO_GC_FREEZE=1` the three are the same within 0.02% (the boundary only marks blocks). No number moves more than +2%.
+
+A first measurement by `/proc` from inside R, against main 0007ddf33 with the checkouts' own trees, read the interim loader's total peak as +4.3%. `rt-startup.py`'s exact reading above supersedes it: the difference was the trees and the method, not this PR's code.
 
 **The gate on this PR's head** (f58cc9a86, before this entry):
 - the full `scripts/rt-ci.py`: exit 0, every step, 62.1 min, the rdb crosscheck comparing 98,890;
