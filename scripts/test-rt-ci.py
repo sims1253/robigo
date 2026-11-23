@@ -462,6 +462,10 @@ class RtCi(unittest.TestCase):
         for v in ("180", ""):    # (present, even empty, is set)
             with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUT": v}):
                 self.assertNotIn("ROBIGO_CONF_TIMEOUTS", rt.every_cpu([(conf[0], {}, conf[2])])[0][1])
+        for bad in ("tests/rt/a.R", "tests/rt/a.R=soon", "=90"):
+            with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUTS": bad}), \
+                    self.assertRaisesRegex(SystemExit, "is not CASE=SECS"):
+                rt.every_cpu([(conf[0], {}, conf[2])])
         with mock.patch.dict(os.environ, {"ROBIGO_CONF_TIMEOUTS": "tests/rt/a.R=90,tests/rt/a.R=91"}), \
                 self.assertRaisesRegex(SystemExit, "names 'tests/rt/a.R' twice"):
             rt.every_cpu([(conf[0], {}, conf[2])])

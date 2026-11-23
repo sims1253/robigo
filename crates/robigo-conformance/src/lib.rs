@@ -811,8 +811,21 @@ fn slots_from_env() -> Result<Option<(PathBuf, usize)>, String> {
 /// pool's directory could replace a slot file (scripts/rt-ci.py refuses a
 /// pool that is not private).
 fn private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    // an existing one must be private too: this user's, a directory, no
+    // group or other bits (as scripts/rt-ci.py checks the one it names)
+    let m = std::fs::symlink_metadata(dir)?;
+    // SAFETY: getuid() has no preconditions and cannot fail.
+    #[allow(unsafe_code)]
+    let me = unsafe { libc::getuid() };
+    if !m.is_dir() || m.uid() != me || m.mode() & 0o077 != 0 {
+        return Err(std::io::Error::other(format!(
+            "not a private directory of this user's (mode {:o}): another user could replace a slot file",
+            m.mode() & 0o7777
+        )));
+    }
+    Ok(())
 }
 
 /// A free slot of the pool, waiting for one; none without a pool. The
@@ -822,6 +835,8 @@ fn take_slot(pool: &Option<(PathBuf, usize)>) -> Slot {
     let Some((dir, n)) = pool else { return Slot(None) };
     private_dir(dir).unwrap_or_else(|e| panic!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()));
     let start = (std::process::id() as usize).wrapping_mul(31).wrapping_add(thread_index()) % n;
+    let since = Instant::now();
+    let mut said = Duration::ZERO;
     loop {
         for j in 0..*n {
             let path = dir.join(format!("slot-{}", (start + j) % n));
@@ -839,6 +854,17 @@ fn take_slot(pool: &Option<(PathBuf, usize)>) -> Slot {
                 // wait forever, before any case's timeout starts
                 Err(std::fs::TryLockError::Error(e)) => panic!("lock {}: {e}", path.display()),
             }
+        }
+        // (a stuck pool told apart from a hung case: a line after 10 s of
+        // waiting, then every minute; no cap)
+        let waited = since.elapsed();
+        if waited >= said + if said.is_zero() { Duration::from_secs(10) } else { Duration::from_secs(60) } {
+            said = waited;
+            eprintln!(
+                "robigo-conformance: waiting {} s for a conformance slot ({n} in {})",
+                waited.as_secs(),
+                dir.display()
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     }

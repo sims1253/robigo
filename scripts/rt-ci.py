@@ -385,7 +385,10 @@ def every_cpu(steps):
                     for i in v.split(","):
                         if not i.strip():
                             continue
-                        k, s = i.rsplit("=", 1)
+                        k, _, s = i.rpartition("=")
+                        if not k.strip() or not s.strip().isdigit():
+                            # (the runner's own message for it)
+                            raise SystemExit(f"rt-ci: ROBIGO_CONF_TIMEOUTS: {i!r} is not CASE=SECS")
                         if k.strip() in out:
                             # (the runner refuses one list naming a case twice)
                             raise SystemExit(f"rt-ci: ROBIGO_CONF_TIMEOUTS names {k.strip()!r} twice")

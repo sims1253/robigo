@@ -452,7 +452,8 @@ fn a_case_time_leaves_out_the_boot_probe() {
 /// descendant that keeps stdout open (a background `sleep`) must not hold
 /// the slot, or one slot would serialize on it (or deadlock on a nested
 /// run). Two cases, one slot, each leaving a 3 s `sleep` on its stdout:
-/// about 3 s in all, not 6.
+/// the second starts before the first's sleep ends (the cases' own stamps,
+/// no wall-clock margin).
 #[test]
 fn a_cases_slot_is_released_when_its_process_ends() {
     use std::os::unix::fs::PermissionsExt;
@@ -467,18 +468,28 @@ fn a_cases_slot_is_released_when_its_process_ends() {
             "1\n",
         );
     }
+    let log = f.root().join("stamps");
     let fake = f.root().join("lingering-fake");
-    std::fs::write(&fake, "#!/bin/sh\necho 1\nsleep 3 &\n").unwrap();
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\necho \"$1 start $(date +%s.%N)\" >> {}\necho 1\nsleep 3 &\n", log.display()),
+    )
+    .unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut o = opts(&RT, fake);
     o.filter = Some("tests/rt/smoke".into());
     o.jobs = 2;
     o.slots = Some((pool.clone(), 1));
-    let t0 = std::time::Instant::now();
     let r = run(f.root(), &RT, &o).unwrap();
-    let wall = t0.elapsed();
     assert_eq!(r.outcomes.len(), 2);
-    assert!(wall < std::time::Duration::from_millis(5500), "the slot waited for the pipes: {wall:?}");
+    let mut starts: Vec<f64> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.split_whitespace().nth(2).unwrap().parse().unwrap())
+        .collect();
+    starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(starts.len(), 2);
+    assert!(starts[1] - starts[0] < 3.0, "the slot waited for the first case's pipes: {starts:?}");
     let _ = std::fs::remove_dir_all(&pool);
 }
 
@@ -501,61 +512,186 @@ fn a_case_starts_with_sigint_at_its_default() {
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut o = opts(&RT, fake);
     o.filter = Some("tests/rt/smoke/sig.R".into());
-    // SAFETY: signal() only changes this process's disposition, restored
-    // below; the other tests' cases go through the same reset.
-    let old = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
-    let r = run(f.root(), &RT, &o);
-    // SAFETY: as above.
-    unsafe { libc::signal(libc::SIGINT, old) };
-    let r = r.unwrap();
+    // the process's SIGINT ignored for the run, restored on drop (a panic
+    // included: the binary's later tests must not inherit it)
+    struct Restore(libc::sighandler_t);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: signal() only changes this process's disposition.
+            unsafe { libc::signal(libc::SIGINT, self.0) };
+        }
+    }
+    // SAFETY: as above; the other tests' cases go through the same reset.
+    let _restore = Restore(unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) });
+    let r = run(f.root(), &RT, &o).unwrap();
     assert!(r.outcomes[0].passed(), "the case saw SIGINT ignored: {}", r.outcomes[0].diff);
 }
 
-/// The machine-wide slot pool (`ROBIGO_CONF_SLOTS_DIR`): two runs at once,
-/// two cases of 1 s each, share one slot, so the four cases run one after
-/// the other; each case's time (and its limit, 1.5 s here) counts from its
-/// own start, so none times out waiting and none reports the wait.
+/// A fake runtime that notes each case's own start and end (`date +%s.%N`)
+/// in `log`, sleeping `secs` in between, then prints the case.
+fn stamping_fake(root: &Path, log: &Path, secs: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let fake = root.join(format!("stamp-fake-{secs}"));
+    let body = format!(
+        "#!/bin/sh\necho \"$1 start $(date +%s.%N)\" >> {log}\nsleep {secs}\necho \"$1 end $(date +%s.%N)\" >> {log}\nexec cat \"$1\"\n",
+        log = log.display()
+    );
+    std::fs::write(&fake, body).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake
+}
+
+/// Each case's (start, end) from a stamping fake's log.
+fn intervals(log: &Path) -> Vec<(f64, f64)> {
+    let text = std::fs::read_to_string(log).unwrap();
+    let mut open = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        let at: f64 = w[2].parse().unwrap();
+        if w[1] == "start" {
+            open.insert(w[0].to_string(), at);
+        } else {
+            out.push((open[w[0]], at));
+        }
+    }
+    out
+}
+
+/// The machine-wide slot pool (`ROBIGO_CONF_SLOTS_DIR`), asserted without a
+/// wall-clock margin: two runs at once, two cases each, one slot. No two
+/// cases' own intervals (stamped by the cases) overlap; with as many slots
+/// as cases they do. Limits are far out of load's reach (60 s).
 #[test]
-fn runs_sharing_a_slot_pool_take_turns_and_count_their_own_time() {
-    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&pool);
-    let trees: Vec<Fixture> = (0..2)
-        .map(|k| {
-            let f = rt_tree(&format!("slots-{k}"));
-            f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
-            f
-        })
-        .collect();
-    let t0 = std::time::Instant::now();
-    let reports: Vec<(robigo_conformance::Report, String)> = std::thread::scope(|s| {
-        let runs: Vec<_> = trees
-            .iter()
-            .map(|f| {
-                let pool = pool.clone();
-                s.spawn(move || {
-                    let report = f.root().join("times.tsv");
-                    let mut o = opts(&RT, slow());
-                    o.filter = Some("tests/rt/smoke".into());
-                    o.jobs = 2;
-                    o.timeout = std::time::Duration::from_millis(1500);
-                    o.slots = Some((pool, 1));
-                    o.times = Some(report.clone());
-                    let r = run(f.root(), &RT, &o).unwrap();
-                    (r, std::fs::read_to_string(&report).unwrap())
-                })
+fn runs_sharing_a_slot_pool_take_turns() {
+    for (slots, overlap) in [(1, false), (4, true)] {
+        let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-{}-{slots}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&pool);
+        let log = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("stamps-{}-{slots}", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let trees: Vec<Fixture> = (0..2)
+            .map(|k| {
+                let f = rt_tree(&format!("slots-{slots}-{k}"));
+                f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+                f
             })
             .collect();
-        runs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let wall = t0.elapsed();
-    assert!(wall >= std::time::Duration::from_secs(4), "four 1 s cases on one slot took {wall:?}");
-    for (r, times) in &reports {
-        assert!(r.outcomes.iter().all(|c| c.passed()), "{:?}", r.outcomes.iter().map(|c| &c.diff).collect::<Vec<_>>());
-        let secs: Vec<f64> = times.lines().skip(1).map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
-        assert_eq!(secs.len(), 2, "{times}");
-        assert!(secs.iter().all(|s| *s < 1.4), "a case's time holds the wait for its slot: {times}");
+        std::thread::scope(|s| {
+            for f in &trees {
+                let (pool, log) = (pool.clone(), log.clone());
+                s.spawn(move || {
+                    let mut o = opts(&RT, stamping_fake(f.root(), &log, "1"));
+                    o.filter = Some("tests/rt/smoke".into());
+                    o.jobs = 2;
+                    o.timeout = std::time::Duration::from_secs(60);
+                    o.slots = Some((pool, slots));
+                    let r = run(f.root(), &RT, &o).unwrap();
+                    assert!(
+                        r.outcomes.iter().all(|c| c.passed()),
+                        "{:?}",
+                        r.outcomes.iter().map(|c| &c.diff).collect::<Vec<_>>()
+                    );
+                });
+            }
+        });
+        let mut iv = intervals(&log);
+        assert_eq!(iv.len(), 4);
+        iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let overlaps = iv.windows(2).any(|w| w[1].0 < w[0].1);
+        assert_eq!(overlaps, overlap, "{slots} slot(s): {iv:?}");
+        let _ = std::fs::remove_dir_all(&pool);
+        let _ = std::fs::remove_file(&log);
     }
+}
+
+/// An existing pool directory that others can write in is refused (a slot
+/// file there could be replaced), not used: the run stops ("not a private
+/// directory", from a worker: the scope re-raises it as its own panic; the
+/// other pool tests show a private one works).
+#[test]
+#[should_panic]
+fn a_pool_directory_others_can_write_in_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-open-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&pool);
+    std::fs::create_dir_all(&pool).unwrap();
+    std::fs::set_permissions(&pool, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let f = rt_tree("slots-open");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.slots = Some((pool, 1));
+    let _ = run(f.root(), &RT, &o);
+}
+
+/// A case's clock starts at its slot, not while it waits for one: a run
+/// holds the only slot with a 3 s case; once that case has stamped its
+/// start, a second run's quick case, at a 2 s limit, waits for the slot and
+/// passes, and its reported time leaves the wait out. (The order is made
+/// by the test, not by a race; the slow case's own limit, 60 s, is far out
+/// of load's reach.)
+#[test]
+fn a_cases_clock_starts_when_it_takes_its_slot() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-clock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    let log = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("stamps-clock-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let slow = rt_tree("slots-clock-slow");
+    let quick = rt_tree("slots-clock-quick");
+    let report = quick.root().join("times.tsv");
+    let fake = |f: &Fixture, secs: &str| {
+        let p = f.root().join("clock-fake");
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\necho \"$1 start $(date +%s.%N)\" >> {log}\nsleep {secs}\nexec cat \"$1\"\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    };
+    let mut so = opts(&RT, fake(&slow, "3"));
+    so.filter = Some("tests/rt/smoke".into());
+    so.timeout = std::time::Duration::from_secs(60);
+    so.slots = Some((pool.clone(), 1));
+    let mut qo = opts(&RT, fake(&quick, "0"));
+    qo.filter = Some("tests/rt/smoke".into());
+    qo.timeout = std::time::Duration::from_secs(2);
+    qo.slots = Some((pool.clone(), 1));
+    qo.times = Some(report.clone());
+    let (asked, quick_result) = std::thread::scope(|s| {
+        let h = s.spawn(|| run(slow.root(), &RT, &so).unwrap());
+        // the slow case holds the slot once it has stamped its start
+        while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains(" start ")) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let asked = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let q = run(quick.root(), &RT, &qo).unwrap();
+        assert!(h.join().unwrap().outcomes.iter().all(|c| c.passed()));
+        (asked, q)
+    });
+    assert!(
+        quick_result.outcomes.iter().all(|c| c.passed()),
+        "the wait counted: {:?}",
+        quick_result.outcomes.iter().map(|c| &c.diff).collect::<Vec<_>>()
+    );
+    let starts: Vec<f64> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.split_whitespace().nth(2).unwrap().parse().unwrap())
+        .collect();
+    let quick_started = starts.iter().cloned().fold(f64::MIN, f64::max);
+    let waited = quick_started - asked;
+    let times = std::fs::read_to_string(&report).unwrap();
+    let reported: f64 = times.lines().nth(1).unwrap().split('\t').next().unwrap().parse().unwrap();
+    // it waited for the slot, longer than its 2 s limit, and its time does
+    // not hold that wait
+    assert!(waited > 2.0, "the quick case did not wait for the slot: {waited}");
+    assert!(reported < waited, "the quick case's time ({reported} s) holds its wait ({waited} s)");
+    let _ = std::fs::remove_dir_all(&pool);
+    let _ = std::fs::remove_file(&log);
 }
 
 /// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names
