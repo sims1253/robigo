@@ -388,8 +388,15 @@ fn globals_are_roots_but_not_freeze_roots() {
         assert_eq!(cx.frozen_passes(), before + 1);
         assert!(!cx.is_frozen(both.bind(cx)), "thawed: only the global reaches it");
         assert_eq!(both.bind(cx).as_vector::<f64>().unwrap().get(0), 1.0, "and alive");
+        // a finalizer on it: once the global goes, it dies (an ordinary
+        // object, no frozen referrer keeps it)
+        let nilx = cx.nil().sexp();
+        // SAFETY: a live object of this isolate (the global holds it) as the key.
+        unsafe { cx.new_weak_ref_raw(both.bind(cx).sexp(), nilx, cx.base_env().sexp(), false) }.expect("room");
         cx.release_global(both);
         cx.release_global(g);
+        cx.collect();
+        assert!(cx.finalizers_pending(), "released, the thawed object died");
         cx.check_frozen();
         Ok::<(), crate::RError>(())
     })

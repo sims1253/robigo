@@ -169,10 +169,6 @@ impl EnvState {
         self.cells.get_mut().trace_freeze_values(v);
     }
 
-    /// Record `env`, the environment `makeLazy` gave base's promises (the
-    /// rdb boot's `..lazyLoad` frame, baseloader.R:78), until the boot
-    /// boundary hands it to the heap as a pinned frame (step 2's
-    /// (b), [`EnvState::lazy_frames`]).
     /// The base namespace (immortal, never frozen).
     pub(crate) fn base_ns_raw(&self) -> Sexp {
         self.base_ns
@@ -188,6 +184,13 @@ impl EnvState {
         self.reading_base_file.set(on);
     }
 
+    /// Record `env`, the environment `makeLazy` gave base's promises (the
+    /// rdb boot's `..lazyLoad` frame, baseloader.R:78), until the boot
+    /// boundary hands it to the heap as a pinned frame
+    /// ([`EnvState::lazy_frames`]): a counted exemption that roots nothing
+    /// (a forced promise's PRENV clear over it takes no note while another
+    /// of base's promises still uses it; robigo-heap's
+    /// `Core::freeze_boundary`, step 2's (b)).
     pub(crate) fn note_lazy_frame(&self, env: Sexp) {
         // SAFETY: between R calls; nothing else borrows the list.
         let frames = unsafe { &mut *self.lazy_frames.get() };

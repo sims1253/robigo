@@ -748,7 +748,9 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
 /// the same, so a write that notes in a loop fails here and names its
 /// shape. Dispatch cycles 400 generics through S3's method memo (256
 /// entries), which replaced its entries' globals at every call: before
-/// globals stopped being freeze roots, a pass at every collection.
+/// globals stopped being freeze roots, a pass at every collection. Run with
+/// the freeze's check at every collection, so that a missed note (frozen
+/// garbage no pass removes) fails here too.
 #[test]
 fn no_frozen_reachability_pass_in_steady_state() {
     if !tree_made() {
@@ -786,8 +788,15 @@ fn no_frozen_reachability_pass_in_steady_state() {
             300,
         ),
     ];
-    let dir = std::env::temp_dir().join(format!("robigo-freeze-steady-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = Dir(std::env::temp_dir().join(format!("robigo-freeze-steady-{}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let dir = &dir.0;
     let passes = |file: &std::path::Path, jit: &str| -> u64 {
         let (out, err, status) = boot(
             &[
@@ -797,7 +806,15 @@ fn no_frozen_reachability_pass_in_steady_state() {
                 std::ffi::OsStr::new("-f"),
                 file.as_os_str(),
             ],
-            &[("ROBIGO_GC_FREEZE", "1".as_ref()), ("ROBIGO_GC_STATS", "1".as_ref()), ("R_ENABLE_JIT", jit.as_ref())],
+            // the freeze's check at every collection too: with no pass in
+            // steady state, a missed note would leave frozen garbage for the
+            // session, which I2 reports (Opus step 2 r7 R3)
+            &[
+                ("ROBIGO_GC_FREEZE", "1".as_ref()),
+                ("ROBIGO_GC_FREEZE_CHECK", "1".as_ref()),
+                ("ROBIGO_GC_STATS", "1".as_ref()),
+                ("R_ENABLE_JIT", jit.as_ref()),
+            ],
         );
         assert!(status == Some(0) && out.contains("ok"), "{}: {out}\n{err}", file.display());
         let line = err
@@ -827,5 +844,4 @@ fn no_frozen_reachability_pass_in_steady_state() {
             );
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

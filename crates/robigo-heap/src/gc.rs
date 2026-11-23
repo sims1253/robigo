@@ -692,7 +692,7 @@ pub(crate) unsafe fn log_once(x: Sexp) {
 }
 
 /// A frozen value `old` was overwritten (in a frozen object, or in a freeze
-/// root: a base binding, a `Globals` slot): an edge left the frozen graph,
+/// root: a base binding, an `.Internal`'s slot): an edge left the frozen graph,
 /// so the next collection runs the frozen-reachability pass. Nothing for
 /// any other value (an ordinary or immortal one removes no frozen edge).
 ///
