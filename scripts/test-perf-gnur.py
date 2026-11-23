@@ -4,6 +4,7 @@ how a pull request completes them."""
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -124,7 +125,7 @@ class Inputs(unittest.TestCase):
         for f in ("a.R", "b.R", "notes.txt"):
             open(os.path.join(d, "benchmarks", "mine", f), "w").close()
         c = {"suites": {"mine": {"dir": "benchmarks/mine"}, "ext": {"repo": "x", "commit": "y", "benchmarks": []}}}
-        with mock.patch.object(perf, "ROOT", d):
+        with mock.patch.object(sys.modules["perf_suite"], "ROOT", d):
             got = perf.gnur_inputs(c)
         self.assertIn("benchmarks/mine/a.R", got)
         self.assertIn("benchmarks/mine/b.R", got)
@@ -134,7 +135,7 @@ class Inputs(unittest.TestCase):
         # fails on a listed file it cannot read)
         self.assertNotIn("benchmarks/gnur-known-failures.txt", got)
         open(os.path.join(d, "benchmarks", "gnur-known-failures.txt"), "w").close()
-        with mock.patch.object(perf, "ROOT", d):
+        with mock.patch.object(sys.modules["perf_suite"], "ROOT", d):
             self.assertIn("benchmarks/gnur-known-failures.txt", perf.gnur_inputs(c))
 
     def test_the_job_keys_its_cache_by_those_files(self):
