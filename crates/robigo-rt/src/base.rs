@@ -178,6 +178,19 @@ pub struct Wide {
     by_name: std::collections::HashMap<&'static str, usize, robigo_heap::BuildFx>,
 }
 
+/// `line.splitn(N, ' ')` into a fixed array, with how many fields there
+/// are: the last takes the rest of the line. No allocation (a Vec per line
+/// cost the start ~220k instructions in reallocs).
+fn fields<const N: usize>(line: &'static str) -> ([&'static str; N], usize) {
+    let mut f = [""; N];
+    let mut k = 0;
+    for (j, p) in line.splitn(N, ' ').enumerate() {
+        f[j] = p;
+        k = j + 1;
+    }
+    (f, k)
+}
+
 impl Wide {
     /// The wide base compiled into this binary. Panics if the file is
     /// malformed (a test reads it).
@@ -210,44 +223,44 @@ impl Wide {
             if line.starts_with('#') || line.is_empty() {
                 continue;
             }
-            let f: Vec<&'static str> = line.splitn(5, ' ').collect();
+            let (f, flen) = fields::<5>(line);
             let bad = || format!("line {}: {line:?}", i + 1);
             let form = |src: &'static str, a: &str, b: &str| -> Result<Form, String> {
                 Ok(Form { src, start: num(a, i)?, end: num(b, i)? })
             };
             match f[0] {
-                "def" if f.len() == 5 => {
-                    // NAME SRC START END DEPTH [seq]
-                    let g: Vec<&'static str> = line.split(' ').collect();
-                    let (name, fm, depth) = match g.len() {
+                "def" if flen == 5 => {
+                    // NAME SRC START END DEPTH [seq] (an eighth field: too many)
+                    let (g, glen) = fields::<8>(line);
+                    let (name, fm, depth) = match glen {
                         6 | 7 => (g[1], form(g[2], g[3], g[4])?, num(g[5], i)?),
                         _ => return Err(bad()),
                     };
-                    let seq = g.len() == 7 && g[6] == "seq";
+                    let seq = glen == 7 && g[6] == "seq";
                     match w.names.last_mut() {
                         Some(WideName { name: n, def: Def::Assign(v), .. }) if seq && *n == name => v.push((fm, depth)),
                         _ => w.names.push(WideName { name, def: Def::Assign(vec![(fm, depth)]), after: Vec::new() }),
                     }
                 }
-                "block" if f.len() == 5 => {
-                    let g: Vec<&'static str> = line.split(' ').collect();
+                "block" if flen == 5 => {
+                    let (g, _) = fields::<8>(line);
                     w.names.push(WideName { name: g[1], def: Def::Block(form(g[2], g[3], g[4])?), after: Vec::new() })
                 }
-                "unrun" if f.len() == 5 => {
-                    let g: Vec<&'static str> = line.split(' ').collect();
+                "unrun" if flen == 5 => {
+                    let (g, _) = fields::<8>(line);
                     w.names.push(WideName { name: g[1], def: Def::Unrun(form(g[2], g[3], g[4])?), after: Vec::new() })
                 }
-                "after" if f.len() == 5 => {
-                    let g: Vec<&'static str> = line.split(' ').collect();
+                "after" if flen == 5 => {
+                    let (g, _) = fields::<8>(line);
                     after.push((g[1], form(g[2], g[3], g[4])?))
                 }
                 // SRC START END WHY (the rest of the line)
-                "skip" if f.len() == 5 => w.skips.push((form(f[1], f[2], f[3])?, f[4])),
-                "boot" if f.len() == 4 => w.boot.push(form(f[1], f[2], f[3])?),
-                "c" if f.len() == 2 => w.from_c.push(f[1]),
-                "subst" if f.len() == 3 => w.substs.push((f[1], f[2])),
-                "primitive" if f.len() == 2 => w.primitives.push(f[1]),
-                "internal" if f.len() == 2 => w.internals.push(f[1]),
+                "skip" if flen == 5 => w.skips.push((form(f[1], f[2], f[3])?, f[4])),
+                "boot" if flen == 4 => w.boot.push(form(f[1], f[2], f[3])?),
+                "c" if flen == 2 => w.from_c.push(f[1]),
+                "subst" if flen == 3 => w.substs.push((f[1], f[2])),
+                "primitive" if flen == 2 => w.primitives.push(f[1]),
+                "internal" if flen == 2 => w.internals.push(f[1]),
                 _ => return Err(bad()),
             }
         }
@@ -274,13 +287,19 @@ impl Wide {
     /// use) and the profile's `boot` forms (read and run at load), each
     /// once.
     pub fn files(&self) -> Vec<&'static str> {
-        let mut v: Vec<&'static str> = Vec::new();
+        // (one allocation: every form's file, then sorted and deduplicated)
+        let forms = |n: &WideName| match &n.def {
+            Def::Assign(d) => d.len(),
+            Def::Block(_) | Def::Unrun(_) => 1,
+        } + n.after.len();
+        let mut v: Vec<&'static str> =
+            Vec::with_capacity(self.names.iter().map(forms).sum::<usize>() + self.boot.len());
         for n in &self.names {
-            let forms: Vec<Form> = match &n.def {
-                Def::Assign(d) => d.iter().map(|&(f, _)| f).collect(),
-                Def::Block(f) | Def::Unrun(f) => vec![*f],
-            };
-            v.extend(forms.iter().chain(n.after.iter()).map(|f| f.src));
+            match &n.def {
+                Def::Assign(d) => v.extend(d.iter().map(|(f, _)| f.src)),
+                Def::Block(f) | Def::Unrun(f) => v.push(f.src),
+            }
+            v.extend(n.after.iter().map(|f| f.src));
         }
         v.extend(self.boot.iter().map(|f| f.src));
         v.sort_unstable();
@@ -348,10 +367,22 @@ pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     let wide = Wide::get();
     let lib = dir.join("src/library");
     let files = wide.files();
-    for f in &files {
-        let p = lib.join(f);
-        if !p.is_file() {
-            return Err(format!("{} is missing", p.display()));
+    // each file's path built in one buffer, sized once (a PathBuf per file
+    // grew by reallocs whose layout moved with the checkout path's length)
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let root = lib.as_os_str().as_bytes();
+        let longest = files.iter().map(|f| f.len()).max().unwrap_or(0);
+        let mut buf: Vec<u8> = Vec::with_capacity(root.len() + 1 + longest);
+        for f in &files {
+            buf.clear();
+            buf.extend_from_slice(root);
+            buf.push(b'/');
+            buf.extend_from_slice(f.as_bytes());
+            let p = Path::new(std::ffi::OsStr::from_bytes(&buf));
+            if !p.is_file() {
+                return Err(format!("{} is missing", p.display()));
+            }
         }
     }
     // (set once, by the boot's load)
