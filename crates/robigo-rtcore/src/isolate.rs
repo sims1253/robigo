@@ -669,8 +669,9 @@ impl Cx {
     /// process made, or forget it (`R_TempDir = NULL`, for
     /// `tempdir(check = TRUE)`'s remaking: the old one is then left as it is,
     /// as GNU R leaves it). The current one is removed at the end
-    /// ([`Cx::clean_temp_dir`]: robigo-rt's R_CleanUp, which every way it
-    /// ends goes through, or the isolate's drop).
+    /// ([`Cx::clean_temp_dir`]: robigo-rt's R_CleanUp, which every orderly
+    /// end goes through, or the isolate's drop; a panic past the session's
+    /// reset or an abort removes nothing, as a crash of GNU R's does not).
     pub fn set_temp_dir(&self, dir: Option<Vec<u8>>) {
         *self.iso().temp_dir.borrow_mut() = dir.map(|d| (std::process::id(), d));
     }

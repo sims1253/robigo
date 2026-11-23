@@ -1744,7 +1744,8 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 
 /// `R_CleanTempDir()`'s removal of the session's temporary directory
 /// `dir` (its isolate's, [`crate::Cx::clean_temp_dir`]: R_CleanUp's, on
-/// every way robigo-rt ends, or the isolate's drop).
+/// every orderly end of robigo-rt, or the isolate's drop; not after a panic
+/// past the session's reset or an abort).
 // R: platform.c:R_CleanTempDir
 pub fn remove_temp_dir(dir: &[u8]) {
     remove_tree(dir);
