@@ -100,6 +100,46 @@ boot never reads the cache.**
   on main 17a3d68ca the one word alone gave the interim start +0.68%
   (15,372,768 against 15,268,258).
 
+**Against main 114113d6e** (#984 on main, Wide's tables sized up front):
+scripts/rt-startup.py, each binary from its own packed trees at one path,
+5 runs; minor faults the median of 7 starts; wall time from hyperfine, 60
+runs at a load of about 41:
+
+| start | main 114113d6e | this PR | change |
+|---|---:|---:|---:|
+| interim, instructions | 14,889,275 | 14,881,633 | −0.05% |
+| rdb-jit, instructions | 92,528,723 | 81,446,941 | −11.98% |
+| rdb-nojit, instructions | 50,063,475 | 46,412,759 | −7.29% |
+| rdb-nocache, instructions | 92,730,345 | 92,881,119 | +0.16% |
+| rdb-jit, anonymous peak | 6,928 KiB | 6,776 KiB | −152 KiB |
+| rdb-jit, peak RSS | 15,764 KiB | 16,348 KiB | +584 KiB (+3.7%) |
+| rdb-nojit, anonymous peak | 4,676 KiB | 4,656 KiB | −20 KiB |
+| rdb-nojit, peak RSS | 13,512 KiB | 13,960 KiB | +448 KiB (+3.3%) |
+| rdb-jit, minor faults | 2,106 | 1,898 | |
+| rdb-nojit, minor faults | 1,324 | 1,296 | |
+| rdb-jit, wall | 45.4 ms | 43.2 ms | −4.8% |
+| rdb-nojit, wall | 31.0 ms | 29.8 ms | −3.9% |
+
+- **Peak RSS:** the growth is the `.rtc` files' pages, mapped and file-backed.
+- **`rdb-nocache`:** +0.16% is what the off-switch costs (the record's key
+  and the checks before a miss).
+- **The `OnceCell` on this main:** it does not help the interim row. With
+  `base_src` a `RefCell` again, the start measured 14,691,939, a heap-layout
+  step below. It stays as it is.
+
+**The fallbacks** (rdb-jit from one tree of this PR, callgrind):
+- cache off: 92,782,476 instructions;
+- absent: 92,712,966;
+- stale (another build ID): 92,774,273;
+- unreadable (a directory at each `.rtc`): 93,052,158;
+- zero-length: 92,914,464;
+- cut short of its table: 92,913,399.
+
+Every one has 0 hits and says nothing, and none maps a file it cannot use.
+The unreadable variant's +0.29% is in glibc (`free`, `malloc`'s paths), not
+in work. The zero-length and short ones pay about 62 instructions a fetch
+(27k a start) to rule out a database that did not open.
+
 **`rdb-jit`'s anonymous peak, +176 KiB against a limit of +68.** It was
 the header and entry table read whole, about 62 KiB, and the kept read
 chunks, 128 KiB. The file is now mapped read-only with `MADV_RANDOM`: a

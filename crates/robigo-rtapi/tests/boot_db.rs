@@ -460,6 +460,7 @@ fn a_verification_stopped_for_a_retry_compares_nothing() {
         return;
     }
     let tmp = cached_tree("tcache-verify-retry");
+    let report = tmp.join("crosscheck.txt");
     let (out, err, st) = boot(
         &[
             std::ffi::OsStr::new("--vanilla"),
@@ -468,7 +469,13 @@ fn a_verification_stopped_for_a_retry_compares_nothing() {
         ],
         &[
             ("ROBIGO_RT_CHECKOUT", tmp.as_os_str()),
-            ("ROBIGO_TRANSLATION_CACHE", std::ffi::OsStr::new("verify")),
+            // every hit of the start verified (the crosscheck compares,
+            // never trusts), without ROBIGO_TRANSLATION_CACHE=verify's pass
+            // over the whole cache, which under the knob takes half an hour:
+            // the JIT off, a start's hits are about 140
+            ("ROBIGO_BC_CROSSCHECK", std::ffi::OsStr::new("1")),
+            ("ROBIGO_BC_CROSSCHECK_REPORT", report.as_os_str()),
+            ("R_ENABLE_JIT", std::ffi::OsStr::new("0")),
             ("ROBIGO_TRANSLATION_CACHE_STATS", std::ffi::OsStr::new("1")),
             ("ROBIGO_RETRY_TORTURE", std::ffi::OsStr::new("1")),
         ],
@@ -476,9 +483,13 @@ fn a_verification_stopped_for_a_retry_compares_nothing() {
     let _ = std::fs::remove_dir_all(&tmp);
     assert_eq!((out.as_str(), st), ("55 \n", Some(0)), "{err}");
     let line = err.lines().find(|l| l.starts_with("translation cache: hit ")).unwrap_or_else(|| panic!("{err}"));
+    // ("name N" fields, comma-separated: "verified" is not "unverified")
     let count = |what: &str| -> usize {
-        let at = line.find(what).unwrap_or_else(|| panic!("no '{what}' in {line}")) + what.len();
-        line[at..].trim_start().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse().unwrap()
+        let field = line["translation cache: ".len()..]
+            .split(", ")
+            .find_map(|f| f.strip_prefix(what).and_then(|n| n.strip_prefix(' ')))
+            .unwrap_or_else(|| panic!("no '{what}' in {line}"));
+        field.trim().parse().unwrap()
     };
     assert!(count("verify retried") > 0, "no verification stopped for a retry: {line}");
     assert!(count("verified") > 0, "nothing verified: {line}");
