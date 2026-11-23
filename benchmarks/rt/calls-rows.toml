@@ -476,6 +476,48 @@ writeLines(sprintf("x%d <- %d + 1", 1:5000, 1:5000), src)
 body = 'source(src)'
 n = 4
 
+# Run-once code (E's compile census): each iteration evaluates a call made
+# afresh, which robigo-rt compiles at its first evaluation (eval::expr_code)
+# and GNU R evaluates as an AST. Report-only: no bar or guard cites them.
+# GNU R's counts and robigo-rt's before and after are in the PR that adds
+# them (E's compile scratch buffers).
+
+[[row]]
+name = "toplevel-lines"
+group = "cold"
+note = "a top-level assignment as the REPL reads one: parsed and evaluated once (the parse included), as R_ReplFile does each line of a script"
+setup = ''
+body = 'eval(parse(text = "x1 <- 1 + 1"))'
+n = 1000
+
+[[row]]
+name = "do-call"
+group = "cold"
+note = "do.call(f, list(i, 1)): do_docall builds the call of its values and evaluates it"
+setup = '''
+f <- function(a, b) a + b
+'''
+body = 'do.call(f, list(i, 1))'
+n = 1000
+
+[[row]]
+name = "eval-parse"
+group = "cold"
+note = "eval(parse(text = \"i + 1\")): a freshly parsed call, evaluated once"
+setup = ''
+body = 'eval(parse(text = "i + 1"))'
+n = 500
+
+[[row]]
+name = "map"
+group = "cold"
+note = "Map(f, 1:5, 1:5): mapply's FUN call and its dots[[j]][[i]] arguments, built per call (B's call reuse covers it)"
+setup = '''
+f <- function(x, y) x + y
+'''
+body = 'r <- Map(f, 1:5, 1:5)'
+n = 500
+
 [[row]]
 name = "d0-attr"
 group = "d0"
