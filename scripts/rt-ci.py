@@ -984,6 +984,112 @@ def crate_test_threads(cmd):
             and not (CONFORMANCE in cmd and "--exact" in cmd))
 
 
+# CI's base-subset job (scripts/base-subset.sh --check, in the oracle image)
+# checks that the base subset still traces from the tree's inputs. A local
+# run (no --shard) runs it too when the branch changes one of those inputs
+# against its merge base with origin/main (about 7 min, on those branches
+# only), so the push does not find out first.
+BASE_SUBSET_INPUTS = (
+    "tests/rt/**/*.R",
+    "tests/rt/R-*/**/*.Rstatus",          # the traced cases' recorded status (the rt pin's)
+    "tests/rt/capi/support/*.c",           # the C API cases' package code
+    "benchmarks/rt/calls-rows.toml",
+    "benchmarks/suite/calls.R",
+    "benchmarks/suite/fib.R",
+    "benchmarks/suite/binarytrees.R",
+    "scripts/base-subset*",
+    "scripts/base-wide.R",
+    "scripts/oracle-run.sh",
+    "scripts/oracle-pins.sh",
+    "scripts/oracle-versions",             # the oracle's pin
+    "scripts/perf.py",                     # rows_with_setups, which makes the d2s/e7 row scripts
+    "crates/robigo-rt/proto/base-*.txt",
+    "scripts/r-src.sh",
+)
+BASE_SUBSET_STEP = ("base subset, its inputs changed on this branch (scripts/base-subset.sh --check)", {},
+                    ["scripts/base-subset.sh", "--check"])
+
+
+def rt_pin(root=ROOT):
+    """robigo-rt's GNU R version, scripts/oracle-versions' `rt=` line (as
+    base-subset.sh and ci-image.sh read it)."""
+    with open(os.path.join(root, "scripts", "oracle-versions")) as f:
+        for line in f:
+            if line.startswith("rt="):
+                return line.split("=", 1)[1].strip()
+    raise SystemExit("rt-ci: scripts/oracle-versions has no rt= line")
+
+
+def branch_changes(root=ROOT, base="origin/main"):
+    """The paths this checkout changes against its merge base with `base`:
+    its commits, the staged and the unstaged edits, each on its own (a later
+    edit that undoes a staged or committed one leaves the path changed for
+    the commit that will be pushed), and untracked files. None when git
+    cannot say (no git, no `base`): the caller then owes every check."""
+    def git(*args):
+        try:
+            p = subprocess.run(["git", *args], cwd=root, capture_output=True)
+        except OSError:
+            return None
+        return p.stdout if p.returncode == 0 else None
+    mb = git("merge-base", "HEAD", base)
+    if mb is None:
+        return None
+    mb = os.fsdecode(mb).strip()
+    lists = [git("diff", "--name-only", "-z", "--no-renames", mb, "HEAD"),
+             git("diff", "--name-only", "-z", "--no-renames", "--cached"),
+             git("diff", "--name-only", "-z", "--no-renames"),
+             git("ls-files", "--others", "--exclude-standard", "-z")]
+    if any(x is None for x in lists):
+        return None
+    # (paths as the filesystem's bytes allow: a non-UTF-8 name decodes too)
+    return sorted({os.fsdecode(p) for x in lists for p in x.split(b"\0") if p})
+
+
+# base_subset_owed's reason when git cannot say what the branch changes (a
+# shallow clone, no origin/main): the check is owed, without a changed input
+GIT_CANNOT_COMPARE = "git cannot compare this checkout with origin/main"
+
+
+def base_subset_owed(changed):
+    """Why base-subset's check is owed (the first changed input, or
+    GIT_CANNOT_COMPARE), or None."""
+    if changed is None:
+        return GIT_CANNOT_COMPARE
+    pats = [ci_select.glob_re(p) for p in BASE_SUBSET_INPUTS]
+    for path in changed:
+        if any(r.match(path) for r in pats):
+            return path
+    return None
+
+
+def oracle_problem():
+    """None when scripts/base-subset.sh can run GNU R at the rt pin (its
+    Rscript on PATH, or docker's robigo-oracle:<pin>), else what is missing
+    and the cure."""
+    rt = rt_pin()
+    image = f"robigo-oracle:{rt}"
+    # (from the checkout, as base-subset.sh runs it, and --vanilla: a
+    # caller's .Rprofile must not answer for the R that will run)
+    try:
+        p = subprocess.run(["Rscript", "--vanilla", "-e", "cat(format(getRversion()))"], cwd=ROOT,
+                           capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip() == rt:
+            return None
+    except OSError:    # (missing, or there but not executable: no usable Rscript)
+        pass
+    try:
+        if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0:
+            return None
+    except OSError:
+        return (f"there is no docker for {image} (and no GNU R {rt} Rscript on PATH): "
+                "install docker, or run on a machine with it")
+    ref = "oracle_" + rt.replace(".", "_")
+    return (f"there is no {image} image (and no GNU R {rt} Rscript on PATH). The cure, two minutes: "
+            f"scripts/build-oracle.sh --pull {rt} (docker pull of CI's image, the {ref}= line of "
+            f"scripts/ci-image.sh refs, tagged {image}); or build it: scripts/build-oracle.sh --image {rt}")
+
+
 def metadata():
     p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
                        cwd=ROOT, stdout=subprocess.PIPE, text=True, check=True)
@@ -1053,6 +1159,16 @@ def main(argv):
             print(f"::error::{problem}")
             return 2
     plan = (full_move_steps() if a.full_move else freeze_check_steps() if a.freeze_check else shard_steps(crates, a.shard) if a.shard else builds_first(steps(crates)))
+    if not (a.full_move or a.freeze_check or a.shard):
+        owed = base_subset_owed(branch_changes())
+        if owed:
+            problem = oracle_problem()
+            if problem:
+                why = (f"this branch changes base-subset's inputs ({owed})" if owed != GIT_CANNOT_COMPARE
+                       else f"{GIT_CANNOT_COMPARE}, so it is owed whatever the branch changes")
+                print(f"::error::rt-ci: base-subset's check is owed ({why}), and {problem}")
+                return 2
+            plan = [*plan, BASE_SUBSET_STEP]
     done = []
     try:
         return run_steps(plan, done)

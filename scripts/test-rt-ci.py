@@ -27,6 +27,7 @@ def meta(*pkgs):
 # (every ROBIGO_CONF_* variable, and these)
 CALLER_ENV = ("GITHUB_ACTIONS", "XDG_RUNTIME_DIR", "RT_CI_MIN_FREE_GB")
 CPUS = 8
+BRANCH_CHANGES = rt.branch_changes
 
 
 class RtCi(unittest.TestCase):
@@ -52,6 +53,11 @@ class RtCi(unittest.TestCase):
         cpus = mock.patch.object(os, "cpu_count", return_value=CPUS)
         cpus.start()
         self.addCleanup(cpus.stop)
+        # main() looks at this checkout's own branch for base-subset's
+        # inputs: no test may depend on what the branch under test changes
+        changes = mock.patch.object(rt, "branch_changes", return_value=[])
+        changes.start()
+        self.addCleanup(changes.stop)
 
     def test_the_cache_mutation_starts_are_memory_capped(self):
         # every robigo-rt start of scripts/rt-tcache-mutate.py goes through
@@ -736,6 +742,147 @@ class RtCi(unittest.TestCase):
             tr.ensure(b, d)
             self.assertEqual(ran, ["scripts/rt-home.sh", "scripts/rt-home-db.sh"])
 
+    def test_base_subsets_check_is_owed_when_a_branch_changes_its_inputs(self):
+        owed = rt.base_subset_owed
+        for path in ("tests/rt/env/large-frames.R", "tests/rt/a.R", "benchmarks/rt/calls-rows.toml",
+                     "scripts/base-subset.sh", "scripts/base-subset-trace.R", "crates/robigo-rt/proto/base-wide.txt",
+                     "scripts/r-src.sh", "scripts/base-wide.R", "benchmarks/suite/calls.R",
+                     "tests/rt/capi/support/eval.c", "tests/rt/R-4.6.2/capi/eval.Rstatus", "tests/rt/R-4.7.0/capi/eval.Rstatus", "scripts/oracle-run.sh",
+                     "scripts/perf.py", "scripts/oracle-versions"):
+            self.assertEqual(owed(["docs/x.md", path]), path)
+        for path in ("tests/rt/env/large-frames.Rout", "tests/r/basics/a.R", "benchmarks/rt/other.toml",
+                     "crates/robigo-rt/proto/other.txt", "crates/robigo-rt/src/base-subset.rs", "scripts/rt-ci.py"):
+            self.assertIsNone(owed([path]), path)
+        self.assertIsNone(owed([]))
+        # git cannot say: owed
+        self.assertIn("cannot compare", owed(None))
+
+    def test_branch_changes_see_commits_edits_and_new_files(self):
+        import subprocess, shutil, tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # (the caller's git config stays out: signing, hooks, templates)
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                            "-c", "core.hooksPath=" + os.devnull, *a], cwd=d, check=True, capture_output=True, env=genv)
+        git("init", "-q", "-b", "main")
+        for f in ("kept", "edited"):
+            open(os.path.join(d, f), "w").write("1\n")
+        git("add", "kept", "edited")
+        git("commit", "-q", "-m", "base")
+        git("branch", "base")
+        open(os.path.join(d, "committed"), "w").write("1\n")
+        git("add", "committed")
+        git("commit", "-q", "-m", "change")
+        open(os.path.join(d, "edited"), "w").write("2\n")
+        open(os.path.join(d, "untracked"), "w").write("1\n")
+        isolated = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                                                "GIT_CONFIG_NOSYSTEM": "1"})
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        self.assertEqual(BRANCH_CHANGES(d, "base"), ["committed", "edited", "untracked"])
+        self.assertIsNone(BRANCH_CHANGES(d, "no-such-branch"))
+        # a staged change the worktree undoes is still a change (the commit
+        # pushed will carry it)
+        open(os.path.join(d, "kept"), "w").write("2\n")
+        git("add", "kept")
+        open(os.path.join(d, "kept"), "w").write("1\n")
+        self.assertIn("kept", BRANCH_CHANGES(d, "base"))
+        # a name that is not UTF-8
+        bad = os.fsdecode(b"caf\xe9.R")
+        open(os.path.join(os.fsencode(d), b"caf\xe9.R"), "w").close()
+        self.assertIn(bad, BRANCH_CHANGES(d, "base"))
+        # no git at all: git cannot say
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            self.assertIsNone(BRANCH_CHANGES(d, "base"))
+
+    def test_a_local_run_adds_base_subsets_check_or_stops_with_the_cure(self):
+        import contextlib, io
+        from unittest import mock
+        def main(owed, problem, argv=()):
+            out = io.StringIO()
+            # main's premise mocked: no `cargo metadata` run, whatever the workspace
+            with mock.patch.object(rt, "metadata", return_value={"target_directory": "/x", "packages": []}), \
+                    mock.patch.object(rt, "rt_crates", return_value=["robigo-rt"]), \
+                    mock.patch.object(rt, "leaks", return_value=[]), \
+                    mock.patch.object(rt, "branch_changes", return_value=[]), \
+                    mock.patch.object(rt, "base_subset_owed", return_value=owed), \
+                    mock.patch.object(rt, "oracle_problem", return_value=problem), \
+                    mock.patch.object(rt, "run_steps", return_value=0) as run, \
+                    mock.patch.dict(os.environ, {"RT_CI_MIN_FREE_GB": "0"}), contextlib.redirect_stdout(out):
+                status = rt.main(list(argv))
+            plan = run.call_args[0][0] if run.called else None
+            return status, plan, out.getvalue()
+        status, plan, _ = main(None, None)
+        self.assertEqual(status, 0)
+        self.assertNotIn(rt.BASE_SUBSET_STEP, plan)
+        status, plan, _ = main("tests/rt/a.R", None)
+        self.assertEqual(plan[-1], rt.BASE_SUBSET_STEP)
+        # no oracle: the run fails at its start (never a warning), naming the cure
+        status, plan, out = main("tests/rt/a.R", "there is no robigo-oracle:4.6.2 image; scripts/build-oracle.sh --pull 4.6.2")
+        self.assertEqual((status, plan), (2, None))
+        self.assertIn("tests/rt/a.R", out)
+        self.assertIn("scripts/build-oracle.sh --pull 4.6.2", out)
+        # CI's shards never run it (CI has its own base-subset job)
+        status, plan, _ = main("tests/rt/a.R", "missing", ["--shard", "modes"])
+        self.assertEqual(status, 0)
+        self.assertNotIn(rt.BASE_SUBSET_STEP, plan)
+
+    def test_the_oracle_cure_names_the_pull(self):
+        from unittest import mock
+        import subprocess
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+        with mock.patch.object(rt.subprocess, "run", fake):
+            problem = rt.oracle_problem()
+        self.assertIn("robigo-oracle:4.6.2", problem)
+        self.assertIn("scripts/build-oracle.sh --pull 4.6.2", problem)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", problem)
+        with mock.patch.object(rt.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertIn("no docker", rt.oracle_problem())
+        # the version, image and cure follow the checkout's rt pin
+        with mock.patch.object(rt, "rt_pin", return_value="4.7.0"), mock.patch.object(rt.subprocess, "run", fake):
+            problem = rt.oracle_problem()
+        for want in ("robigo-oracle:4.7.0", "GNU R 4.7.0", "--pull 4.7.0", "oracle_4_7_0=", "--image 4.7.0"):
+            self.assertIn(want, problem)
+        def r470(cmd, **kw):
+            # (docker is not asked: a matching Rscript is enough)
+            self.assertEqual(cmd[0], "Rscript", "docker was consulted though Rscript matched")
+            return subprocess.CompletedProcess(cmd, 0, "4.7.0", "")
+        with mock.patch.object(rt, "rt_pin", return_value="4.7.0"), mock.patch.object(rt.subprocess, "run", r470):
+            self.assertIsNone(rt.oracle_problem())
+        # the pin read from a checkout's scripts/oracle-versions
+        import tempfile, shutil
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "scripts"))
+        with open(os.path.join(d, "scripts", "oracle-versions"), "w") as f:
+            f.write("# pins\ngated=4.5.0\nrt=9.8.7\n")
+        self.assertEqual(rt.rt_pin(d), "9.8.7")
+
+    def test_the_lint_job_runs_lint_job_sh_and_nothing_else(self):
+        # the workflow's lint job and scripts/lint-job.sh, which delegates
+        # run before pushing, are one list: the job's only command is the
+        # script, and the script runs fmt, lint.sh and every test suite the
+        # job ran
+        import re
+        yml = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
+        job = re.search(r"\n  lint:\n(.*?)\n  [a-z0-9-]+:\n", yml, re.S).group(1)
+        runs = re.findall(r"^\s+run: (.*)$", job, re.M)
+        self.assertEqual(runs, ["scripts/lint-job.sh"])
+        self.assertNotIn("run: |", job)
+        script = (HERE / "lint-job.sh").read_text()
+        checks = re.search(r"CHECKS=\((.*?)\n\)", script, re.S).group(1)
+        listed = re.findall(r'"([^"]+)"', checks)
+        self.assertEqual(listed[:2], ["cargo fmt --check", "scripts/lint.sh"])
+        # every script suite is a test file that exists
+        for c in listed[2:]:
+            self.assertRegex(c, r"^python3 scripts/test[-_][\w-]+\.py$")
+            self.assertTrue((HERE.parent / c.split()[1]).exists(), c)
+        self.assertTrue(os.access(HERE / "lint-job.sh", os.X_OK))
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
@@ -1311,6 +1458,37 @@ class CompileFailExpectations(unittest.TestCase):
         self.assertEqual(rust_src_snippets(root),
                          ["crates/x/tests/ui/with-rust-src.stderr:2: --> $RUST/core/src/marker.rs "
                           "(and the source under it)"])
+
+class BuildOraclePull(unittest.TestCase):
+    """scripts/build-oracle.sh --pull: a failed pull names the ref, the
+    login for an auth error, and the local build (docker faked on PATH)."""
+
+    def run_pull(self, docker_stderr):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d, "docker")
+            fake.write_text("#!/bin/sh\n[ \"$1\" = pull ] || exit 3\n"
+                            f"echo '{docker_stderr}' >&2\nexit 1\n")
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}", HOME=d)
+            return subprocess.run([str(HERE / "build-oracle.sh"), "--pull", "4.6.2"], env=env,
+                                  capture_output=True, text=True)
+
+    def test_auth_error_says_login_and_fallback(self):
+        p = self.run_pull("Error response from daemon: Head \"https://ghcr.io/v2/x\": unauthorized")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("unauthorized", p.stderr)  # docker's own error is kept
+        self.assertRegex(p.stderr, r"docker pull ghcr\.io/\S+:oracle-4\.6\.2-\S+ failed")
+        self.assertIn("docker login ghcr.io", p.stderr)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
+
+    def test_other_error_gives_fallback_without_login(self):
+        p = self.run_pull("Error response from daemon: manifest unknown")
+        self.assertEqual(p.returncode, 1)
+        self.assertNotIn("docker login", p.stderr)
+        self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
