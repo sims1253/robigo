@@ -929,7 +929,15 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there; a case whose `.requires` names `volume` is left out, for a
-   smaller one that covers its paths), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   smaller one that covers its paths). Those steps, and the retry torture's,
+   torture each case but not its start: `ROBIGO_TORTURE_AFTER_START=1` holds
+   gctorture, `ROBIGO_GC_MOVE`'s moves and `ROBIGO_RETRY_TORTURE` until the
+   start is over. That variable is a test hook, not a GNU R setting: GNU R
+   reads `R_GCTORTURE` in InitMemory and tortures its whole start, and
+   robigo-rt refuses the variable at its start when no torture mode is set.
+   The start keeps two steps of its own, M1's loader and the rdb boot, each
+   under `ROBIGO_GC_MOVE=1` and gctorture from the heap's creation. Then
+   `scripts/rt-stress.sh` (E3: the stress script in fresh
    processes; the ledger's runs take 30 per profile),
    `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
    MiB, 10% of the live heap)), the conformance under a small vector limit
