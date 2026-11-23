@@ -1051,7 +1051,9 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
           them, in a fixed environment (`scripts/rt-startup.py`,
           `docs/ledger/g3/2026-11-23-startup-layout.md`);
         - against main: instructions +0.5%, anonymous memory
-          +max(1%, 64 KiB), peak RSS +5%.
+          +max(2%, 128 KiB) (a coarse tripwire for gross regressions:
+          physical pages follow glibc's placement by tens of KiB; to be
+          replaced by a logical peak), peak RSS +5%.
 
         Tables built at a start are pre-sized; a start that steps by ~80k
         instructions is realloc/memcpy until shown otherwise.
