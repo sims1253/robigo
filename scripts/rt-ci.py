@@ -324,9 +324,14 @@ GCTORTURE_SLOW = {
     # 780 s is the most the gctorture shard's budget (26 min) holds: the
     # case starts first, so the step takes about its time, and the shard's
     # other steps took 12.26 min on the slow runner (9.38 on a normal one,
-    # about 13 on a kill-class one): 26 - 13 = 13 min, about 780 s. Remove
-    # or lower it when S1's cure lands (S1 owns the case's profile and cure:
-    # fewer overflow repetitions, or a smaller case)
+    # about 13 on a kill-class one): 26 - 13 = 13 min, about 780 s.
+    # By runner image (131 jobs, 2026-11-21 to 11-23): ubuntu24/20261116.133
+    # 311-342 s, no kill; .376 302-600 s, both kills (its passed runs on
+    # the slowest hosts 554-589 s). #959 put the freeze's check at every
+    # 16th collection on this step, which costs this case 1.37x (244 s ->
+    # 335 s on .133, the case-times artifacts): the deepest stack in the
+    # slice, so the largest root set to trace. Remove or lower it when S1's
+    # smaller case or H's cheaper check lands, whichever is first
     "tests/r/conditions/c-stack-overflow.R": 780,
 }
 
