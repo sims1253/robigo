@@ -38,6 +38,9 @@ export RT_CAPI_LIBS=$libs
 # robigo-rt ignores an inherited R_HOME (GNU R's) with GNU R's warning on
 # stdout, which the comparison below would see
 unset R_HOME
+# the case as it is recorded (scripts/regen-expected.sh): no default
+# packages, which the default boot's start would otherwise try to attach
+export R_DEFAULT_PACKAGES=NULL
 echo "rt-stress: $bin, $runs runs per profile ($profiles), ASLR $aslr"
 bad=0
 for p in $profiles; do
