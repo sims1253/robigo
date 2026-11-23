@@ -139,6 +139,13 @@ def suite_src(name, s):
     return os.path.join(CACHE, name, s["commit"])
 
 
+def suite_files(sname, s):
+    """A directory suite's programs: the paths of its *.R files, sorted
+    (what `programs` runs, and what GNU R's records depend on)."""
+    src = suite_src(sname, s)
+    return [os.path.join(src, fn) for fn in sorted(os.listdir(src)) if fn.endswith(".R")]
+
+
 def programs(c, suite=None, rx=None):
     """[(name, suite, script_text, default_packages)]"""
     out = []
@@ -148,10 +155,9 @@ def programs(c, suite=None, rx=None):
         src = suite_src(sname, s)
         pk = s.get("default_packages", "utils,stats")
         if "dir" in s:
-            for fn in sorted(os.listdir(src)):
-                if fn.endswith(".R"):
-                    with open(os.path.join(src, fn)) as f:
-                        out.append((f"{sname}/{fn[:-2]}", sname, f.read(), pk))
+            for path in suite_files(sname, s):
+                with open(path) as f:
+                    out.append((f"{sname}/{os.path.basename(path)[:-2]}", sname, f.read(), pk))
         else:
             for b in s["benchmarks"]:
                 d = os.path.join(src, b["dir"])
@@ -161,6 +167,28 @@ def programs(c, suite=None, rx=None):
     if rx:
         out = [p for p in out if re.search(rx, p[0])]
     return out
+
+
+def gnur_inputs(c=None):
+    """The files GNU R's records in the `perf` job depend on, relative to the
+    checkout, sorted: the suites' list (an external suite's pinned commit and
+    parameters are in it), every directory suite's programs (`suite_files`,
+    the listing `programs` runs), the known failures, and the scripts that
+    measure and keep them. The job's cache key hashes these and nothing else
+    (scripts/perf-gnur.py; a change to robigo-rt's rows does not drop it)."""
+    c = c or conf()
+    out = [os.path.join(ROOT, "benchmarks", "benchmarks.toml"),
+           os.path.join(ROOT, "benchmarks", "gnur-known-failures.txt"),
+           os.path.join(ROOT, "scripts", "perf.py"), os.path.join(ROOT, "scripts", "perf-gnur.py")]
+    for sname, s in c["suites"].items():
+        if "dir" in s:
+            out += suite_files(sname, s)
+    return sorted(os.path.relpath(p, ROOT) for p in out)
+
+
+def cmd_gnur_inputs(_):
+    for p in gnur_inputs():
+        print(p)
 
 
 def cmd_fetch(_):
@@ -1150,6 +1178,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     sub.add_parser("fetch")
+    sub.add_parser("gnur-inputs", help="the files the perf job's GNU R records depend on (its cache key)")
     p = sub.add_parser("run")
     p.add_argument("--metric", choices=["instr", "time", "both", "cache"], default="instr",
                    help="cache adds callgrind's simulated cache and branch counters "
@@ -1209,7 +1238,7 @@ def main():
     a = ap.parse_args()
     fn = {"list": cmd_list, "fetch": cmd_fetch, "run": cmd_run, "compare": cmd_compare, "recheck": cmd_recheck,
           "report": cmd_report, "rt-bars": cmd_rt_bars, "rt-starts": cmd_rt_starts,
-          "rt-gnur": cmd_rt_gnur}[a.cmd]
+          "rt-gnur": cmd_rt_gnur, "gnur-inputs": cmd_gnur_inputs}[a.cmd]
     sys.exit(fn(a) or 0)
 
 
