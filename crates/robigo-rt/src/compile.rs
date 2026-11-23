@@ -706,8 +706,10 @@ unsafe fn cached_translation(
 ) -> Result<Option<(Sexp, crate::tcache::format::Entry)>, Need> {
     // SAFETY: the caller's contract.
     let Some(hit) = (unsafe { crate::tcache::lookup(cx, bc, index)? }) else { return Ok(None) };
-    let unverified = || {
-        crate::tcache::count(crate::tcache::Outcome::Unverified);
+    // (the entry passed every check of the file: a refusal is the writer's,
+    // the round trip's or the verifier's disagreement, reported)
+    let refused = |m: &crate::code::Malformed| {
+        crate::tcache::refused(m);
         Ok(None)
     };
     // SAFETY: the entry is this build's translator's own, intact: its file's
@@ -718,14 +720,17 @@ unsafe fn cached_translation(
     // the tree's base.rdb is, since whoever can write one can write the
     // other, and base.rdb's R code can already run anything (`dyn.load`,
     // `system`).
-    let Ok(main) = (unsafe { crate::code::Verified::from_cached_translation(hit.built) }) else {
-        return unverified();
+    let main = match unsafe { crate::code::Verified::from_cached_translation(hit.built) } {
+        Ok(v) => v,
+        Err(m) => return refused(&m),
     };
     let mut args = Vec::with_capacity(hit.args.len());
     for (call, b) in hit.args {
         // SAFETY: as above, an argument code of the same entry.
-        let Ok(v) = (unsafe { crate::code::Verified::from_cached_translation(b) }) else { return unverified() };
-        args.push((call, v));
+        match unsafe { crate::code::Verified::from_cached_translation(b) } {
+            Ok(v) => args.push((call, v)),
+            Err(m) => return refused(&m),
+        }
     }
     // SAFETY: the caller's contract; the calls are the BCODESXP's constants
     // (`tcache::lookup` resolved them, live), nothing collects meanwhile.
@@ -760,9 +765,13 @@ pub fn translate_for_cache(cx: &mut Cx) -> RResult<()> {
         }
         for env in envs {
             let names: Vec<Sexp> = match env.bind(cx).view() {
-                robigo_rtcore::View::Env(e) => {
-                    cx.frame_bindings(e, true).unwrap_or_default().into_iter().map(|(y, _)| y.as_ref().sexp()).collect()
-                }
+                robigo_rtcore::View::Env(e) => match cx.frame_bindings(e, true) {
+                    Some(b) => b.into_iter().map(|(y, _)| y.as_ref().sexp()).collect(),
+                    None => {
+                        crate::tcache::skip(cx, "a namespace whose frame could not be listed");
+                        continue;
+                    }
+                },
                 _ => continue,
             };
             for y in names {
@@ -771,6 +780,7 @@ pub fn translate_for_cache(cx: &mut Cx) -> RResult<()> {
                 let o = s.out(cx);
                 let v = o.root();
                 if cx.eval(y, env, o).is_err() {
+                    crate::tcache::skip(cx, "a binding whose value could not be got");
                     continue;
                 }
                 let f = v.bind(cx).sexp();

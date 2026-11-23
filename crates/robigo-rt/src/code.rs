@@ -141,7 +141,7 @@ impl Verified {
     /// match) carry no such promise: a forged entry can break the VM's
     /// register invariants (a `ForStep` whose state another instruction
     /// overwrote reads out of bounds), and this constructor does not detect it.
-    pub unsafe fn from_cached_translation(b: Built) -> Result<Verified, Malformed> {
+    pub(crate) unsafe fn from_cached_translation(b: Built) -> Result<Verified, Malformed> {
         check(&b)?;
         Ok(Verified(b))
     }
