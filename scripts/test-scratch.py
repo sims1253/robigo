@@ -76,18 +76,26 @@ class Module(unittest.TestCase):
         after READY): (exit status, seconds to exit, the directory, the pid)."""
         env = dict(os.environ, TMPDIR=self.tmp, PYTHONPATH=str(HERE))
         code = "import subprocess, sys, time\nfrom scratch import scratch_dir\n" + first + body
-        p = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True)
-        lines = []
-        while "READY" not in lines:
-            line = p.stdout.readline()
-            self.assertTrue(line, "the child exited before READY")
-            lines.append(line.strip())
-        since = time.monotonic()
-        while len(self.children(p.pid)) < children:
-            # (on a loaded box the workers' spawns come late: a signal before
-            # them leaves a child no one ends, and the exit is the 30 s forced one)
-            self.assertLess(time.monotonic() - since, 60, f"the child never had {children} children")
-            time.sleep(0.02)
+        # (its own process group: a failure before the signal ends it and
+        # every child it started, instead of leaving them running)
+        p = subprocess.Popen([sys.executable, "-c", code], env=env, stdout=subprocess.PIPE, text=True,
+                             start_new_session=True)
+        try:
+            lines = []
+            while "READY" not in lines:
+                line = p.stdout.readline()
+                self.assertTrue(line, "the child exited before READY")
+                lines.append(line.strip())
+            since = time.monotonic()
+            while len(self.children(p.pid)) < children:
+                # (on a loaded box the workers' spawns come late: a signal before
+                # them leaves a child no one ends, and the exit is the 30 s forced one)
+                self.assertLess(time.monotonic() - since, 60, f"the child never had {children} children")
+                time.sleep(0.02)
+        except BaseException:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+            raise
         time.sleep(delay)
         t0 = time.monotonic()
         p.send_signal(signal.SIGTERM)

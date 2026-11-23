@@ -526,7 +526,8 @@ class RtCi(unittest.TestCase):
         owed = rt.base_subset_owed
         for path in ("tests/rt/env/large-frames.R", "tests/rt/a.R", "benchmarks/rt/calls-rows.toml",
                      "scripts/base-subset.sh", "scripts/base-subset-trace.R", "crates/robigo-rt/proto/base-wide.txt",
-                     "scripts/r-src.sh"):
+                     "scripts/r-src.sh", "scripts/base-wide.R", "benchmarks/suite/calls.R",
+                     "tests/rt/capi/support/eval.c", "tests/rt/R-4.6.2/capi/eval.Rstatus", "scripts/oracle-run.sh"):
             self.assertEqual(owed(["docs/x.md", path]), path)
         for path in ("tests/rt/env/large-frames.Rout", "tests/r/basics/a.R", "benchmarks/rt/other.toml",
                      "crates/robigo-rt/proto/other.txt", "crates/robigo-rt/src/base-subset.rs", "scripts/rt-ci.py"):
@@ -555,6 +556,20 @@ class RtCi(unittest.TestCase):
         open(os.path.join(d, "untracked"), "w").write("1\n")
         self.assertEqual(BRANCH_CHANGES(d, "base"), ["committed", "edited", "untracked"])
         self.assertIsNone(BRANCH_CHANGES(d, "no-such-branch"))
+        # a staged change the worktree undoes is still a change (the commit
+        # pushed will carry it)
+        open(os.path.join(d, "kept"), "w").write("2\n")
+        git("add", "kept")
+        open(os.path.join(d, "kept"), "w").write("1\n")
+        self.assertIn("kept", BRANCH_CHANGES(d, "base"))
+        # a name that is not UTF-8
+        bad = os.fsdecode(b"caf\xe9.R")
+        open(os.path.join(os.fsencode(d), b"caf\xe9.R"), "w").close()
+        self.assertIn(bad, BRANCH_CHANGES(d, "base"))
+        # no git at all: git cannot say
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            self.assertIsNone(BRANCH_CHANGES(d, "base"))
 
     def test_a_local_run_adds_base_subsets_check_or_stops_with_the_cure(self):
         import contextlib, io

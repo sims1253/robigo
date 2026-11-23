@@ -895,8 +895,16 @@ def crate_test_threads(cmd):
 # only), so the push does not find out first.
 BASE_SUBSET_INPUTS = (
     "tests/rt/**/*.R",
+    "tests/rt/R-4.6.2/**/*.Rstatus",      # the traced cases' recorded status
+    "tests/rt/capi/support/*.c",           # the C API cases' package code
     "benchmarks/rt/calls-rows.toml",
+    "benchmarks/suite/calls.R",
+    "benchmarks/suite/fib.R",
+    "benchmarks/suite/binarytrees.R",
     "scripts/base-subset*",
+    "scripts/base-wide.R",
+    "scripts/oracle-run.sh",
+    "scripts/oracle-pins.sh",
     "crates/robigo-rt/proto/base-*.txt",
     "scripts/r-src.sh",
 )
@@ -907,19 +915,28 @@ ORACLE_IMAGE = "robigo-oracle:4.6.2"
 
 def branch_changes(root=ROOT, base="origin/main"):
     """The paths this checkout changes against its merge base with `base`:
-    commits, staged and unstaged edits, and untracked files. None when git
-    cannot say (no `base`): the caller then owes every check."""
+    its commits, the staged and the unstaged edits, each on its own (a later
+    edit that undoes a staged or committed one leaves the path changed for
+    the commit that will be pushed), and untracked files. None when git
+    cannot say (no git, no `base`): the caller then owes every check."""
     def git(*args):
-        p = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+        try:
+            p = subprocess.run(["git", *args], cwd=root, capture_output=True)
+        except OSError:
+            return None
         return p.stdout if p.returncode == 0 else None
     mb = git("merge-base", "HEAD", base)
     if mb is None:
         return None
-    diff = git("diff", "--name-only", "-z", "--no-renames", mb.strip())
-    new = git("ls-files", "--others", "--exclude-standard", "-z")
-    if diff is None or new is None:
+    mb = os.fsdecode(mb).strip()
+    lists = [git("diff", "--name-only", "-z", "--no-renames", mb, "HEAD"),
+             git("diff", "--name-only", "-z", "--no-renames", "--cached"),
+             git("diff", "--name-only", "-z", "--no-renames"),
+             git("ls-files", "--others", "--exclude-standard", "-z")]
+    if any(x is None for x in lists):
         return None
-    return sorted({p for p in (diff + new).split("\0") if p})
+    # (paths as the filesystem's bytes allow: a non-UTF-8 name decodes too)
+    return sorted({os.fsdecode(p) for x in lists for p in x.split(b"\0") if p})
 
 
 def base_subset_owed(changed):
@@ -937,8 +954,11 @@ def base_subset_owed(changed):
 def oracle_problem():
     """None when scripts/base-subset.sh can run GNU R 4.6.2 (its Rscript on
     PATH, or docker's ORACLE_IMAGE), else what is missing and the cure."""
+    # (from the checkout, as base-subset.sh runs it, and --vanilla: a
+    # caller's .Rprofile must not answer for the R that will run)
     try:
-        p = subprocess.run(["Rscript", "-e", "cat(format(getRversion()))"], capture_output=True, text=True)
+        p = subprocess.run(["Rscript", "--vanilla", "-e", "cat(format(getRversion()))"], cwd=ROOT,
+                           capture_output=True, text=True)
         if p.returncode == 0 and p.stdout.strip() == "4.6.2":
             return None
     except FileNotFoundError:

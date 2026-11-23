@@ -76,11 +76,24 @@ fn sweep_fakes(parent: &Path) {
         else {
             continue;
         };
-        let ours_and_old = e.metadata().is_ok_and(|m| m.uid() == me.uid() && m.modified().is_ok_and(|t| t < day_ago));
+        // (the newest write anywhere in it, not the directory's own mtime:
+        // a write to an existing file, order.log, leaves that unchanged)
+        let ours_and_old = e.metadata().is_ok_and(|m| m.uid() == me.uid()) && newest(&e.path()) < day_ago;
         if pid.parse::<u32>().is_ok() && !Path::new("/proc").join(pid).exists() && ours_and_old {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
+}
+
+/// The newest modification time of `p` and everything under it.
+fn newest(p: &Path) -> std::time::SystemTime {
+    let mut t = std::fs::symlink_metadata(p).and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::now());
+    if let Ok(entries) = std::fs::read_dir(p) {
+        for e in entries.flatten() {
+            t = t.max(newest(&e.path()));
+        }
+    }
+    t
 }
 
 #[test]
@@ -107,16 +120,21 @@ fn a_gone_test_process_leaves_no_fakes_behind() {
         std::fs::create_dir_all(d).unwrap();
         std::fs::write(d.join("cat"), "x").unwrap();
     }
-    // the gone process's directory last touched two days ago; `fresh`, of
-    // another gone pid, today (it may be another namespace's, still in use)
+    // every directory but `fresh` last touched two days ago, the live
+    // process's too (so the pid check alone keeps it); `fresh`, of another
+    // gone pid, has a file written today inside an old directory (it may be
+    // another namespace's, still in use)
     let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
-    std::fs::File::open(&gone).unwrap().set_modified(two_days_ago).unwrap();
+    for d in [&gone, &fresh, &live, &other] {
+        std::fs::File::open(d.join("cat")).unwrap().set_modified(two_days_ago).unwrap();
+        std::fs::File::open(d).unwrap().set_modified(two_days_ago).unwrap();
+    }
+    std::fs::File::open(fresh.join("cat")).unwrap().set_modified(std::time::SystemTime::now()).unwrap();
     sweep_fakes(&parent);
     assert!(!gone.exists());
-    assert!(fresh.exists(), "a directory touched today stays");
-    assert!(live.exists());
+    assert!(fresh.exists(), "a directory with a file written today stays");
+    assert!(live.exists(), "a live process's directory stays, however old");
     assert!(other.exists());
-    std::fs::remove_dir_all(&parent).unwrap();
 }
 
 fn cat() -> PathBuf {
