@@ -69,6 +69,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location("ci_select", os.path.join(ROOT, "scripts", "ci-select.py"))
 ci_select = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ci_select)
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import conf_slots  # noqa: E402
 
 
 def rt_patterns(rules):
@@ -789,37 +791,21 @@ def conf_slots_dir(env=None):
     """The machine-wide pool of conformance case slots a local run shares
     with every other local rt-ci run of this user (robigo-conformance's
     ROBIGO_CONF_SLOTS_DIR: a case takes a slot before it starts, its time
-    limit counting from its start): several checkouts' gates at once took
-    the box to load 45-66 on 24 CPUs, and cases ran into their limits
-    (2026-11-23). The caller's own ROBIGO_CONF_SLOTS_DIR wins (empty: no
-    pool); CI has none (one run per runner). None: leave it as it is."""
-    env = os.environ if env is None else env
-    if "ROBIGO_CONF_SLOTS_DIR" in env or env.get("GITHUB_ACTIONS") == "true":
-        return None
-    base = env.get("XDG_RUNTIME_DIR")
-    if base and os.path.isdir(base):
-        d = os.path.join(base, "robigo-conf-slots")
-    else:
-        # fixed, not TMPDIR's: every run of this user must find the same pool
-        d = f"/tmp/robigo-conf-slots-{os.getuid()}"
-    try:
-        try:
-            os.makedirs(d, mode=0o700, exist_ok=True)
-        except FileExistsError:
-            pass            # (a file or a link there: lstat and the check below say what)
-        st = os.lstat(d)
-    except OSError as e:
-        print(f"::warning::rt-ci: no conformance slot pool ({d}: {e})")
-        return None
-    import stat as st_
-    # this user's directory, and private: another user able to write there
-    # could replace a slot file, and two runs would lock two files for one
-    # slot
-    if not st_.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-        print(f"::warning::rt-ci: no conformance slot pool ({d} is not a private directory of this user's: "
-              f"mode {oct(st_.S_IMODE(st.st_mode))})")
-        return None
-    return d
+    limit counting from its start). The rule is conf_slots.default_dir's:
+    the caller's own ROBIGO_CONF_SLOTS_DIR wins (empty: no pool), CI has
+    none. None: leave it as it is."""
+    return conf_slots.default_dir(env)
+
+
+def crate_test_threads(cmd):
+    """Whether `cmd` is a run of the crates' own tests (a cargo test that
+    runs tests, other than a conformance step), which take their threads
+    from the slot pool: libtest runs one thread per CPU, and two local runs'
+    crate-test steps at once, or one beside another run's conformance cases,
+    stacked to twice the box."""
+    return (cmd[:2] == ["cargo", "test"] and "--" in cmd and "--no-run" not in cmd
+            and not (CONFORMANCE in cmd and "--exact" in cmd)
+            and not any(x.startswith("--test-threads") for x in cmd))
 
 
 def metadata():
@@ -998,7 +984,25 @@ def run_steps(plan, done):
             env = {**env, "ROBIGO_CONF_TIMES_REPORT": times}
         print(f"::group::{title}", flush=True)
         t0 = time.monotonic()
-        r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
+        try:
+            pool = conf_slots.from_env({**os.environ, **env}) if crate_test_threads(cmd) else None
+        except conf_slots.PoolError as e:
+            print(f"::error::rt: {title}: {e}")
+            print("::endgroup::", flush=True)
+            done.append((title, 0.0, False))
+            return 2
+        if pool:
+            # as many threads as slots: one it waits for, then whatever else
+            # of the pool is free (all of it on a quiet box), held until the
+            # step ends. The tests get no pool of their own: the step's
+            # slots count their threads already, and a test waiting for a
+            # slot its own step holds would wait forever
+            with pool.take(pool.n, who=f"rt-ci's step '{title}'") as held:
+                print(f"rt-ci: {held.count} of {pool.n} slots, --test-threads={held.count}", flush=True)
+                r = subprocess.run([*cmd, f"--test-threads={held.count}"], cwd=ROOT,
+                                   env={**os.environ, **env, "ROBIGO_CONF_SLOTS_DIR": ""})
+        else:
+            r = subprocess.run(cmd, cwd=ROOT, env={**os.environ, **env})
         done.append((title, time.monotonic() - t0, r.returncode == 0))
         print("::endgroup::", flush=True)
         if times:

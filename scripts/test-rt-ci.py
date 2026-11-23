@@ -323,6 +323,65 @@ class RtCi(unittest.TestCase):
             self.assertIsNone(rt.conf_slots_dir({"XDG_RUNTIME_DIR": f}))
         self.assertIn("not a private directory", out.getvalue())
 
+    def test_the_crates_tests_take_their_threads_from_the_slot_pool(self):
+        import contextlib, fcntl, io, shutil, subprocess, tempfile
+        from unittest import mock
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.chmod(d, 0o700)
+        crate = ["cargo", "test", "--profile", "quick", "--locked", "-p", "x", "--", "--skip", rt.CONFORMANCE]
+        seen = []
+
+        def fake_run(cmd, cwd=None, env=None):
+            # the slots a step holds while it runs, as another run sees them
+            busy = 0
+            for i in range(4):
+                with open(os.path.join(d, f"slot-{i}"), "a") as f:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        busy += 1
+            seen.append((cmd, env.get("ROBIGO_CONF_SLOTS_DIR"), busy))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        def run(cmd, env):
+            seen.clear()
+            with mock.patch.object(rt.subprocess, "run", fake_run), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.dict(os.environ, env, clear=False):
+                self.assertEqual(rt.run_steps([("step", {}, cmd)], []), 0)
+            return seen[0]
+
+        pool = {"ROBIGO_CONF_SLOTS_DIR": d, "ROBIGO_CONF_SLOTS": "4"}
+        # a quiet pool: every slot, as many threads; its tests get no pool
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=4"], "", 4))
+        # another run holds one slot: the step takes the other three
+        other = open(os.path.join(d, "slot-1"), "a")
+        fcntl.flock(other, fcntl.LOCK_EX)
+        self.assertEqual(run(crate, pool), ([*crate, "--test-threads=3"], "", 4))
+        other.close()
+        # no pool (CI, or the caller's empty one): the command as it was
+        self.assertEqual(run(crate, {"ROBIGO_CONF_SLOTS_DIR": ""}), (crate, "", 0))
+        # the conformance steps take a slot per case in the runner, and a
+        # build runs no test: neither changes
+        conf = rt.conformance_command()
+        self.assertEqual(run(conf, pool), (conf, d, 0))
+        build = ["cargo", "test", "--release", "--locked", "--no-run"]
+        self.assertEqual(run(build, pool), (build, d, 0))
+        # a step with its own thread count keeps it
+        own = [*crate, "--test-threads=1"]
+        self.assertEqual(run(own, pool), (own, d, 0))
+
+    def test_every_crate_test_step_is_one_the_pool_bounds(self):
+        # every cargo test step that runs tests other than the conformance
+        # has a `--` for the thread count to follow (a step with none would
+        # run unbounded beside other runs)
+        crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
+        for shard in rt.SHARDS:
+            for title, _env, cmd in rt.shard_steps(crates, shard):
+                if cmd[:2] == ["cargo", "test"] and "--no-run" not in cmd \
+                        and not (rt.CONFORMANCE in cmd and "--exact" in cmd):
+                    self.assertTrue(rt.crate_test_threads(cmd), f"{shard}: {title}: {cmd}")
+
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
         # namespace compares about half as many closures, without any error

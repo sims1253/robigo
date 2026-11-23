@@ -6,17 +6,21 @@ import fcntl
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import unittest.mock
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("bd", os.path.join(HERE, "builtin-diff.py"))
 bd = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bd)
+conf_slots = bd.conf_slots
 
 
 class Sources(unittest.TestCase):
@@ -221,7 +225,20 @@ FAKE = textwrap.dedent("""\
         sys.stderr.write("Error: driver unusable on fake: withVisible\\n"); sys.exit(1)
     if os.environ.get("NOSTART"):
         sys.stderr.write("cannot boot\\n"); sys.exit(1)
+    # (a start that takes half the case limit, as robigo-rt's boot and the
+    # batch's readRDS can)
+    time.sleep(float(os.environ.get("START_DELAY", "0")))
     open(os.path.join(out, "started"), "w").close()
+    if os.environ.get("SLOT_FILE"):
+        # whether the slot is held while this process runs
+        import fcntl
+        with open(os.environ["SLOT_FILE"], "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = "free"
+            except BlockingIOError:
+                held = "held"
+        open(os.path.join(out, "slot"), "w").write(held)
     for i in range(start, min(int(os.environ["N"]), int(os.environ.get("A4_TO", "999999"))) + 1):
         if i == int(os.environ.get("CRASH_AT", "0")):
             sys.stderr.write("thread 'main' panicked\\n"); os._exit(101)
@@ -409,6 +426,71 @@ class Batches(unittest.TestCase):
             self.run_fake(4, NOSTART=1)
         self.assertIn("did not start", str(e.exception))
         self.assertIn("cannot boot", str(e.exception))
+
+
+class SlotPool(unittest.TestCase):
+    """builtin-diff's driver processes share the conformance runner's
+    machine-wide slot pool (scripts/conf_slots.py)."""
+
+    def pool(self, n=1):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        pool = conf_slots.Pool(d, n)
+        patch = unittest.mock.patch.object(bd, "POOL", pool)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return pool
+
+    def test_a_driver_holds_a_slot_while_it_runs(self):
+        pool = self.pool()
+        slot = os.path.join(pool.dir, "slot-0")
+        lost, recs, out = Batches.run_fake(self, 2, SLOT_FILE=slot)
+        self.assertEqual((lost, len(recs)), ({}, 2))
+        with open(os.path.join(out, "slot")) as f:
+            self.assertEqual(f.read(), "held")
+        # and gives it back when it has ended
+        with pool.take() as held:
+            self.assertEqual(held.count, 1)
+
+    def test_a_cases_clock_starts_when_its_driver_takes_its_slot(self):
+        # the only slot is someone else's for 2.5 s, past the 1 s limit
+        # run_fake gives each case, and the driver's start takes half of
+        # it: the wait is no case's time
+        pool = self.pool()
+        other = pool.take()
+        timer = threading.Timer(2.5, other.release)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        t0 = time.monotonic()
+        lost, recs, _ = Batches.run_fake(self, 2, START_DELAY=0.5)
+        self.assertGreaterEqual(time.monotonic() - t0, 2.4)
+        self.assertEqual((lost, len(recs)), ({}, 2))
+
+    def test_a_hang_still_times_out_once_its_slot_is_taken(self):
+        self.pool()
+        lost, recs, _ = Batches.run_fake(self, 3, HANG_AT=2)
+        self.assertEqual((lost, len(recs)), ({2: "timeout"}, 2))
+
+    def test_the_pool_follows_rt_cis_rule(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # the caller's directory wins, empty means none, CI has none
+        self.assertIsNone(bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": ""}))
+        self.assertIsNone(bd.slot_pool({"GITHUB_ACTIONS": "true"}))
+        mine = os.path.join(d, "mine")
+        pool = bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": mine, "ROBIGO_CONF_SLOTS": "3"})
+        self.assertEqual((pool.dir, pool.n), (mine, 3))
+        # otherwise the user's machine-wide one, as rt-ci.py's
+        pool = bd.slot_pool({"XDG_RUNTIME_DIR": d})
+        self.assertEqual((pool.dir, pool.n), (os.path.join(d, "robigo-conf-slots"), os.cpu_count()))
+        # a pool that cannot be used stops the run
+        os.chmod(mine, 0o755)
+        with self.assertRaises(SystemExit) as e:
+            bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": mine})
+        self.assertIn("not a private directory", str(e.exception))
+        with self.assertRaises(SystemExit) as e:
+            bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": mine + "2", "ROBIGO_CONF_SLOTS": "0"})
+        self.assertIn("not a positive number", str(e.exception))
 
 
 class Known(unittest.TestCase):
