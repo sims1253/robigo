@@ -211,15 +211,31 @@ impl<'g> Attrs<'g> {
         self.s4 = Some(true);
     }
 
+    /// The attribute pairlist [`Attrs::apply`] sets: fresh cells, the
+    /// values shared (R_NilValue for none).
+    pub fn pairlist(&self, cx: &'g Cx) -> Result<Ref<'g>, NeedGc> {
+        let mut head = cx.nil();
+        for a in self.list.iter().rev() {
+            head = cx.cons_tagged(a.value, head, a.tag)?;
+        }
+        Ok(head)
+    }
+
+    /// Whether [`Attrs::apply`] sets OBJECT.
+    pub fn object(&self) -> bool {
+        self.object
+    }
+
+    /// The S4 bit [`Attrs::apply`] sets, if it sets one.
+    pub fn s4(&self) -> Option<bool> {
+        self.s4
+    }
+
     /// Make the list (new cells, in order) and set it, OBJECT and the S4 bit
     /// on the fresh vector.
     pub fn apply<T>(&self, cx: &'g Cx, v: &mut FreshVec<'g, T>) -> Result<(), NeedGc> {
         if !self.list.is_empty() {
-            let mut head = cx.nil();
-            for a in self.list.iter().rev() {
-                head = cx.cons_tagged(a.value, head, a.tag)?;
-            }
-            v.set_attrib(head);
+            v.set_attrib(self.pairlist(cx)?);
         }
         if self.object {
             v.set_object(true);

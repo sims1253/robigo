@@ -4,7 +4,7 @@
 //! `.Internal(is.vector(x, mode))`, `is.na`, `is.nan`, `is.finite`,
 //! `is.infinite`, `anyNA` and `storage.mode<-`.
 
-use super::vector::{Warns, coerce};
+use super::vector::{Warns, atomic_to_strings, coerce, to_strings_fills};
 use crate::attrib::{self, Attrs};
 use crate::registry;
 use crate::util::check1arg;
@@ -211,6 +211,12 @@ pub fn do_asatomic<const CODE: i32>(
     if x.bind(cx).is_package_altrep() {
         return Err(not_yet(cx, Some(call), "as.vector() of a package ALTREP vector"));
     }
+    // as.character of an atomic vector: ascommon's coerceVector, a CHARSXP
+    // per element with collections between them, and CLEAR_ATTRIB (no
+    // attributes copied)
+    if ty == STRSXP && to_strings_fills(x.bind(cx)) {
+        return atomic_to_strings(cx, x, false, out);
+    }
     let w = cx.build_with(out, |cx| {
         let xv = x.bind(cx);
         if xv.sexptype() == ty {
@@ -259,6 +265,11 @@ pub fn do_asvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
         }
         return Err(cx.error("invalid 'mode' argument"));
     };
+    // as.vector(x, "character") of an atomic vector: ascommon's
+    // coerceVector as as.character's, and the attributes cleared after it
+    if ty == STRSXP && to_strings_fills(x.bind(cx)) {
+        return atomic_to_strings(cx, x, false, out);
+    }
     if ty == CLOSXP && x.bind(cx).sexptype() != CLOSXP {
         let f = x.bind(cx).sexptype();
         if !matches!(f, BUILTINSXP | SPECIALSXP) {
