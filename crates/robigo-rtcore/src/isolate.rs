@@ -669,17 +669,10 @@ impl Cx {
     /// process made, or forget it (`R_TempDir = NULL`, for
     /// `tempdir(check = TRUE)`'s remaking: the old one is then left as it is,
     /// as GNU R leaves it). The current one is removed at the end
-    /// ([`Cx::clean_temp_dir`], or at process exit).
+    /// ([`Cx::clean_temp_dir`]: robigo-rt's R_CleanUp, which every way it
+    /// ends goes through, or the isolate's drop).
     pub fn set_temp_dir(&self, dir: Option<Vec<u8>>) {
-        let me = std::process::id();
-        let old = self.iso().temp_dir.borrow_mut().take();
-        if let Some((pid, d)) = old {
-            crate::clib::forget_temp_dir(pid, &d);
-        }
-        if let Some(d) = dir {
-            crate::clib::register_temp_dir(&d);
-            *self.iso().temp_dir.borrow_mut() = Some((me, d));
-        }
+        *self.iso().temp_dir.borrow_mut() = dir.map(|d| (std::process::id(), d));
     }
 
     /// `R_CleanTempDir()`: the session's temporary directory removed, once
@@ -1141,7 +1134,6 @@ type ForkHeld = (
     std::sync::MutexGuard<'static, usize>,
     std::sync::RwLockWriteGuard<'static, ()>,
     (std::sync::MutexGuard<'static, ()>, libc::pid_t),
-    crate::clib::TempDirsGuard,
 );
 
 struct ForkGuards(std::cell::UnsafeCell<Option<ForkHeld>>);
@@ -1158,33 +1150,27 @@ static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
 
 /// The fork handlers' `prepare` for this crate's locks, in the process's
 /// order (robigo-heap's `fork.rs`): the live isolates, the environment's
-/// lock exclusive, then two leaves, the time zone session's and the
-/// temporary directories' registry.
+/// lock exclusive, then the time zone session's (a leaf).
 fn fork_take() {
     let live = live_isolates();
     let env = crate::clib::env_write_lock();
     let tz = crate::clib::tz_session_fork_take();
-    // (the temporary directories' registry: taken alone everywhere else, so
-    // last)
-    let dirs = crate::clib::temp_dirs_lock();
     // SAFETY: as for `ForkGuards`: this fork alone, under `FORK`; the slot
     // is empty (the previous fork's `fork_release` took it). That relies on
     // the C library running `parent` after every `prepare`, a fork that
     // fails included: glibc does (verified on 2.44: a fork refused with
     // EAGAIN runs prepare, then parent; `fork_tests`'
     // `a_failed_fork_releases_the_locks`).
-    unsafe { *FORK_GUARDS.0.get() = Some((live, env, tz, dirs)) };
+    unsafe { *FORK_GUARDS.0.get() = Some((live, env, tz)) };
 }
 
 /// The fork handlers' `parent` and `child` for this crate's locks: the
-/// reverse order (the temporary directories' registry, the time zone
-/// session's, `ENV`, then the live isolates).
+/// reverse order (the time zone session's, `ENV`, then the live isolates).
 /// In the child the forking thread is the guards' owner, so unlocking is
 /// its own.
 fn fork_release() {
     // SAFETY: as for `ForkGuards`.
-    if let Some((live, env, (tz, pid), dirs)) = unsafe { (*FORK_GUARDS.0.get()).take() } {
-        drop(dirs);
+    if let Some((live, env, (tz, pid))) = unsafe { (*FORK_GUARDS.0.get()).take() } {
         crate::clib::tz_session_fork_release(tz, pid);
         drop(env);
         drop(live);

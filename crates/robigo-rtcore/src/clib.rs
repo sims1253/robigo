@@ -1671,87 +1671,11 @@ pub fn default_textdomain_dir() -> Option<Vec<u8>> {
 
 // ---- the session's temporary directory (R_TempDir) --------------------------
 
-/// The temporary directories made in this process and not yet removed,
-/// with the process that made each: [`remove_temp_dir`] takes one out, and
-/// an `atexit` handler removes what is left when the process that made it
-/// exits (a robigo-rt binary leaves through `exit` on paths that do not
-/// drop the isolate). A forked child's exit removes nothing of its
-/// parent's.
-static TEMP_DIRS: std::sync::Mutex<Vec<(u32, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
-
-/// The thread holding [`TEMP_DIRS`] (its `pthread_self`), 0 when none:
-/// the exit handler must not wait for a lock its own thread holds (an
-/// `exit` from another library's fork handler, which runs while ours hold
-/// it).
-static TEMP_DIRS_HOLDER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// The calling thread's id for [`TEMP_DIRS_HOLDER`] (never 0 on glibc).
-fn this_thread() -> usize {
-    // SAFETY: no arguments; returns the calling thread's id.
-    unsafe { libc::pthread_self() as usize }
-}
-
-/// The exit handler: what the exiting process made and nothing removed,
-/// removed ([`remove_tree`]: no process spawned and no lock of the
-/// environment's taken, as `exit` may come from a thread that holds one).
-/// Skipped when this thread holds the registry (an `exit` from a fork
-/// handler).
-extern "C" fn remove_temp_dirs_at_exit() {
-    if TEMP_DIRS_HOLDER.load(std::sync::atomic::Ordering::SeqCst) == this_thread() {
-        return;
-    }
-    let mine: Vec<Vec<u8>> = {
-        let mut dirs = temp_dirs_lock();
-        let me = std::process::id();
-        let mine = dirs.0.iter().filter(|(p, _)| *p == me).map(|(_, d)| d.clone()).collect();
-        dirs.0.retain(|(p, _)| *p != me);
-        mine
-    };
-    for d in mine {
-        remove_tree(&d);
-    }
-}
-
-/// [`TEMP_DIRS`] held, its holder noted until it drops (the fork handlers
-/// hold one across a fork, `isolate::fork_take`).
-pub(crate) struct TempDirsGuard(std::sync::MutexGuard<'static, Vec<(u32, Vec<u8>)>>);
-
-impl Drop for TempDirsGuard {
-    fn drop(&mut self) {
-        TEMP_DIRS_HOLDER.store(0, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// [`TEMP_DIRS`]' lock (taken alone, or last of the fork handlers' locks).
-pub(crate) fn temp_dirs_lock() -> TempDirsGuard {
-    let g = TEMP_DIRS.lock().unwrap_or_else(|e| e.into_inner());
-    TEMP_DIRS_HOLDER.store(this_thread(), std::sync::atomic::Ordering::SeqCst);
-    TempDirsGuard(g)
-}
-
-/// No longer remove `dir` (made by the process `pid`) at exit: it is no
-/// longer the session's (`tempdir(check = TRUE)` made another).
-pub fn forget_temp_dir(pid: u32, dir: &[u8]) {
-    temp_dirs_lock().0.retain(|(p, d)| !(*p == pid && d == dir));
-}
-
-/// Note the temporary directory `dir` this process made, to remove it at
-/// exit if nothing removed it before.
-pub fn register_temp_dir(dir: &[u8]) {
-    static AT_EXIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    robigo_heap::once_excluding_fork(&AT_EXIT, || {
-        // SAFETY: registers a handler that takes no arguments, calls nothing
-        // that exits, and touches only this module's statics.
-        unsafe { libc::atexit(remove_temp_dirs_at_exit) };
-    });
-    temp_dirs_lock().0.push((std::process::id(), dir.to_vec()));
-}
-
-/// `R_CleanTempDir()`'s removal of `dir`, which [`register_temp_dir`]
-/// noted (and no longer does).
+/// `R_CleanTempDir()`'s removal of the session's temporary directory
+/// `dir` (its isolate's, [`crate::Cx::clean_temp_dir`]: R_CleanUp's, on
+/// every way robigo-rt ends, or the isolate's drop).
 // R: platform.c:R_CleanTempDir
 pub fn remove_temp_dir(dir: &[u8]) {
-    forget_temp_dir(std::process::id(), dir);
     remove_tree(dir);
 }
 

@@ -200,7 +200,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     // failure is R_Suicide's (stdout this early, status 2)
     if let Err(msg) = robigo_rtbuiltins::errors::bind_domain(cx) {
         println!("Fatal error: {msg}");
-        std::process::exit(2);
+        // R_Suicide's R_CleanUp(SA_SUICIDE, 2, 0): the temporary directory
+        // InitTempDir made goes too
+        match repl::clean_up(cx, repl::SaveAction::Suicide, 2, false) {
+            Ok(never) => match never {},
+            Err(_) => unreachable!("robigo: SA_SUICIDE saves nothing"),
+        }
     }
 }
 
