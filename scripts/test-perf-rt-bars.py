@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import tarfile
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -37,6 +38,19 @@ def verdict(instr=None, rss=None, main=None):
     return perf.rt_verdict(SPEC, instr or OK, rss or RSS, main)
 
 
+def fake_trees(directory, name, trees=("rt-home", "rt-home-db")):
+    """A tarball as rt-startup.py --pack-trees packs one: `trees` under
+    .robigo, each holding a file naming `name` (whose trees they are)."""
+    tar = os.path.join(directory, f"{name}-trees.tar")
+    src = os.path.join(directory, f"{name}-src")
+    for t in trees:
+        os.makedirs(os.path.join(src, ".robigo", t), exist_ok=True)
+        Path(src, ".robigo", t, "owner").write_text(name)
+    with tarfile.open(tar, "w") as f:
+        f.add(os.path.join(src, ".robigo"), arcname=".robigo")
+    return tar
+
+
 class Bars(unittest.TestCase):
     def test_met_bars_hold_and_unmet_bars_only_report(self):
         failures, notes, table = verdict()
@@ -45,6 +59,21 @@ class Bars(unittest.TestCase):
         status = {row: st for row, *_, st in table}
         self.assertEqual(status, {"plain": "ok", "s3": "not met yet", "fib": "not met yet",
                                   "paste": "accepted up to 2.0x"})
+
+    def test_a_peak_rss_close_under_its_cap_is_warned_not_failed(self):
+        # today's cap 40,000 KiB: 5% is 2,000 KiB of room
+        for kib, warned in ((37_900, False), (38_001, True), (39_999, True)):
+            failures, notes, _ = verdict(rss={"p.R": kib})
+            self.assertEqual(failures, [], kib)
+            self.assertEqual(any("`p.R`: peak RSS" in n and "under today's cap of 40,000" in n for n in notes),
+                             warned, (kib, notes))
+        _, notes, _ = verdict(rss={"p.R": 38_840})
+        self.assertIn("`p.R`: peak RSS 38,840 KiB is 2.9% under today's cap of 40,000 (warned under 5%)", notes[0])
+        # above the cap it fails, and is not also warned of
+        failures, notes, _ = verdict(rss={"p.R": 40_001})
+        self.assertEqual(len(failures), 1)
+        self.assertEqual([n for n in notes if "peak RSS" in n], [])
+        self.assertAlmostEqual(perf.rss_margin(52_644, 54_220), 2.9067, places=3)
 
     def test_a_met_bar_that_breaks_fails(self):
         failures, _, _ = verdict(instr={**OK, "plain": 601.0})
@@ -118,7 +147,7 @@ class Guards(unittest.TestCase):
 
         def instr(binary, rows, *_, **kw):
             measured.append((binary, list(rows)))
-            boots.append(kw.get("boot"))
+            boots.append((kw.get("renv") or {}).get("ROBIGO_RT_BOOT"))
             return {"plain": 500.0, guard: 101.0 if binary == "new-bin" else 100.0}
 
         for slower, rc in ((True, 1), (False, 0)):
@@ -127,7 +156,8 @@ class Guards(unittest.TestCase):
                 Path(tmp, "bars.toml").write_text(bars)
                 a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin",
                                     main="main-bin" if slower else None, jobs=1, runs=1,
-                                    out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="rdb")
+                                    out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="rdb",
+                                    trees=fake_trees(tmp, "new"), main_trees=fake_trees(tmp, "main"))
                 buf = io.StringIO()
                 with patch.object(perf, "rt_instr", instr), \
                         patch.object(perf, "rt_rss", lambda *_, **__: {"p.R": 30000}), \
@@ -507,10 +537,11 @@ class Boot(unittest.TestCase):
                 "robigo_instr": 1.0, "gnur_instr": 1.0, "robigo_est_cycles": None, "gnur_est_cycles": None}}}))
             return SimpleNamespace(returncode=0, stderr="")
         with tempfile.TemporaryDirectory() as tmp, patch.object(perf.subprocess, "run", side_effect=fake_run):
-            perf.rt_instr("rt", ["plain"], 1, tmp, "new", boot="rdb")
-            perf.rt_instr(None, ["plain"], 1, tmp, "gnur", boot="rdb")
+            perf.rt_instr("rt", ["plain"], 1, tmp, "new", renv=perf.rt_env("rdb", "/h"))
+            perf.rt_instr(None, ["plain"], 1, tmp, "gnur", renv=perf.rt_env("rdb", "/h"))
         robigo, gnur = cmds
-        self.assertEqual(robigo[robigo.index("--robigo-env") + 1], "ROBIGO_RT_BOOT=rdb")
+        envs = [robigo[i + 1] for i, x in enumerate(robigo) if x == "--robigo-env"]
+        self.assertEqual(envs, ["ROBIGO_RT_BOOT=rdb", "ROBIGO_RT_CHECKOUT=/h"])
         self.assertNotIn("--robigo-env", gnur)
 
 
@@ -817,18 +848,58 @@ class EveryRunNamesItsBoot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "bars.toml").write_text(bars)
             a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin", main="main-bin", jobs=1, runs=1,
-                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="rdb")
+                                out=os.path.join(tmp, "out.json"), gnur=None, cycles=False, boot="rdb",
+                                trees=fake_trees(tmp, "new"), main_trees=fake_trees(tmp, "main"))
             with patch.object(perf.subprocess, "run", side_effect=fake_run), \
                     patch.object(perf, "binary_identity", lambda *_: {}), \
                     patch.object(perf, "report_identity", lambda *_, **__: None), \
                     patch.object(perf, "cpu_signature", lambda: ("cpu", "0" * 16)), redirect_stdout(io.StringIO()):
-                perf.cmd_rt_bars(a)
-        robigo = [c for c in cmds if "--robigo" in c]
-        # both binaries, the rows and the RSS programs
-        self.assertEqual(sorted({c[c.index("--robigo") + 1] for c in robigo}), ["main-bin", "new-bin"])
-        self.assertEqual({"rss.py" in c[1] for c in robigo}, {True, False})
-        for c in robigo:
-            self.assertEqual(c[c.index("--robigo-env") + 1], "ROBIGO_RT_BOOT=rdb", c)
+                self.assertEqual(perf.cmd_rt_bars(a), 0)
+                robigo = [c for c in cmds if "--robigo" in c]
+                # both binaries, the rows and the RSS programs
+                self.assertEqual(sorted({c[c.index("--robigo") + 1] for c in robigo}), ["main-bin", "new-bin"])
+                self.assertEqual({"rss.py" in c[1] for c in robigo}, {True, False})
+                for c in robigo:
+                    envs = dict(c[i + 1].split("=", 1) for i, x in enumerate(c) if x == "--robigo-env")
+                    self.assertEqual(envs["ROBIGO_RT_BOOT"], "rdb", c)
+                    # each binary boots its own trees: the home unpacked from
+                    # its own tarball
+                    owner = Path(envs["ROBIGO_RT_CHECKOUT"], ".robigo", "rt-home-db", "owner").read_text()
+                    self.assertEqual(owner, {"new-bin": "new", "main-bin": "main"}[c[c.index("--robigo") + 1]], c)
+
+    def test_a_binary_without_its_boots_tree_is_refused_by_name_before_anything_runs(self):
+        bars = (f'[gnur]\nversion = "{perf.pins()["rt"]}"\nsource = "x"\n[gnur.instr]\nplain = 1000.0\n'
+                '[gnur.rss]\n"p.R" = 50000\n[[bar]]\nrow = "plain"\nagainst = "gnur"\nmax = 0.6\n'
+                '[[rss]]\nprogram = "p.R"\nagainst = ["gnur"]\n')
+        for boot, missing in (("rdb", "rt-home-db"), ("m1", "rt-home")):
+            with self.subTest(boot=boot), tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, "bars.toml").write_text(bars)
+                others = tuple(t for t in ("rt-home", "rt-home-db") if t != missing)
+                a = SimpleNamespace(bars=str(Path(tmp, "bars.toml")), robigo_rt="new-bin", main="main-bin", jobs=1,
+                                    runs=1, out=None, gnur=None, cycles=False, boot=boot,
+                                    trees=fake_trees(tmp, "new"), main_trees=fake_trees(tmp, "main", others))
+                with patch.object(perf.subprocess, "run", side_effect=AssertionError("ran")), \
+                        patch.object(perf, "binary_identity", side_effect=AssertionError("identified")), \
+                        patch.object(perf, "cpu_signature", lambda: ("cpu", "0" * 16)), \
+                        redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(perf.cmd_rt_bars(a), 1)
+                self.assertIn(f"main (main-bin): no .robigo/{missing} in ", out.getvalue())
+                self.assertNotIn("robigo-rt (new-bin)", out.getvalue())
+
+    def test_trees_home_is_rt_starts_and_rt_bars_one_function(self):
+        su = perf.rt_startup()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(su.trees_home("bin", False, tmp), tmp)
+            home = su.trees_home("bin", fake_trees(tmp, "x"))
+            self.assertEqual(Path(home, ".robigo", "rt-home", "owner").read_text(), "x")
+            with patch.object(su, "build_trees", return_value="/built") as build:
+                self.assertEqual(su.trees_home("bin", True, tmp), "/built")
+            build.assert_called_once_with("bin", tmp)
+            # rt-starts' run() takes its home from it too
+            with patch.object(su, "trees_home", return_value=tmp) as th, patch.object(su, "measure", return_value={}), \
+                    patch.object(su, "require_cache_used"):
+                su.run("bin", ["interim"], tmp, 1, trees="t.tar")
+            th.assert_called_once_with("bin", "t.tar", tmp)
 
     def test_an_unknown_boot_is_refused_before_anything_runs(self):
         a = SimpleNamespace(bars="unused", robigo_rt="x", main=None, jobs=1, runs=1, out=None, gnur=None,

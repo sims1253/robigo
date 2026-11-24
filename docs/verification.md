@@ -1197,16 +1197,17 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         binaries, and GNU R's side, get the same shifts. The 0.5% rule
         applies to the median, and the report gives the range over the
         shifts (`docs/ledger/g3/2026-11-17-address-rows.md`).
-      - **The rows' boot (a known gap, INTERIM):** CI's rows and peak-RSS
-        runs still measure both binaries under `--boot m1`, M1's loader,
-        though the default boot is rdb since L5's flip: `rt-bars` cannot
-        yet point each binary at its own packed trees (`rt-starts` can,
-        with `--trees`/`--main-trees`), and a binary boots rdb only from
-        its tree. The starts judge rdb meanwhile. X's harness PR gives
-        `rt-bars` the trees and moves CI to `--boot rdb`; the flip's PR
-        body has the one-binary rdb-against-m1 rows table as its baseline.
-        Locally, `perf.py rt-bars --boot rdb` works when each binary's
-        build checkout has its tree (`scripts/rt-home-db.sh`).
+      - **The rows' boot:** CI's rows and peak-RSS runs measure both
+        binaries under `--boot rdb`, the default boot, each from the trees
+        its own build wrote: `perf.py rt-bars --trees`/`--main-trees` (the
+        tarballs perf-rt-build packs), through `rt-startup.py`'s
+        `trees_home`, the one function `rt-starts` uses. Without them
+        (locally) each binary's trees are built from this checkout's
+        sources. A binary whose trees lack its boot's tree (`BOOT_TREES`)
+        is refused by name before anything is measured.
+      - **Peak RSS against its caps:** each row's margin under every cap
+        is printed, and a margin under 5% (`RSS_MARGIN_WARN`) is warned
+        of, never failed: the next change that grows it fails the bar.
       - **The starts** (`[[startup]]` in `m1-bars.toml`, `perf.py rt-starts`, a
         step of its own in perf-rt with its own JSON):
         - each robigo-rt start (interim, rdb-jit, the default, and the
