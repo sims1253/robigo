@@ -53,7 +53,9 @@ pub(crate) struct SrcCtx<'p> {
     /// The text the parse read.
     pub src: &'p [u8],
     pub pos: &'p crate::srcref::Positions,
-    /// The parse's srcfile, then each `#line` alias from its offset on.
+    /// The parse's srcfile, then each `#line` alias from its offset on:
+    /// never empty (its first entry, at offset 0, is the parse's srcfile;
+    /// reader.rs's two makers seed it).
     pub files: Vec<(usize, Sexp)>,
     pub class: Sexp,
     /// Whether a srcref was attached: a `function`'s or a `{`'s (gram.y's
@@ -64,6 +66,7 @@ pub(crate) struct SrcCtx<'p> {
 impl SrcCtx<'_> {
     /// The srcfile in effect at byte `at` (gram.y's PS_SRCFILE then).
     pub(crate) fn file_at(&self, at: usize) -> Sexp {
+        debug_assert!(!self.files.is_empty(), "a source context without its srcfile");
         self.files.iter().rev().find(|(from, _)| *from <= at).map_or(self.files[0].1, |&(_, f)| f)
     }
 
