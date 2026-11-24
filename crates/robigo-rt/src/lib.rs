@@ -39,6 +39,7 @@
 #![deny(unsafe_code)]
 
 mod apply;
+pub mod census;
 pub mod args;
 mod assign;
 pub mod base;
@@ -180,6 +181,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.eval_bytecode = eval::eval_bytecode;
     h.apply = call::apply_hook;
     h.force_and_call = apply::force_and_call;
+    h.eval_call = apply::eval_call;
     h.force = eval::force;
     h.force_arg = eval::force_arg_eval;
     h.early_force = early::early_force;

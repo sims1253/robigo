@@ -206,6 +206,8 @@ pub struct Hooks {
     /// and `vapply`'s `FUN(X[[i]], ...)`, `mapply`'s) and for
     /// `forceAndCall`. Defaults to an error, as `eval`'s does.
     pub force_and_call: ForceAndCallFn,
+    /// MEASUREMENT ONLY (E's census): eval of a call made at run time, uncompiled.
+    pub eval_call: EvalFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
@@ -231,6 +233,7 @@ impl Default for Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
             force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'forceAndCall'")),
+            eval_call: no_eval,
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
@@ -327,6 +330,11 @@ impl Cx {
     #[inline]
     pub fn deparse1line<'g>(&'g self, x: Ref<'g>, opts: i32) -> Result<Vec<u8>, String> {
         (self.iso().hooks.get().deparse)(self, x, opts)
+    }
+
+    /// MEASUREMENT ONLY: [`Hooks::eval_call`].
+    pub fn eval_call(&mut self, expr: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().eval_call)(self, expr, env, out)
     }
 
     /// `eval(expr, env)` through the hook, the result written to `out`.

@@ -739,6 +739,10 @@ pub fn do_docall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             let o2 = s.out(cx);
             cx.with_pp_excess(2, |cx| cx.eval(c, envir, o2))?;
         }
+        // MEASUREMENT ONLY: ROBIGO_DOCALL_UNCOMPILED=1 evaluates the call uncompiled
+        if std::env::var_os("ROBIGO_DOCALL_UNCOMPILED").is_some() {
+            return cx.with_pp_excess(2, |cx| cx.eval_call(c, envir, out));
+        }
         cx.with_pp_excess(2, |cx| cx.eval(c, envir, out))
     })
 }

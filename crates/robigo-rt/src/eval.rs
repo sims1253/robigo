@@ -288,14 +288,28 @@ pub fn expr_code(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> R
         if x.typ() == LANGSXP
             && let Some(c) = crate::code::cached(cx, x.aux(), profile)
         {
+            crate::census::hit(c.as_ptr() as usize);
             return Ok(c);
         }
+        census_miss(cx, e, rho, profile)
+    }
+}
+
+/// MEASUREMENT ONLY: expr_code's miss path, out of line so that callgrind
+/// prices it (its inclusive cost is the compiles').
+#[inline(never)]
+fn census_miss(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile) -> RResult<Sexp> {
+    // SAFETY: as expr_code's.
+    unsafe {
         let code = crate::compile::compile(cx, e, rho, profile)?;
         let x = e.bind(cx).sexp();
         if x.typ() == LANGSXP {
             // the code object counts in the call's 4th word (a traced
             // field), not in any R-visible count
             crate::code::cache_on(x, code);
+            crate::census::compiled_call(code.as_ptr() as usize);
+        } else {
+            crate::census::compiled_other();
         }
         Ok(code)
     }
