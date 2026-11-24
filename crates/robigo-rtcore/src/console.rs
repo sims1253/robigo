@@ -75,21 +75,54 @@ impl Drop for Console {
 }
 
 impl Cx {
-    /// `Rprintf`: `b` written to the console's output.
+    /// `Rprintf`: `b` written to the console's output (or the active output
+    /// sink when `sink()` has diverted it).
     // R: printutils.c:Rprintf, Rvprintf
     pub fn rprintf(&self, b: &[u8]) {
+        if let Some(f) = self.iso().out_sink.get()
+            && f(self, b)
+        {
+            return;
+        }
+        self.write_console_out(b);
+    }
+
+    /// `REprintf`: `b` written to the console's error stream (after the
+    /// output is flushed), or to the active message sink when
+    /// `sink(..., type = "message")` has diverted it.
+    // R: printutils.c:REprintf, REvprintf
+    pub fn reprintf(&self, b: &[u8]) {
+        if let Some(f) = self.iso().err_sink.get()
+            && f(self, b)
+        {
+            return;
+        }
+        self.write_console_err(b);
+    }
+
+    /// Write directly to the console's output stream, bypassing `out_sink`.
+    pub fn write_console_out(&self, b: &[u8]) {
         let mut c = self.iso().console.borrow_mut();
         let _ = c.out.write_all(b);
     }
 
-    /// `REprintf`: `b` written to the console's error stream (after the
-    /// output is flushed).
-    // R: printutils.c:REprintf, REvprintf
-    pub fn reprintf(&self, b: &[u8]) {
+    /// Write directly to the console's error stream (flushing output first),
+    /// bypassing `err_sink`.
+    pub fn write_console_err(&self, b: &[u8]) {
         let mut c = self.iso().console.borrow_mut();
         let _ = c.out.flush();
         let _ = c.err.write_all(b);
         let _ = c.err.flush();
+    }
+
+    /// Install or clear the output-sink hook (`sink(type = "output")`).
+    pub fn set_out_sink(&self, f: Option<fn(&Cx, &[u8]) -> bool>) {
+        self.iso().out_sink.set(f);
+    }
+
+    /// Install or clear the message-sink hook (`sink(type = "message")`).
+    pub fn set_err_sink(&self, f: Option<fn(&Cx, &[u8]) -> bool>) {
+        self.iso().err_sink.set(f);
     }
 
     /// `R_FlushConsole`: the output stream flushed.

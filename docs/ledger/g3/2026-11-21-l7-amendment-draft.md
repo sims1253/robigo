@@ -1,6 +1,6 @@
-## 2026-11-21: L7 narrowed: a draft for the lead's sign-off
+## 2026-11-21: L7 narrowed (approved 2026-11-24)
 
-**Status: draft. It takes effect only when the lead signs it in this pull request, and the date placeholders (YYYY-MM-DD) in `docs/g3.md` become that date.** Until then, L7 stands as written on 2026-11-13.
+**Status: approved by the lead on 2026-11-24.** The date placeholders in `docs/g3.md` are `2026-11-24`, and the six ratchet cases below (`tests/rt/memory/gc-*.R` and `tests/rt/memory/gcinfo-format.R`) are recorded on GNU R 4.6.2 and ratcheted with this pull request (together with `.Internal(sink)` in `robigo-rt` so `gcinfo-format.R` captures message-stream reports via `sink(..., type = "message")`).
 
 ### What changes
 
@@ -24,8 +24,8 @@ Three models agreed on narrowing as an explicit exception approved by the lead.
 
 All are under `tests/rt/memory/` and recorded with `scripts/oracle-run.sh 4.6.2 scripts/regen-expected.sh`. Each prints only what L7 keeps exact, and none prints an absolute total.
 
-1. **`gc-shape.R`:** `gc()`'s and `gc(full = FALSE)`'s class, `dim` and `dimnames` (rows `Ncells`, `Vcells`; columns `used`, `(Mb)`, `gc trigger`, `(Mb)`, `max used`, `(Mb)`), and the `limit (Mb)` column when a limit is set. Also each column's type, and the `(Mb)` columns as the cell columns in GNU R's units (`round(cells × size / 2^20, 1)`), checked as relations.
-2. **`gc-limits.R`:** `mem.maxVSize()` and `mem.maxNSize()` read and set, including `Inf`; their errors and warnings for an invalid value and for one below what is in use; the limit column; and the limit errors (`vector memory limit of … reached`, `cons memory exhausted`) at a limit just above the heap in use.
+1. **`gc-shape.R`:** `gc()`'s and `gc(full = FALSE)`'s class, `dim` and `dimnames` (rows `Ncells`, `Vcells`; columns `used`, `(Mb)`, `gc trigger`, `(Mb)`, `max used`, `(Mb)`), and the `limit (Mb)` column when a limit is set. Also each column's type, and the `(Mb)` columns as the cell columns in GNU R's units (`0.1 * ceiling(10 * cells * size / 2^20)`), checked as relations.
+2. **`gc-limits.R`:** `mem.maxVSize()` and `mem.maxNSize()` read and set, including `Inf`; their errors and warnings for an invalid value and for one below what is in use; the limit column; and the limit errors (`vector memory limit of … reached`, `cons memory limit of … nodes reached`) at a limit just above the heap in use.
 3. **`gc-reset.R`:** after `gc(reset = TRUE)`, max used equals used. After an allocation, max used is at least used and never decreases until the next reset.
 4. **`gc-trigger.R`:** the ported trigger rules as relations: the trigger at least what is in use after a collection, and growth and shrinkage in the direction and order of `AdjustHeapSize`'s rules for a growing and then shrinking vector heap. No trigger value is printed.
 5. **`gcinfo-format.R`:** `gcinfo(TRUE)`'s and `gc(verbose = TRUE)`'s report lines matched against GNU R's format, with the numbers replaced by placeholders (`Garbage collection N = a+b+c (level L) ...`, the cons-cell and vector lines with their `Mbytes` and `%`). Also the `gcinfo` switch's return value.
