@@ -17,7 +17,8 @@ exit with the bytes allocated since. The programs:
 - benchmarks/rt/mem-report/*.R, report-only: each program's first line
   says which builtin family it measures and the PR expected to cure it
   (`# E4 report-only: FAMILY; cured by: PR`). Their overshoot is printed in
-  a table of its own and never fails the step; a program moves to
+  a table of its own and never fails the step (one that gives no report,
+  or times out, still does: a missing number is worse than a red step); a program moves to
   benchmarks/rt/mem/ when its cure lands, and that move is the cure's
   proof;
 - every row of benchmarks/rt/calls-rows.toml, as the N loop
@@ -123,22 +124,24 @@ def report_only():
 
 
 def verdict(res, report):
-    """The step's exit status: 1 if a gated program passed the bound or a
-    program gave no report; a report-only program never fails it."""
+    """The step's exit status: 1 if a gated program passed the bound or
+    any program gave no report (a report-only one too); a report-only
+    program's overshoot never fails it."""
     over = [r for r in res if "error" not in r and r["over"] and r["program"] not in report]
     errors = [r for r in res if "error" in r]
     return 1 if over or errors else 0
 
 
-def programs(tmp):
-    """(name, path) of every program to run."""
+def programs(tmp, report=None):
+    """(name, path) of every program to run; `report` is report_only()'s
+    snapshot (read here when not given)."""
     progs = [(p, p) for p in ratcheted("rt") + ratcheted("r")]
     for f in ["benchmarks/suite/calls.R", "benchmarks/suite/fib.R", "benchmarks/suite/binarytrees.R"]:
         progs.append((f, f))
     mem = os.path.join(ROOT, "benchmarks", "rt", "mem")
     progs += [(os.path.join("benchmarks/rt/mem", f), os.path.join("benchmarks/rt/mem", f))
               for f in sorted(os.listdir(mem)) if f.endswith(".R")]
-    progs += [(p, p) for p in report_only()]
+    progs += [(p, p) for p in (report_only() if report is None else report)]
     with open(os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml"), "rb") as f:
         rows = rows_with_setups(tomllib.load(f))
     # (the jit rows compile through the compiler namespace, which robigo-rt
@@ -192,14 +195,15 @@ def main():
     bin_ = a.bin or default_bin()
     if not os.access(bin_, os.X_OK):
         sys.exit(f"rt-overshoot: no robigo-rt at {bin_}")
+    # one snapshot of the report-only programs, for the run and the verdict
+    report = report_only()
     with tempfile.TemporaryDirectory() as tmp:
         libs = os.path.join(tmp, "libs")
         subprocess.run([os.path.join(ROOT, "scripts", "rt-capi-build.sh"), libs], check=True)
-        progs = programs(tmp)
+        progs = programs(tmp, report)
         jobs = [(n, p, prof) for n, p in progs for prof in a.profiles.split(",")]
         with ThreadPoolExecutor(a.jobs) as ex:
             res = list(ex.map(lambda j: run(bin_, j[0], j[1], j[2], libs), jobs))
-    report = report_only()
     errors = [r for r in res if "error" in r]
     ok = [r for r in res if "error" not in r]
     ok.sort(key=lambda r: -r["ratio"])
@@ -218,7 +222,7 @@ def main():
     over = [r for r in ok if r["over"]]
     due = [r for r in ok if r["exit_due"]]
     print()
-    print(f"runs: {len(res)}; with a report: {len(ok)}; over the bound: {len(over)}; "
+    print(f"runs: {len(res)}; gated runs with a report: {len(ok)}; over the bound: {len(over)}; "
           f"a collection due at exit: {len(due)}; largest max/bound: {ok[0]['ratio'] if ok else 0:.4f}")
     for r in errors:
         print(f"no result: {r['program']} ({r['profile']}): {r['error']}")
@@ -232,7 +236,7 @@ def main():
               f"exit {r['exit_due']}")
     if reported:
         print()
-        print("report-only (benchmarks/rt/mem-report: never fails the step)")
+        print("report-only (benchmarks/rt/mem-report: its overshoot never fails the step; no report does)")
         print()
         print("| program | profile | family | cured by | collections | max overshoot | bound | max / bound |")
         print("|---|---|---|---|---:|---:|---:|---:|")

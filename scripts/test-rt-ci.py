@@ -650,7 +650,6 @@ class RtCi(unittest.TestCase):
         # (none since paste collects in its loop: strings1e6.R, the flip's
         # one entry, runs under the default boot)
         self.assertEqual(set(ov.BOOTS), set())
-        self.assertNotIn("benchmarks/rt/mem/strings1e6.R", ov.BOOTS)
         with tempfile.TemporaryDirectory() as tmp:
             names = [n for n, _p in ov.programs(tmp)]
         for name, (boot, why) in ov.BOOTS.items():
@@ -1527,7 +1526,8 @@ def rust_src_snippets(root):
 
 class OvershootReportOnly(unittest.TestCase):
     """scripts/rt-overshoot.py's report-only programs (benchmarks/rt/mem-report):
-    reported, never failing the step; nothing in benchmarks/rt/mem is one."""
+    reported, their overshoot never failing the step (a missing report
+    does); nothing in benchmarks/rt/mem is one."""
 
     @classmethod
     def setUpClass(cls):
@@ -1547,6 +1547,10 @@ class OvershootReportOnly(unittest.TestCase):
         # program's missing report beside a report-only one
         self.assertEqual(self.ov.verdict([self.result("benchmarks/rt/mem/x.R", 1)], report), 1)
         self.assertEqual(self.ov.verdict([self.result(p, 1), {"program": "tests/rt/a.R", "error": "timeout"}], report), 1)
+        # a report-only program that gives no report, or times out, fails it
+        # too: its number is missing, not merely over
+        self.assertEqual(self.ov.verdict([{"program": p, "error": "timeout"}], report), 1)
+        self.assertEqual(self.ov.verdict([{"program": p, "error": "no report (exit 1)"}], report), 1)
 
     def test_every_mem_report_program_names_its_family_and_cure_and_is_run(self):
         d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem-report"
