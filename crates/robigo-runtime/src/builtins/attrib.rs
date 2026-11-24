@@ -62,17 +62,20 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     // prefix-scans the attributes with strncmp per entry on every call, and
     // most lookups are by exact name. Interning makes that an integer
     // compare: resolve the name once and read the attribute directly. A
-    // symbol-equal entry is the match the scan would return (the first full
-    // match wins, wherever a partial came first), so a miss, a partial
-    // match and the `names` special cases fall through to R's prefix rules
-    // below, unchanged.
+    // symbol-equal entry in the attribute list is the match the scan would
+    // return (the first full match wins, wherever a partial came first), so
+    // an actual hit returns immediately while a miss (including missing
+    // `row.names` with a partial match like `row.namess`, or virtual `names`
+    // on pairlists / 1D arrays) falls through to R's prefix rules below.
     if let Some(sym) = Sym::lookup(&want) {
-        if matches!(sym, s::ROW_NAMES | s::NAMES) {
-            return Ok(get_attrib(&x, sym));
-        }
         if let Some(val) = x.get_attr(sym) {
-            return Ok(val);
+            return Ok(if matches!(sym, s::ROW_NAMES | s::NAMES) { get_attrib(&x, sym) } else { val });
         }
+        if exact && sym != s::NAMES {
+            return Ok(Value::Null);
+        }
+    } else if exact && &*want != "names" {
+        return Ok(Value::Null);
     }
 
     #[derive(PartialEq)]
@@ -720,5 +723,37 @@ mod tests {
         let args_partial = vec![Arg::pos(x.clone()), Arg::pos(Value::str("foo")), Arg::pos(Value::lgl(false))];
         let res_partial = do_attr(&mut i, &call, args_partial, &env).ok().unwrap();
         assert!(matches!(res_partial, Value::Real(r) if r.data.as_slice() == [2.0]));
+    }
+
+    #[test]
+    fn attr_row_names_falls_through_to_partial_match_when_absent() {
+        let mut i = Interp::new();
+        let env = Env::new(None);
+        let call = Value::Null;
+        let x = Value::reals(vec![1.0, 2.0]);
+        let x = crate::attrib::set_attrib(x, Sym::new("row.namess"), Value::real(42.0)).ok().unwrap();
+
+        // Default exact = FALSE must partially match "row.namess" when "row.names" is absent.
+        let args = vec![Arg::pos(x.clone()), Arg::pos(Value::str("row.names"))];
+        let res = do_attr(&mut i, &call, args, &env).ok().unwrap();
+        assert!(matches!(res, Value::Real(r) if r.data.as_slice() == [42.0]));
+
+        // exact = TRUE rejects the partial match.
+        let args_exact = vec![Arg::pos(x), Arg::pos(Value::str("row.names")), Arg::pos(Value::lgl(true))];
+        let res_exact = do_attr(&mut i, &call, args_exact, &env).ok().unwrap();
+        assert!(res_exact.is_null());
+    }
+
+    #[test]
+    fn attr_names_miss_keeps_gnu_r_rules() {
+        let mut i = Interp::new();
+        let env = Env::new(None);
+        let call = Value::Null;
+        // "names" exact length overrides a partial "names2" even with exact = FALSE.
+        let x = Value::reals(vec![1.0, 2.0]);
+        let x = crate::attrib::set_attrib(x, Sym::new("names2"), Value::real(7.0)).ok().unwrap();
+        let args = vec![Arg::pos(x), Arg::pos(Value::str("names"))];
+        let res = do_attr(&mut i, &call, args, &env).ok().unwrap();
+        assert!(res.is_null());
     }
 }
