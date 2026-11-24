@@ -647,7 +647,10 @@ class RtCi(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
         ov = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ov)
-        self.assertEqual(set(ov.BOOTS), {"benchmarks/rt/mem/strings1e6.R"})
+        # (none since paste collects in its loop: strings1e6.R, the flip's
+        # one entry, runs under the default boot)
+        self.assertEqual(set(ov.BOOTS), set())
+        self.assertNotIn("benchmarks/rt/mem/strings1e6.R", ov.BOOTS)
         with tempfile.TemporaryDirectory() as tmp:
             names = [n for n, _p in ov.programs(tmp)]
         for name, (boot, why) in ov.BOOTS.items():
@@ -666,7 +669,7 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(r["boot"], ov.BOOTS.get(name, (None, ""))[0], name)
         for name, boot in seen.items():
             self.assertEqual(boot, ov.BOOTS[name][0] if name in ov.BOOTS else None, name)
-        self.assertEqual(len(seen), 4)
+        self.assertEqual(len(seen), 3 + len(ov.BOOTS))
 
     # Every file that runs a robigo-rt binary, and how that binary gets base's
     # database tree written by itself (a binary naming no boot boots rdb once

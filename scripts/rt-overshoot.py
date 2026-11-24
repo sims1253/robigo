@@ -65,19 +65,11 @@ DUE_AT_EXIT = re.compile(
 # the bound there; a named one must still pass under its boot. INTERIM(L5):
 # an entry goes when its cure lands, and M1's loader cannot be deleted while
 # one names it (docs/ledger/g3/2026-11-23-l5-flip.md, the deletion list).
-BOOTS = {
-    # One collection, at paste0's return, under both boots; by then rdb has
-    # allocated 51,826 more objects (the boot heap: base and the compiler),
-    # so the node trigger falls about 52k CHARSXPs earlier inside paste0's
-    # loop. paste0 has no safepoint until it returns, so what it allocates
-    # after the trigger is overshoot; GNU R collects inside the loop,
-    # because its allocVector collects anywhere. Max overshoot: m1
-    # 31,631,328 bytes; rdb 34,116,528 (eval) and 34,046,544 (bc); bound
-    # 33,554,432. The cure: paste0's string loop collects (B's); then this
-    # entry goes and the program passes under rdb.
-    "benchmarks/rt/mem/strings1e6.R": ("m1", "paste0's string loop has no safepoint; under rdb the node trigger "
-                                       "falls 52k CHARSXPs earlier in it"),
-}
+# None today: benchmarks/rt/mem/strings1e6.R, the one entry the flip made
+# (paste0's loop had no safepoint, so under rdb it overshot 34.1 MB past a
+# 33.55 MB bound), runs under rdb since paste collects between its elements
+# (Cx::fill_strings, B's paste poll): 48 bytes.
+BOOTS = {}
 
 
 def bound(live):
