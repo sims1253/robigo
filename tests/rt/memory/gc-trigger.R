@@ -4,16 +4,20 @@
 
 invisible(mem.maxVSize(Inf))
 
+chunk <- 1e6L
+
 g0 <- gc()
 cat("g0_ge_used:", all(g0[, "gc trigger"] >= g0[, "used"]), "\n")
 
 v0 <- g0["Vcells", "gc trigger"]
-big1 <- numeric(as.integer(ceiling(v0 * 0.8)))
+n1 <- as.integer(ceiling(v0 * 0.8 / chunk))
+big1 <- lapply(seq_len(n1), function(i) numeric(chunk))
 g1 <- gc()
 cat("g1_ge_used:", all(g1[, "gc trigger"] >= g1[, "used"]), "\n")
 cat("g1_grew:", g1["Vcells", "gc trigger"] > v0, "\n")
 
-big2 <- numeric(as.integer(ceiling(g1["Vcells", "gc trigger"] * 0.8)))
+n2 <- as.integer(ceiling(g1["Vcells", "gc trigger"] * 0.8 / chunk))
+big2 <- lapply(seq_len(n2), function(i) numeric(chunk))
 g2 <- gc()
 cat("g2_ge_used:", all(g2[, "gc trigger"] >= g2[, "used"]), "\n")
 cat("g2_grew:", g2["Vcells", "gc trigger"] > g1["Vcells", "gc trigger"], "\n")

@@ -41,8 +41,10 @@ sink(con2, type = "message")
 old1 <- gcinfo(TRUE)
 old_na <- gcinfo(NA)
 v_trig <- gc(verbose = FALSE)["Vcells", "gc trigger"]
-for (i in 1:4) {
-  z <- numeric(as.integer(ceiling(v_trig * 0.6)))
+chunk <- 1e6L
+n_chunks <- as.integer(ceiling(v_trig * 1.5 / chunk))
+for (i in seq_len(n_chunks)) {
+  z <- numeric(chunk)
   rm(z)
 }
 old2 <- gcinfo(FALSE)
