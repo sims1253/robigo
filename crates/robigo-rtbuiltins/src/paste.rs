@@ -152,12 +152,12 @@ pub fn do_paste<const CODE: u8>(
             return cx.build_with(out, |cx| {
                 let sv = strings_of(cx, x, &elts);
                 let mut p = Pieces { pieces: Vec::new(), ans: Vec::with_capacity(maxlen) };
-                if let Pasted::TooLong = paste_all(cx, &sv, sep.map(|s| first(cx, s)), maxlen, &mut p)? {
+                if let Err(TooLong) = paste_all(cx, &sv, sep.map(|s| first(cx, s)), maxlen, &mut p)? {
                     return Ok(Built::fail(too_long()));
                 }
                 Ok(match collapse_pieces(cx, p, first(cx, collapse))? {
-                    Pasted::Collapsed(r) => Built::done(r),
-                    _ => Built::fail(too_long()),
+                    Ok(r) => Built::done(r),
+                    Err(TooLong) => Built::fail(too_long()),
                 })
             });
         }
@@ -166,8 +166,8 @@ pub fn do_paste<const CODE: u8>(
         cx.fill_strings(out, maxlen, |cx, fill| {
             let sv = strings_of(cx, x, &elts);
             Ok(match paste_all(cx, &sv, sep.map(|s| first(cx, s)), maxlen, fill)? {
-                Pasted::TooLong => Err(too_long()),
-                _ => Ok(()),
+                Ok(()) => Ok(()),
+                Err(TooLong) => Err(too_long()),
             })
         })
     })
@@ -356,20 +356,15 @@ fn strings_of<'a>(cx: &'a Cx, x: Root<'_>, elts: &[Option<Root<'_>>]) -> Vec<Str
         .collect()
 }
 
-/// How [`paste_all`] ends.
-enum Pasted<'g> {
-    /// Without `collapse`: the elements put in the fill (all of them, or up
-    /// to where [`Fill::put`] said stop).
-    Filled,
-    /// With `collapse`: the result.
-    Collapsed(Ref<'g>),
-    /// A result over `INT_MAX` bytes.
-    TooLong,
-}
+/// A result over `INT_MAX` bytes ([`paste_all`], [`collapse_pieces`]).
+struct TooLong;
 
 /// Where [`paste_all`] puts each element, joined in a buffer: interned
 /// into the result (without `collapse`: [`Fill`]), or kept for the
-/// collapse ([`Pieces`]).
+/// collapse ([`Pieces`]). Only the `Fill` can stop the loop for a
+/// collection: the collapse keeps its texts in Rust memory and allocates
+/// its one result at the end, so `paste(..., collapse =)` runs its loop in
+/// one interval, allocating no R object per element.
 trait PasteOut<'g> {
     /// The first element to make.
     fn start(&self) -> usize;
@@ -421,7 +416,7 @@ fn paste_all<'g, O: PasteOut<'g>>(
     sep: Option<Char<'_>>,
     maxlen: usize,
     out: &mut O,
-) -> Result<Pasted<'g>, NeedGc> {
+) -> Result<Result<(), TooLong>, NeedGc> {
     let loc = cx.locale();
     let nx = sv.len();
     let sep = sep.map(crate::coerce::text);
@@ -496,7 +491,7 @@ fn paste_all<'g, O: PasteOut<'g>>(
         // escape in a non-UTF-8 locale)
         let ascii = ascii || buf.is_ascii();
         if buf.len() > i32::MAX as usize {
-            return Ok(Pasted::TooLong);
+            return Ok(Err(TooLong));
         }
         let enc = if use_utf8 {
             Enc::Utf8
@@ -510,15 +505,15 @@ fn paste_all<'g, O: PasteOut<'g>>(
         // mkCharCE: ASCII carries no mark
         let enc = if ascii { Enc::Native } else { enc };
         if out.put(cx, i, &buf, ascii, enc)? {
-            return Ok(Pasted::Filled);
+            return Ok(Ok(()));
         }
     }
-    Ok(Pasted::Filled)
+    Ok(Ok(()))
 }
 
 /// The collapse of `do_paste`: the elements' texts joined by `collapse`.
 // R: paste.c:do_paste
-fn collapse_pieces<'g>(cx: &'g Cx, p: Pieces, collapse: Char<'_>) -> Result<Pasted<'g>, NeedGc> {
+fn collapse_pieces<'g>(cx: &'g Cx, p: Pieces, collapse: Char<'_>) -> Result<Result<Ref<'g>, TooLong>, NeedGc> {
     let loc = cx.locale();
     let known_utf8 = loc.utf8;
     let Pieces { pieces, ans } = p;
@@ -562,7 +557,7 @@ fn collapse_pieces<'g>(cx: &'g Cx, p: Pieces, collapse: Char<'_>) -> Result<Past
         all_known = all_known && (el.is_ascii() || known(el));
         any_known = any_known || known(el);
         if buf.len() > i32::MAX as usize {
-            return Ok(Pasted::TooLong);
+            return Ok(Err(TooLong));
         }
     }
     let enc = if use_utf8 {
@@ -577,5 +572,5 @@ fn collapse_pieces<'g>(cx: &'g Cx, p: Pieces, collapse: Char<'_>) -> Result<Past
     let enc = if buf.is_ascii() { Enc::Native } else { enc };
     let mut v = cx.alloc_vector::<Char<'_>>(1)?;
     v.set(0, cx.mk_char(&buf, mark(enc))?);
-    Ok(Pasted::Collapsed(v.finish().into()))
+    Ok(Ok(v.finish().into()))
 }

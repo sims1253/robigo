@@ -1202,7 +1202,9 @@ impl<'r, const V: bool> Reader<'_, 'r, V> {
             unsafe {
                 let o = x.bind(cx).sexp();
                 if o.gp() != levs {
-                    o.set_gp(levs);
+                    // (a vector's GROWABLE bit from the stream changes its
+                    // cells: through the heap, which moves the charge)
+                    cx.set_levels(o, levs);
                 }
                 if o.is_object() != objf {
                     o.set_object(objf);

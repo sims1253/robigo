@@ -172,6 +172,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
+    special_fn("round", crate::specials::do_math2::<false>, 0, -1),
+    special_fn("signif", crate::specials::do_math2::<true>, 0, -1),
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
@@ -574,6 +576,10 @@ pub struct RtState {
     pub inline: std::cell::Cell<bool>,
     /// The calls run inline so far (for tests).
     pub inline_runs: std::cell::Cell<u64>,
+    /// A translated call's promise code (a BCODESXP) is computed early
+    /// (`crate::early::value`): off only in tests, which compare the counts
+    /// a force makes with and without its early value.
+    pub early_bytecode: std::cell::Cell<bool>,
     /// The `<<-` writes of the inline run under way (`crate::inline`).
     pub(crate) inline_writes: crate::inline::WriteLog,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.

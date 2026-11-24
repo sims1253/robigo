@@ -9,7 +9,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// The input files, by name.
 fn inputs() -> Vec<(&'static str, Vec<u8>)> {
@@ -271,13 +274,12 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32
 
 /// [`run`] with `env` set on top of its environment.
 fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.args(args).current_dir(dir).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
     // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
@@ -311,6 +313,26 @@ fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)])
     (o.stdout, err, o.status.code().unwrap_or(-1))
 }
 
+/// INTERIM(srcref): the interactive cases, whose start runs the system
+/// profile's `options(keep.source = interactive())`, which robigo-rt
+/// refuses until it keeps source references. Each is GNU R's transcript
+/// under M1's loader (`ROBIGO_RT_BOOT=m1`, which runs no profile: the
+/// console's tests), and under the default boot GNU R's but for the
+/// refusal's one line first on stderr ([`SRCREF_LINE`]); when source
+/// references exist the default boot's run passes, this check fails, and
+/// the case leaves the list.
+const SRCREF: &[&str] = &[
+    "interactive",
+    "interactive-nul",
+    "interactive-tb",
+    "interactive-then-e",
+    "interactive-then-f",
+    "interactive-then-quiet",
+];
+
+/// The profile's error under the default boot (INTERIM(srcref)).
+const SRCREF_LINE: &[u8] = db_tree::SRCREF_LINE.as_bytes();
+
 #[test]
 fn the_command_line_and_transcript_are_gnu_rs() {
     let dir: PathBuf = std::env::temp_dir().join(format!("robigo-rt-cli-{}", std::process::id()));
@@ -322,7 +344,24 @@ fn the_command_line_and_transcript_are_gnu_rs() {
     let long_src = &inputs.iter().find(|(n, _)| *n == "long.R").unwrap().1;
     let mut failed = Vec::new();
     for (name, args, stdin, out, err, status) in cases(long_src) {
-        let got = run(&dir, &args, stdin);
+        if SRCREF.contains(&name) {
+            let rdb = run_env(&dir, &args, stdin, &[("ROBIGO_RT_BOOT", "")]);
+            let want = (out.clone(), [SRCREF_LINE, err].concat(), status);
+            if rdb != want {
+                failed.push(format!(
+                    "{name} (the default boot, INTERIM(srcref): GNU R's transcript but for the keep.source refusal \
+                     first; if it is GNU R's now, take it out of SRCREF): got\n  stdout {:?}\n  stderr {:?}\n  status {}",
+                    String::from_utf8_lossy(&rdb.0),
+                    String::from_utf8_lossy(&rdb.1),
+                    rdb.2
+                ));
+            }
+        }
+        let got = if SRCREF.contains(&name) {
+            run_env(&dir, &args, stdin, &[("ROBIGO_RT_BOOT", "m1")])
+        } else {
+            run(&dir, &args, stdin)
+        };
         if got != (out.clone(), err.to_vec(), status) {
             failed.push(format!(
                 "{name}: got\n  stdout {:?}\n  stderr {:?}\n  status {}\nwant\n  stdout {:?}\n  stderr {:?}\n  status {status}",
@@ -378,7 +417,7 @@ fn a_c_locale_refuses_non_ascii_outside_strings_whatever_n() {
 /// the input to end (a pipe left open).
 #[test]
 fn the_save_check_does_not_wait_for_stdin() {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.arg("--quiet").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("run robigo-rt");
     // (stdin stays open until the child has exited)
@@ -424,7 +463,7 @@ fn interactive_r_without_a_save_action_is_refused() {
 fn the_console_answers_before_stdin_ends() {
     use std::io::{Read, Write};
     for args in [&["--vanilla", "--quiet"][..], &["--no-readline", "--interactive", "--vanilla", "--quiet"][..]] {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+        let mut cmd = db_tree::rt_command();
         cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().expect("run robigo-rt");
         let mut stdin = child.stdin.take().unwrap();
@@ -474,11 +513,40 @@ fn keep_source_true_is_refused_and_keep_pkg_source_read() {
     );
     assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
     let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\\n')";
+    // (under M1's loader, which loads no compiler at the start: under the
+    // default boot the start's loadNamespace("compiler") sys.sources its
+    // loader file with keep.source.pkgs, INTERIM(srcref), below)
     for (v, want) in [("yes", "FALSE TRUE \n"), ("no", "FALSE FALSE \n"), ("YES", "FALSE FALSE \n")] {
-        let (out, _, status) =
-            run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);
+        let (out, _, status) = run_env(
+            &std::env::temp_dir(),
+            &["--vanilla", "-e", expr],
+            None,
+            &[("R_KEEP_PKG_SOURCE", v), ("ROBIGO_RT_BOOT", "m1")],
+        );
         assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (want, 0), "R_KEEP_PKG_SOURCE={v}");
     }
+    // INTERIM(srcref): the default boot with the JIT on halts at the start
+    // with the refusal (try's report in loadNamespace) before
+    // loadNamespace's own error; when source references exist this fails
+    // and the "yes" case above runs under the default boot
+    let (out, err, status) = run_env(
+        &std::env::temp_dir(),
+        &["--vanilla", "-e", expr],
+        None,
+        &[("R_KEEP_PKG_SOURCE", "yes"), ("ROBIGO_RT_BOOT", ""), ("R_ENABLE_JIT", "3")],
+    );
+    assert_eq!(
+        (String::from_utf8_lossy(&out).as_ref(), String::from_utf8_lossy(&err).as_ref(), status),
+        (
+            "",
+            format!(
+                "{}Error: unable to load R code in package \u{2018}compiler\u{2019}\nExecution halted\n",
+                db_tree::SRCREF_LINE
+            )
+            .as_str(),
+            1
+        )
+    );
     // so sys.source (loadNamespace's) refuses where it sets the option, by
     // design: the refusal at the point of use
     let dir = std::env::temp_dir();
@@ -486,7 +554,8 @@ fn keep_source_true_is_refused_and_keep_pkg_source_read() {
     std::fs::write(&f, "x <- 1\n").unwrap();
     let expr =
         format!("cat(tryCatch(sys.source('{}', envir = new.env()), error = conditionMessage), '\\n')", f.display());
-    let (out, _, status) = run_env(&dir, &["--vanilla", "-e", &expr], None, &[("R_KEEP_PKG_SOURCE", "yes")]);
+    let (out, _, status) =
+        run_env(&dir, &["--vanilla", "-e", &expr], None, &[("R_KEEP_PKG_SOURCE", "yes"), ("ROBIGO_RT_BOOT", "m1")]);
     let _ = std::fs::remove_file(&f);
     assert_eq!(
         (String::from_utf8_lossy(&out).as_ref(), status),
