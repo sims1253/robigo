@@ -959,15 +959,21 @@ mod tests {
     }
 }
 
-/// What [`stage0`] did: the top-level expressions it evaluated, and those
-/// that failed (their first lines and the error), in file order.
-#[derive(Debug, Default)]
-pub struct Stage0 {
-    pub exprs: usize,
-    pub failed: Vec<(usize, String)>,
-    /// names.c's primitives and internals bound to the not-implemented
-    /// builtins (as [`Loaded::stubs`]).
-    pub stubs: usize,
+/// How [`stage0`] ended.
+#[derive(Debug)]
+pub enum Stage0 {
+    /// base's file and the system profile read (an error in one, in an
+    /// interactive R, ended that file only): the top-level expressions
+    /// evaluated, and names.c's primitives and internals bound to the
+    /// not-implemented builtins (as [`Loaded::stubs`]), for
+    /// `ROBIGO_BOOT_VERBOSE`'s record.
+    Done { exprs: usize, stubs: usize },
+    /// An error in either file, and `check_session_exit` says R halts:
+    /// "Execution halted" and `R_CleanUp(SA_NOSAVE, 1, 0)` are the caller's.
+    Halt,
+    /// base's file did not open: `R_Suicide`'s message written, its
+    /// `R_CleanUp(SA_SUICIDE, 2, 0)` the caller's.
+    Suicide,
 }
 
 /// GNU R's boot of base (m2m3-plan §B L2's stage 0, L5's boot):
@@ -982,32 +988,45 @@ pub struct Stage0 {
 /// do: names.c's primitives and internals robigo-rt lacks bound to the
 /// not-implemented builtins, and `.Device`/`.Devices`.
 ///
-/// INTERIM(L5): GNU R stops at an error in either file (R_ReplFile has no
-/// jump of its own: `setup_Rmainloop`'s and `R_LoadProfile`'s SETJMP take
-/// it to `check_session_exit`, which halts a script); robigo-rt records it
-/// and goes on, so one run lists every expression a missing builtin stops
-/// (today the system profile's Sys.info and Sys.glob). The site and user
-/// profiles are GNU R's ([`after_profile`]).
-// R: main.c:R_ReplFile, setup_Rmainloop
+/// Each file is read under a top-level `SETJMP` of its own
+/// (`setup_Rmainloop`'s for base's file, `R_LoadProfile`'s for the system
+/// profile; R_ReplFile has none): an error, a syntax error included, ends
+/// that file and is `check_session_exit`'s, which halts a script
+/// ([`Stage0::Halt`]) and, in an interactive R, goes on to the next step.
+/// The site and user profiles are [`after_profile`]'s.
+// R: main.c:setup_Rmainloop, R_LoadProfile, R_ReplFile, startup.c:R_OpenLibraryFile,
+// R_OpenSysInitFile, unix/sys-std.c:Rstd_Suicide
 pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
-    let mut st = Stage0::default();
     // the JIT off while R starts (R_init_jit_enabled, at the end, sets it)
     crate::jit::at_startup(cx);
     // InitNames: every primitive and internal of names.c's table bound
     let prims: Vec<&'static str> = robigo_rtbuiltins::names::PRIMITIVES.iter().map(|p| p.0).collect();
     let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
-    st.stubs = stubs_for(cx, &prims, &internals);
+    let stubs = stubs_for(cx, &prims, &internals);
     init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
+    let mut exprs = 0;
+    // R_OpenLibraryFile("base"), R_Suicide(_("unable to open the base
+    // package\n")) when it does not open ("Fatal error: %s\n")
+    let Ok(bytes) = std::fs::read(home.join("library/base/R/base")) else {
+        cx.reprintf(b"Fatal error: unable to open the base package\n\n");
+        return Ok(Stage0::Suicide);
+    };
     // (base's lazy-load frame is recorded while this file runs, and only
     // then: robigo-rtcore's Cx::note_lazy_load_frame)
-    cx.while_reading_base_file(|cx| repl_file(cx, &home.join("library/base/R/base"), &mut st))?;
+    if !cx.while_reading_base_file(|cx| repl_file(cx, &bytes, |cx| cx.base_namespace(), &mut exprs)) {
+        return Ok(Stage0::Halt);
+    }
     // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
-    // in the base namespace, the same way (setup_Rmainloop's next steps,
-    // the locks, .OptRequireMethods, the site and user profiles, .First.sys
-    // and the JIT, are L5's boot)
-    repl_file(cx, &home.join("library/base/R/Rprofile"), &mut st)?;
+    // in the base namespace, the same way; a file that does not open is no
+    // profile (setup_Rmainloop's next steps, the locks, .OptRequireMethods,
+    // the site and user profiles, .First.sys and the JIT, are L5's boot)
+    if let Ok(bytes) = std::fs::read(home.join("library/base/R/Rprofile")) {
+        if !repl_file(cx, &bytes, |cx| cx.base_namespace(), &mut exprs) {
+            return Ok(Stage0::Halt);
+        }
+    }
     lock_base(cx).map_err(|e| failed(cx, e))?;
-    Ok(st)
+    Ok(Stage0::Done { exprs, stubs })
 }
 
 /// `PrintGreeting`: a blank line, `PrintVersion_part_1`, and the notices on
@@ -1096,7 +1115,7 @@ pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
     // is no profile, startup.c:115, sys-unix.c:77, main.c:723)
     let run = |cx: &mut Cx, f: Option<std::path::PathBuf>| -> bool {
         match f.and_then(|f| std::fs::read(&f).ok()) {
-            Some(bytes) => load_profile(cx, &bytes),
+            Some(bytes) => repl_file(cx, &bytes, |cx| cx.global_env(), &mut 0),
             None => true,
         }
     };
@@ -1235,14 +1254,15 @@ fn restore_global_env(cx: &mut Cx, quiet: bool) -> bool {
     ok || crate::repl::check_session_exit(cx)
 }
 
-/// `R_LoadProfile(fp, R_GlobalEnv)`: `R_ReplFile` of the profile's bytes,
-/// statement after statement as `R_Parse1File` reads them (those before a
-/// syntax error run), each evaluated in the global environment at the top
-/// level and printed if visible. An error, the parse's included, lands on
-/// `R_LoadProfile`'s `SETJMP`: the rest of the file is not read, and the
-/// result is `check_session_exit`'s (false: R halts).
+/// `R_ReplFile(fp, rho)` under its caller's top-level `SETJMP`
+/// (`R_LoadProfile`'s, or `setup_Rmainloop`'s for base's file): the file's
+/// statements one after another as `R_Parse1File` reads them (those before
+/// a syntax error run), each evaluated in `rho` at the top level and
+/// printed if visible, `exprs` counting them. An error, the parse's
+/// included, lands on the `SETJMP`: the rest of the file is not read, and
+/// the result is `check_session_exit`'s (false: R halts).
 // R: main.c:R_LoadProfile, R_ReplFile
-fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
+fn repl_file(cx: &mut Cx, bytes: &[u8], rho: for<'g> fn(&'g Cx) -> Ref<'g>, exprs: &mut usize) -> bool {
     let text = robigo_syntax::lexable(bytes);
     let source = robigo_syntax::Source::new(&text, bytes);
     let arena = robigo_syntax::Arena::new();
@@ -1282,7 +1302,8 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
             }
         };
         let ws = between(start, p.consumed_end());
-        if repl_eval_toplevel(cx, &e, &ws, |cx| cx.global_env(), savestack, (1, 0)).is_err() {
+        *exprs += 1;
+        if repl_eval_toplevel(cx, &e, &ws, rho, savestack, (1, 0)).is_err() {
             return crate::repl::check_session_exit(cx);
         }
     }
@@ -1305,37 +1326,6 @@ pub fn lock_base(cx: &mut Cx) -> RResult<()> {
         }
         Ok(())
     })
-}
-
-/// `R_ReplFile(fp, R_BaseNamespace)` of one file, into `st`: each
-/// top-level expression evaluated in the base namespace at the top level,
-/// its value printed if visible, the deferred warnings after it
-/// ([`repl_eval_toplevel`], `Rf_ReplIteration`'s too).
-// R: main.c:R_ReplFile
-pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String> {
-    let rho: for<'g> fn(&'g Cx) -> Ref<'g> = |cx| cx.base_namespace();
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-    // R_Parse1File, expression after expression: robigo-syntax parses the
-    // file at once, as the repeated calls would
-    let text = robigo_syntax::lexable(&bytes);
-    let source = robigo_syntax::Source::new(&text, &bytes);
-    let arena = robigo_syntax::Arena::new();
-    let exprs = robigo_syntax::parse_program(&arena, source)
-        .map_err(|e| format!("{}: {}", path.display(), robigo_syntax::format_parse_error(source, "", &e)))?;
-    // R_ReplFile's savestack
-    let savestack = cx.pp_top();
-    for e in &exprs {
-        st.exprs += 1;
-        // under PROTECT(R_CurrentExpr), unprotected before the print
-        let r = repl_eval_toplevel(cx, e, &[], rho, savestack, (1, 0));
-        if let Err(m) = r {
-            let line = robigo_syntax::line_col(&text, e.span().start as usize).0;
-            let m = m.unwrap_or_else(|| "lowering failed".into());
-            st.failed.push((line, format!("{file}: {}", m.trim_end())));
-        }
-    }
-    Ok(())
 }
 
 /// The PARSE_OK body `R_ReplFile` and `Rf_ReplIteration` share, for one

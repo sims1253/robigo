@@ -543,7 +543,15 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
             return 2;
         }
         match robigo_rt::base::stage0(cx, home.path()) {
-            Ok(boot_st) => {
+            // an error in base's file or the system profile, and R halts
+            // (check_session_exit: R_CleanUp(SA_NOSAVE, 1, 0), no .Last)
+            Ok(robigo_rt::base::Stage0::Halt) => {
+                cx.reprintf(b"Execution halted\n");
+                halt(cx);
+            }
+            // R_Suicide: base's file did not open
+            Ok(robigo_rt::base::Stage0::Suicide) => suicide(cx),
+            Ok(robigo_rt::base::Stage0::Done { exprs, stubs }) => {
                 // setup_Rmainloop after the system profile: .OptRequireMethods,
                 // the site and user profiles, .RData, .First, .First.sys; an
                 // error there halts R (check_session_exit: R_CleanUp(SA_NOSAVE,
@@ -558,17 +566,8 @@ fn run(args: Vec<std::ffi::OsString>, home: &RHome) -> i32 {
                     cx.reprintf(b"Execution halted\n");
                     halt(cx);
                 }
-                let st = boot_st;
                 if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some() {
-                    for (line, m) in &st.failed {
-                        eprintln!("robigo-rt: stage 0: line {line}: {m}");
-                    }
-                    eprintln!(
-                        "robigo-rt: stage 0: {} expressions, {} failed; {} names.c entries not implemented",
-                        st.exprs,
-                        st.failed.len(),
-                        st.stubs
-                    );
+                    eprintln!("robigo-rt: stage 0: {exprs} expressions; {stubs} names.c entries not implemented");
                 }
             }
             Err(e) => {
