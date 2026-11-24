@@ -507,10 +507,16 @@ class Tools(unittest.TestCase):
             '[[bar]]\nrow = "plain"\nagainst = "gnur"\nmax = 0.6\n[[rss]]\nprogram = "p.R"\nagainst = ["gnur"]\n')
 
     def test_perf_rt_bars(self):
+        # (the binary's trees as perf-rt-build packs them, an m1 tree in a
+        # tarball: rt-bars unpacks it into a scratch home of its own)
         self.both(self.perf(
             f'b = os.path.join(tmp, "bars.toml"); open(b, "w").write({self.BARS!r} % perf.pins()["rt"]); '
+            'import tarfile; src = os.path.join(tmp, "trees-src"); '
+            'os.makedirs(os.path.join(src, ".robigo", "rt-home"), exist_ok=True); '
+            't = os.path.join(tmp, "trees.tar"); f = tarfile.open(t, "w"); '
+            'f.add(os.path.join(src, ".robigo"), arcname=".robigo"); f.close(); '
             'perf.cmd_rt_bars(SimpleNamespace(bars=b, robigo_rt="rt", main=None, jobs=1, runs=1, '
-            'out=os.path.join(tmp, "o.json"), gnur=None, cycles=False, boot="m1"))'))
+            'out=os.path.join(tmp, "o.json"), gnur=None, cycles=False, boot="m1", trees=t, main_trees=None))'))
 
     def test_perf_rt_gnur(self):
         self.both(self.perf(
