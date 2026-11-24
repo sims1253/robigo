@@ -1,2 +1,2 @@
-# builtin-diff known failures: names, seed 0, key f8d2bb8cccc26faf9f873978
+# builtin-diff known failures: names, seed 0, key 707d62d105f69fbb32fe9c9c
 # names: 65 / 65 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

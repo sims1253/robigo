@@ -12,9 +12,12 @@
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// (name, script, markers to interrupt at, stdout, stderr, status).
 type Case = (&'static str, &'static str, usize, &'static [u8], &'static [u8], i32);
@@ -41,13 +44,12 @@ fn run(name: &str, script: &str, markers: usize) -> (Vec<u8>, Vec<u8>, i32) {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join(format!("{name}.R"));
     std::fs::write(&file, script).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.arg(&file).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
     // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
@@ -137,4 +139,112 @@ fn sigint_is_gnu_rs_user_interrupt() {
             "{name}"
         );
     }
+}
+
+/// A user interrupt while the interactive console waits for input
+/// (`R --no-readline --interactive`): sys-std.c's `handleInterrupt`,
+/// `onintrNoResume`: the console's newline, the statement begun dropped, a
+/// new prompt. Recorded with GNU R 4.6.2 in the oracle image reading a FIFO
+/// the same way (SIGINT reset to its default): `x <- 1 +`, SIGINT at the
+/// continuation prompt, then `2` and `x <- 5; x`.
+#[test]
+fn an_interrupt_at_the_interactive_prompt_starts_a_new_statement() {
+    let want = ("> + > [1] 2\n> [1] 5\n> \n", "\n", Some(0));
+    // GNU R's transcript under the default boot (the system profile's
+    // options(keep.source = interactive()) included)
+    let (out, err, status) = interrupt_session("");
+    assert_eq!((out.as_str(), err.as_str(), status), want);
+}
+
+/// [`an_interrupt_at_the_interactive_prompt_starts_a_new_statement`]'s
+/// session under `boot` (ROBIGO_RT_BOOT): (stdout, stderr, status).
+fn interrupt_session(boot: &str) -> (String, String, Option<i32>) {
+    use std::io::Write;
+    let mut cmd = db_tree::rt_command();
+    cmd.args(["--no-readline", "--interactive", "--no-save", "--quiet"])
+        .env("ROBIGO_RT_BOOT", boot)
+        .env("LANGUAGE", "en")
+        .env("LC_ALL", "C.UTF-8")
+        .env("TZ", "UTC")
+        .env("R_DEFAULT_PACKAGES", "NULL")
+        .env_remove("R_HOME")
+        .env_remove("ROBIGO_FAIL_ALLOC_AT")
+        .env_remove("ROBIGO_BOOT_VERBOSE");
+    if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
+        cmd.env_remove("ROBIGO_GC_PIN_REPORT");
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::piped());
+    // SAFETY: signal() is async-signal-safe, the one call in the child
+    // between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().expect("robigo-rt runs");
+    let pid = child.id() as libc::pid_t;
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let mut so = child.stdout.take().unwrap();
+    let o = Arc::clone(&out);
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = so.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            o.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+    let mut se = child.stderr.take().unwrap();
+    let err_reader = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        se.read_to_end(&mut v).unwrap();
+        v
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let wait_for = |want: &[u8]| loop {
+        if out.lock().unwrap().ends_with(want) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no {:?} in time", String::from_utf8_lossy(want));
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"x <- 1 +\n").unwrap();
+    stdin.flush().unwrap();
+    wait_for(b"> + ");
+    std::thread::sleep(Duration::from_millis(200));
+    // SAFETY: kill() of our own child process.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    wait_for(b"> + > ");
+    stdin.write_all(b"2\nx <- 5; x\n").unwrap();
+    drop(stdin);
+    // bounded: a console that hangs after the interrupt fails the test,
+    // with what it wrote, instead of holding the job to its timeout
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "robigo-rt did not end after the console's input; it wrote {:?}",
+                String::from_utf8_lossy(&out.lock().unwrap())
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    reader.join().unwrap();
+    let err: Vec<u8> = err_reader
+        .join()
+        .unwrap()
+        .split_inclusive(|&b| b == b'\n')
+        .filter(|l| !l.starts_with(b"robigo gc: "))
+        .flatten()
+        .copied()
+        .collect();
+    let out = out.lock().unwrap().clone();
+    (String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned(), status.code())
 }

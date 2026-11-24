@@ -44,14 +44,14 @@ fn assign_fcn_symbol(cx: &mut Cx, fun: Sexp) -> RResult<Sexp> {
     } else if fun == sy.dollar {
         return Ok(sy.dollar_gets);
     }
-    let (id, name) = {
-        // SAFETY: an immortal symbol.
-        let sym = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap();
-        (sym.id(), sym.name_bytes().to_vec())
-    };
+    // SAFETY: an immortal symbol.
+    let id = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().id();
     if let Some(&v) = st.assign_fns.borrow().get(&id) {
         return Ok(v);
     }
+    // (the name copied only for a symbol not yet in the table)
+    // SAFETY: as above.
+    let name = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().name_bytes().to_vec();
     if name.len() + 3 > ASSIGNBUFSIZ {
         let msg = format!("overlong name in '{}'", String::from_utf8_lossy(&name));
         return Err(cx.error(&msg));
@@ -361,7 +361,7 @@ pub unsafe fn applydefine(cx: &mut Cx, act: &Act, dst: Reg, rhs: Reg, call: Sexp
             // SAFETY: a register's live object.
             s.root(cx, unsafe { Ref::from_sexp(v, cx) })
         };
-        act.clear(rhs);
+        act.kill(rhs, u32::MAX);
         // the stack's values hold links meanwhile (R_BCProtTop as it was)
         let old = links::commit(cx);
         let r = applydefine_body(cx, s, callr, rho, saverhs, code);

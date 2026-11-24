@@ -10,6 +10,8 @@
 #   budget   the generated cases' cap (2000; plus 200 random)
 #   effect   the registry's class, needed until the builtin is in the registry
 #   jit      "both": also run under R_ENABLE_JIT=3, as <name>@jit
+#   special  true: run a special (its arguments reach it as the case's
+#            symbols a1, a2, ...)
 # Changing gen.R, driver.R, the lattice or a row changes its key: its known/
 # list must then be regenerated (--regen-known) in a PR titled
 # `builtin-diff:`, which shows each builtin's pass/total before and after.
@@ -37,6 +39,7 @@ domain = { "i.knd" = ["NULL", "0L", "=1L", "=3L", "=6L", "=7L", "intNA", "-1L", 
 # ---- the builtins being ported now (B5, the trial delegates) ----------------
 
 [RNGkind]
+args = ["kind", "normal.kind", "sample.kind"]
 typical = { kind = "NULL", "normal.kind" = "NULL", "sample.kind" = "NULL" }
 domain = { kind = ["NULL", "0L", "=1L", "=3L", "=6L", "=7L", "intNA", "-1L", "1.5", "a"], "normal.kind" = ["NULL", "0L", "=1L", "=2L", "=5L", "intNA", "1.5"], "sample.kind" = ["NULL", "0L", "=1L", "=2L", "intNA", "a"] }
 
@@ -45,6 +48,7 @@ effect = "Pure"
 extra = ["seq.int(1, 10, length.out = 4)", "seq.int(2^31, by = -1, length.out = 3)", "seq.int(10, 1)", "seq.int(0, 1, 0.1)"]
 
 [strtoi]
+args = ["x", "base"]
 effect = "Pure"
 typical = { x = "chr3", base = "=10L" }
 domain = { base = ["=10L", "=16L", "=2L", "=36L", "=37L", "=1L", "0L", "intNA", "1.5", "a"] }
@@ -100,43 +104,694 @@ effect = "Pure"
 typical = { x = "1:10", f = "factor" }
 domain = { f = ["@any", "=factor(c(1, 2, 1, 2, 1, 2, 1, 2, 1, 2))"] }
 
+# ---- Env: bindings and environments (the @env fixtures) -------------------------
+
+[assign]
+typical = { x = "a", value = "1.5", envir = "env", inherits = "=FALSE" }
+domain = { x = ["@chr", "sym"], envir = ["@env", "NULL", "list2"], inherits = ["@lgl"] }
+
+[get]
+typical = { x = "a", envir = "env", mode = "=\"any\"", inherits = "=TRUE" }
+domain = { x = ["@chr", "=\"act\"", "=\"sum\""], envir = ["@env", "NULL"], mode = ["=\"any\"", "=\"function\"", "=\"numeric\"", "@chr"], inherits = ["@lgl"] }
+
+[get0]
+typical = { x = "a", envir = "env", mode = "=\"any\"", inherits = "=TRUE", ifnotfound = "NULL" }
+domain = { x = ["@chr", "=\"act\""], envir = ["@env", "NULL"], mode = ["=\"any\"", "=\"function\"", "@chr"], inherits = ["@lgl"] }
+
+[exists]
+typical = { x = "a", envir = "env", mode = "=\"any\"", inherits = "=TRUE" }
+domain = { x = ["@chr", "=\"act\"", "=\"sum\""], envir = ["@env", "NULL"], mode = ["=\"any\"", "=\"function\"", "@chr"], inherits = ["@lgl"] }
+
+[remove]
+typical = { list = "a", envir = "env", inherits = "=FALSE" }
+domain = { list = ["@chr", "=c(\"a\", \"b\")", "=\"act\""], envir = ["@env", "NULL"], inherits = ["@lgl"] }
+
+[bindingIsLocked]
+typical = { sym = "a", env = "env" }
+domain = { sym = ["@chr", "sym", "=quote(act)"], env = ["@env", "NULL"] }
+
+[lockBinding]
+typical = { sym = "a", env = "env" }
+domain = { sym = ["@chr", "sym"], env = ["@env", "NULL"] }
+
+[unlockBinding]
+typical = { sym = "a", env = "env.lockedbinding" }
+domain = { sym = ["@chr", "sym"], env = ["@env", "NULL"] }
+
+[makeActiveBinding]
+typical = { sym = "a", fun = "fun.id", env = "env" }
+domain = { sym = ["@chr", "sym", "=quote(act)"], fun = ["@fun", "NULL", "1.5"], env = ["@env", "NULL"] }
+
+[bindingIsActive]
+effect = "Env"
+typical = { sym = "act", env = "env.active" }
+domain = { sym = ["=quote(act)", "@chr", "sym"], env = ["@env", "NULL"] }
+
+[environmentIsLocked]
+domain = { env = ["@env", "@any"] }
+
+[lockEnvironment]
+typical = { env = "env", bindings = "=FALSE" }
+domain = { env = ["@env", "NULL", "list2"], bindings = ["@lgl"] }
+
+[list2env]
+typical = { x = "nested", envir = "env" }
+domain = { x = ["@any"], envir = ["@env", "NULL"] }
+
+["new.env"]
+typical = { hash = "=TRUE", parent = "env.base", size = "=29L" }
+domain = { hash = ["@lgl"], parent = ["@env", "NULL", "1.5"], size = ["@count"] }
+
+[environment]
+domain = { fun = ["@fun", "NULL", "@any"] }
+
+["as.environment"]
+domain = { "#1" = ["@env", "@any", "=1", "=-1", "=\"package:base\"", "=\".GlobalEnv\""] }
+
+# ---- Calls: functions called back (the @fun fixtures log their calls) ----------
+
+[lapply]
+special = true
+typical = { X = "int3", FUN = "fun.id" }
+domain = { FUN = ["@fun", "NULL", "a"] }
+
+[vapply]
+special = true
+typical = { X = "int3", FUN = "fun.length", "FUN.VALUE" = "=1L", "USE.NAMES" = "=TRUE" }
+domain = { FUN = ["@fun", "NULL"], "FUN.VALUE" = ["=1L", "=0", "=character(1)", "int0", "=list(1)"], "USE.NAMES" = ["@lgl"] }
+
+[mapply]
+typical = { FUN = "fun.id", dots = "=list(1:3, 4:6)", MoreArgs = "NULL" }
+domain = { FUN = ["@fun", "NULL"], dots = ["=list(1:3, 4:6)", "=list(1:3)", "=list()", "list2", "nested"], MoreArgs = ["NULL", "=list(z = 1)", "list0", "1.5"] }
+# (do_mapply calls FUN on `dots[[j]][[i]]`, the wrapper's own variable, so
+# the raw cases above all stop at "object 'dots' not found"; these succeed)
+extra = [
+  "local({ dots <- list(1:3, 4:6); .Internal(mapply(function(x, y) x + y, dots, NULL)) })",
+  "local({ dots <- list(a = 1:2, b = c(p = 3, q = 4)); .Internal(mapply(function(a, b, z) a + b + z, dots, list(z = 1))) })",
+  "mapply(function(x, y) x + y, 1:3, 4:6)",
+  "mapply(function(x, y) paste(x, y), c(a = 'p', b = 'q'), 1:2)",
+  "mapply(rep, 1:3, 3:1)",
+  "mapply(function(x, ...) list(x, ...), 1:2, MoreArgs = list(z = 1))",
+  "mapply(function(x, y) x, 1:4, 1:2)",
+  "mapply(function(x, y) x, 1:3, 1:2)",
+  "mapply(function(x) x, list())",
+  "mapply(function(x, y) c(x, y), 1:2, list('a', NULL), SIMPLIFY = FALSE)",
+  "mapply(function(x) stop('a4 error'), 1:2)",
+  "mapply(function(x) x, structure(1:2, class = 'a4'))",
+]
+
+["do.call"]
+typical = { what = "fun.id", args = "list2", envir = "env.base" }
+domain = { what = ["@fun", "=\"sum\"", "=\"paste\"", "a", "NULL"], args = ["list2", "list0", "nested", "=list(1, b = 2)", "1.5"], envir = ["@env", "NULL"] }
+
+[xtfrm]
+
+[env2list]
+typical = { x = "env", "all.names" = "=TRUE", sorted = "=TRUE" }
+domain = { x = ["@env", "NULL", "list2"], "all.names" = ["@lgl"], sorted = ["@lgl"] }
+
+# ---- External: the world outside (each case in a process and directory of its own)
+
+["Sys.getenv"]
+args = ["x", "unset"]
+typical = { x = "=\"HOME\"", unset = "=\"\"" }
+# (no zero-length x: the whole environment, whose R_* and harness variables
+# differ between the runtimes and between GNU R's two runs)
+domain = { x = ["=\"HOME\"", "=c(\"HOME\", \"TMPDIR\", \"A4_NOT_SET\")", "=\"LC_ALL\"", "\"\"", "a", "chrNA", "chr3", "utf8", "latin1", "bytes", "\" 3 \"", "long", "chrmatrix"], unset = ["=\"\"", "=NA_character_", "@chr"] }
+
+["Sys.setenv"]
+args = ["nm", "values"]
+effect = "External"
+typical = { nm = "=\"A4_X\"", values = "=\"1\"" }
+domain = { nm = ["=\"A4_X\"", "=c(\"A4_X\", \"A4_Y\")", "@chr"], values = ["=\"1\"", "=c(\"1\", \"2\")", "@chr"] }
+# (the record does not hold the process environment: these read it back)
+extra = [
+  "{ .Internal(Sys.setenv('A4_X', '1')); Sys.getenv('A4_X', unset = NA) }",
+  "{ .Internal(Sys.setenv(c('A4_X', 'A4_Y'), c('1', '2'))); Sys.getenv(c('A4_X', 'A4_Y'), unset = NA) }",
+  "{ .Internal(Sys.setenv('A4_X', '')); Sys.getenv('A4_X', unset = NA) }",
+  "{ .Internal(Sys.setenv('A4_X', '1')); .Internal(Sys.setenv('A4_X', '2')); Sys.getenv('A4_X', unset = NA) }",
+  "{ Sys.setenv(A4_X = 'a', A4_Y = 2); Sys.getenv(c('A4_X', 'A4_Y'), unset = NA) }",
+  "{ .Internal(Sys.setenv('HOME', '/a4')); path.expand('~/x') }",
+]
+
+["Sys.unsetenv"]
+args = ["x"]
+effect = "External"
+domain = { x = ["=\"HOME\"", "=\"A4_NOT_SET\"", "@chr"] }
+extra = [
+  "{ Sys.setenv(A4_X = '1'); r <- .Internal(Sys.unsetenv('A4_X')); list(r, Sys.getenv('A4_X', unset = NA)) }",
+  "{ r <- .Internal(Sys.unsetenv('HOME')); list(r, Sys.getenv('HOME', unset = NA)) }",
+  "{ r <- .Internal(Sys.unsetenv(c('A4_NOT_SET', 'TMPDIR'))); list(r, Sys.getenv(c('A4_NOT_SET', 'TMPDIR'), unset = NA)) }",
+]
+
+["path.expand"]
+effect = "External"
+domain = { path = ["=\"~\"", "=\"~/x\"", "=\"~nouser/x\"", "@chr"] }
+
+["file.info"]
+args = ["fn", "extra_cols"]
+effect = "External"
+typical = { fn = "=\".\"", extra_cols = "=TRUE" }
+domain = { fn = ["=\".\"", "=c(\".\", \"nope\")", "@chr"], extra_cols = ["@lgl"] }
+
+["file.create"]
+args = ["fn", "showWarnings"]
+effect = "External"
+typical = { fn = "=\"f1\"", showWarnings = "=TRUE" }
+domain = { fn = ["=\"f1\"", "=c(\"f1\", \"f2\")", "=\"nodir/f\"", "@chr"], showWarnings = ["@lgl"] }
+
+["file.append"]
+effect = "External"
+typical = { file1 = "=\"f1\"", file2 = "=\"f2\"" }
+domain = { file1 = ["=\"f1\"", "@chr"], file2 = ["=\"f2\"", "=\"nope\"", "@chr"] }
+# (a case starts in an empty directory: these make the files first)
+extra = [
+  "{ writeLines('one', 'f1'); writeLines('two', 'f2'); .Internal(file.append('f1', 'f2')) }",
+  "{ writeLines('two', 'f2'); .Internal(file.append('new', 'f2')) }",
+  "{ writeLines('one', 'f1'); writeLines('two', 'f2'); .Internal(file.append(c('f1', 'f1'), c('f2', 'f2'))) }",
+  "{ writeLines('one', 'f1'); writeLines(c('a', 'b'), 'f2'); writeLines('c', 'f3'); .Internal(file.append('f1', c('f2', 'f3'))) }",
+  "{ writeLines('one', 'f1'); .Internal(file.append('f1', 'f1')) }",
+  "{ writeLines('one', 'f1'); .Internal(file.append('f1', 'nope')) }",
+  "{ writeLines('one', 'f1'); writeBin(as.raw(0:255), 'f2'); file.append('f1', 'f2') }",
+]
+
+["Sys.chmod"]
+args = ["paths", "octmode", "use_umask"]
+effect = "External"
+typical = { paths = "=\".\"", octmode = "=as.octmode(\"755\")", use_umask = "=TRUE" }
+domain = { paths = ["=\".\"", "=\"nope\"", "@chr"], octmode = ["=as.octmode(\"755\")", "=as.octmode(\"700\")", "@num"], use_umask = ["@lgl"] }
+
+[bindtextdomain]
+# (no NULL dirname: it returns the runtime's own R_HOME/library/translations,
+# which differs between the two by construction)
+domain = { domain = ["=\"R\"", "=\"R-base\"", "@chr"], dirname = ["=\"/nope\"", "@chr"] }
+
+[strptime]
+args = ["x", "format", "tz"]
+typical = { x = "=\"2026-11-18 12:30:00\"", format = "=\"%Y-%m-%d %H:%M:%S\"", tz = "=\"UTC\"" }
+# A KNOWN GAP of this row: it does not cover formats without a full date.
+# Such a format ("", "TRUE", "%H:%M", ...) fills in today's date, from
+# time(NULL), so GNU R's record of one day is not robigo-rt's answer on the
+# next (2026-11-21: 9 cases recorded on 11-18). Every format here carries a
+# full date; NA, a zero-length and a non-character format give NA or an
+# error, the same on any day. Date-less formats need a fixed clock in both
+# runtimes, which the harness has not.
+domain = { x = ["=\"2026-11-18 12:30:00\"", "=\"2026-02-30 00:00:00\"", "@chr"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%Y-%m-%d\"", "=\"%d.%m.%Y %H:%M\"", "=\"%Y%m%d\"", "=c(\"%Y-%m-%d\", \"%d.%m.%Y\")", "chrNA", "chr0", "1.5", "NULL"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Berlin\"", "@chr"] }
+
+["as.POSIXct"]
+typical = { x = "=as.POSIXlt(\"2026-11-18 12:30:00\", tz = \"UTC\")", tz = "=\"UTC\"" }
+domain = { x = ["=as.POSIXlt(\"2026-11-18 12:30:00\", tz = \"UTC\")", "@any"], tz = ["=\"UTC\"", "=\"\"", "@chr"] }
+
+# ---- specials (the case's symbols are their arguments) ------------------------
+
+[withVisible]
+special = true
+effect = "Pure"
+domain = { x = ["@any"] }
+
+[Recall]
+special = true
+effect = "Calls"
+budget = 200
+extra = ["(function(n) if (n <= 1) 1 else n * Recall(n - 1))(5)", "(function(...) if (nargs() == 0) \"done\" else Recall())(1)"]
+
+["~"]
+special = true
+effect = "Pure"
+
+# (E's eval.c PR: evaluates nothing, returns NULL invisibly)
+[declare]
+special = true
+effect = "Pure"
+extra = ["declare(stop(\"not evaluated\"))", "withVisible(declare(x = 1))", "(function(...) declare(...))(stop(\"no\"))"]
+
+# (E's coerce.c PR: the call of the named function, the other arguments
+# evaluated, their tags kept)
+[call]
+special = true
+effect = "Pure"
+extra = [
+  "call(\"round\", 10.5)",
+  "call(\"f\", a = 1, b = \"x\")",
+  "call(name = \"f\", 1)",
+  "call(nme = \"f\")",
+  "call(na = \"f\", 1)",
+  "call(\"f\", nme = 2)",
+  "call(\".Internal\", 1)",
+  "call(\"\")",
+  "call(NA_character_)",
+  "call(c(\"a\", \"b\"))",
+  "call()",
+]
+
+["@"]
+special = true
+effect = "Pure"
+
+["["]
+special = true
+effect = "Pure"
+typical = { "#1" = "matrix", "#2" = "<missing>", "#3" = "<missing>" }
+domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"r1\"", "=-1L"], "#3" = ["@any", "<missing>", "=2L", "=\"b\""] }
+args = ["", "", ""]
+
+["[<-"]
+special = true
+effect = "Pure"
+args = ["", "", ""]
+domain = { "#1" = ["@any"], "#2" = ["@any", "<missing>", "=c(TRUE, FALSE)", "=\"r1\""], "#3" = ["@any", "=0L", "=NA"] }
+
+[enc2native]
+
+[enc2utf8]
+
+# ---- E's eval.c PR: the isolate's math thread counts (1 and 1 at startup;
+# each case is a fresh process, so a case sees only its own calls) ---------
+# Known failure, #48 of each (latin1): GNU R's asInteger errors in
+# isBlankString's Mbrtowc ("invalid multibyte string at '<e9>'"), robigo-rt's
+# shared coercion (robigo-text strtod's is_blank) reads bytes and warns.
+[setNumMathThreads]
+args = ["n"]
+domain = { n = ["=4L", "=0L", "=1L", "=-1L", "intNA", "=6.9", "=TRUE", "a", "NULL", "=list(2L)", "=1:3", "@any"] }
+extra = [
+  "c(.Internal(setMaxNumMathThreads(8L)), .Internal(setNumMathThreads(4L)), .Internal(setNumMathThreads(9L)), .Internal(setNumMathThreads(0L)))",
+]
+
+[setMaxNumMathThreads]
+args = ["n"]
+domain = { n = ["=8L", "=0L", "=1L", "=-2L", "intNA", "=6.9", "=\"2\"", "a", "NULL", "=list(2L)", "=1:3", "@any"] }
+extra = [
+  "c(.Internal(setMaxNumMathThreads(8L)), .Internal(setNumMathThreads(6L)), .Internal(setMaxNumMathThreads(3L)), .Internal(setNumMathThreads(1L)))",
+]
+
 # ---- registry builtins with no row yet, by reason (check-rows) ----------------
 
-[uncovered]
-"special: a VM op or a special (tests/rt covers it)" = [
-  "lapply", "rep", "vapply"
+# ---- the builtins open PRs add to the registry (E's #866 and #878) ----------
+# (rows ahead of the registry, so `effect` is the PR's class. Environments
+# with promises or `...` are made inside the case, by `extra`: the batch
+# serializes no promise.)
+[activeBindingFunction]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(act)", env = "env.active" }
+domain = { sym = ["=quote(act)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+
+[delayedBindingExpression]
+args = ["sym", "env"]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(p)", env = "env" }
+domain = { sym = ["=quote(p)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+extra = [
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); force(e$p); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); assign('p', 1, e); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', stop('a4 error'), assign.env = e); .Internal(delayedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); makeActiveBinding('p', function() 1, e); .Internal(delayedBindingExpression(quote(p), e)) })",
 ]
-"Env, Calls or External: A4's second PR" = [
-  "...elt", "...length", "...names", "Sys.getenv", "as.POSIXct", "as.environment", "assign",
-  "bindingIsLocked", "bindtextdomain", "copyDFattr", "delayedAssign", "do.call", "env.profile",
-  "env2list", "environment", "environmentIsLocked", "exists", "get", "get0", "getBindingType",
-  "getOption", "list2env", "lockBinding", "lockEnvironment", "ls", "makeActiveBinding", "mapply",
-  "match.call", "mget", "nargs", "new.env", "options", "parent.frame", "putconst", "remove",
-  "strptime", "sys.call", "sys.calls", "sys.frame", "sys.frames", "sys.function", "sys.nframe",
-  "sys.on.exit", "sys.parent", "sys.parents", "xtfrm"
+
+[delayedBindingEnvironment]
+args = ["sym", "env"]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(p)", env = "env" }
+domain = { sym = ["=quote(p)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+extra = [
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); force(e$p); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); assign('p', 1, e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', stop('a4 error'), assign.env = e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+  "local({ e <- new.env(); makeActiveBinding('p', function() 1, e); .Internal(delayedBindingEnvironment(quote(p), e)) })",
+]
+
+[forcedBindingExpression]
+args = ["sym", "env"]
+effect = "Env"
+budget = 300
+typical = { sym = "=quote(p)", env = "env" }
+domain = { sym = ["=quote(p)", "=quote(a)", "@chr", "sym"], env = ["@env", "NULL"] }
+extra = [
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', 1 + 1, assign.env = e); force(e$p); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); assign('p', 1, e); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); delayedAssign('p', stop('a4 error'), assign.env = e); .Internal(forcedBindingExpression(quote(p), e)) })",
+  "local({ e <- new.env(); makeActiveBinding('p', function() 1, e); .Internal(forcedBindingExpression(quote(p), e)) })",
+]
+
+[dotsExist]
+args = ["env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { env = "env", inherits = "=FALSE" }
+domain = { env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsExist(environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsExist(environment(), FALSE)))()",
+  "(function(...) .Internal(dotsExist(environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsExist(environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsExist(environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsExist(environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsExist(environment(), FALSE)))(1)",
+]
+
+[getDotType]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(getDotType(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(getDotType(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(getDotType(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(getDotType(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(getDotType(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(getDotType(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(getDotType(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(getDotType(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(getDotType(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotDelayedExpression]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotDelayedExpression(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotDelayedExpression(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotDelayedExpression(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotDelayedExpression(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotDelayedExpression(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotDelayedExpression(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotDelayedExpression(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotDelayedExpression(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotDelayedExpression(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotDelayedEnvironment]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotDelayedEnvironment(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotDelayedEnvironment(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotDelayedEnvironment(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotDelayedEnvironment(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotDelayedEnvironment(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotForcedExpression]
+args = ["i", "env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotForcedExpression(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotForcedExpression(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotForcedExpression(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotForcedExpression(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotForcedExpression(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotForcedExpression(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotForcedExpression(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotForcedExpression(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotForcedExpression(NA, environment(), FALSE)))(1, 2)",
+]
+
+[dotsLength]
+args = ["env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { env = "env", inherits = "=FALSE" }
+domain = { env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsLength(environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsLength(environment(), FALSE)))()",
+  "(function(...) .Internal(dotsLength(environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsLength(environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsLength(environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsLength(environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsLength(environment(), FALSE)))(1)",
+]
+
+[dotsNames]
+args = ["env", "inherits"]
+effect = "Env"
+budget = 300
+typical = { env = "env", inherits = "=FALSE" }
+domain = { env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsNames(environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsNames(environment(), FALSE)))()",
+  "(function(...) .Internal(dotsNames(environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsNames(environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsNames(environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsNames(environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsNames(environment(), FALSE)))(1)",
+]
+
+[dotsElt]
+args = ["i", "env", "inherits"]
+effect = "Calls"
+budget = 300
+typical = { i = "=1L", env = "env", inherits = "=FALSE" }
+domain = { i = ["=1L", "=2L", "=0L", "=-1L", "@any"], env = ["@env", "NULL"], inherits = ["=FALSE", "=TRUE", "@any"] }
+extra = [
+  "(function(...) .Internal(dotsElt(1L, environment(), FALSE)))(1 + 1, b = 2)",
+  "(function(...) .Internal(dotsElt(1L, environment(), FALSE)))()",
+  "(function(...) .Internal(dotsElt(1L, environment(), FALSE)))(, 1)",
+  "(function(...) { ..1; .Internal(dotsElt(1L, environment(), FALSE)) })(1 + 1)",
+  "(function(...) (function() .Internal(dotsElt(1L, environment(), TRUE)))())(1)",
+  "(function(...) (function() .Internal(dotsElt(1L, environment(), FALSE)))())(1)",
+  "(function(x) .Internal(dotsElt(1L, environment(), FALSE)))(1)",
+  "(function(...) .Internal(dotsElt(3L, environment(), FALSE)))(1, 2)",
+  "(function(...) .Internal(dotsElt(NA, environment(), FALSE)))(1, 2)",
+]
+
+# ---- matrix products, merged during the pause (#875 and the batch of 11-19) ----
+["%*%"]
+budget = 600
+extra = [
+  "matrix(1:6, 2) %*% matrix(1:6, 3)",
+  "1:3 %*% 1:3",
+  "1:3 %*% t(1:3)",
+  "matrix(1:4, 2) %*% c(1, NA)",
+  "matrix(c(1+1i, 2), 1) %*% matrix(1:2, 2)",
+  "matrix(1:6, 2, dimnames = list(c('a', 'b'), NULL)) %*% matrix(1:6, 3, dimnames = list(NULL, c('x', 'y')))",
+  "matrix(numeric(0), 0, 3) %*% matrix(numeric(0), 3, 0)",
+  "matrix(1:6, 2) %*% matrix(1:6, 2)",
+]
+
+[crossprod]
+budget = 600
+extra = [
+  "crossprod(matrix(1:6, 3))",
+  "crossprod(matrix(1:6, 3), matrix(1:3, 3))",
+  "crossprod(1:3)",
+  "crossprod(matrix(1:6, 3), matrix(1:4, 2))",
+  "crossprod(matrix(c(TRUE, FALSE, NA, TRUE), 2))",
+]
+
+[tcrossprod]
+budget = 600
+extra = [
+  "tcrossprod(matrix(1:6, 3))",
+  "tcrossprod(matrix(1:6, 2), matrix(1:3, 1))",
+  "tcrossprod(1:3)",
+  "tcrossprod(matrix(1:6, 3), matrix(1:4, 2))",
+]
+
+# ---- the builtins open PRs add to the registry (E's #896, L's #900) ----------
+# (rows ahead of the registry, so `effect` is the PR's class)
+[aperm]
+effect = "Pure"
+budget = 600
+typical = { a = "=array(1:24, 2:4)", perm = "=c(3L, 1L, 2L)", resize = "=TRUE" }
+domain = { a = ["=array(1:24, 2:4)", "=matrix(1:6, 2)", "=array(1:24, 2:4, dimnames = list(c('a', 'b'), NULL, letters[1:4]))", "@any"], perm = ["=c(3L, 1L, 2L)", "=3:1", "=c(\"c\", \"a\", \"b\")", "NULL", "=c(1L, 1L, 2L)", "@count"], resize = ["@lgl"] }
+
+[row]
+effect = "Pure"
+args = ["dim"]
+domain = { dim = ["=c(2L, 3L)", "=c(0L, 3L)", "=c(2, 3)", "=3L", "=c(2L, 3L, 4L)", "@count", "@any"] }
+
+[col]
+effect = "Pure"
+args = ["dim"]
+domain = { dim = ["=c(2L, 3L)", "=c(0L, 3L)", "=c(2, 3)", "=3L", "=c(2L, 3L, 4L)", "@count", "@any"] }
+
+[asplit]
+effect = "Pure"
+budget = 600
+extra = [
+  "asplit(matrix(1:6, 2), 1)",
+  "asplit(matrix(1:6, 2), 2)",
+  "asplit(array(1:24, 2:4), c(1, 3))",
+  "asplit(matrix(1:6, 2, dimnames = list(c('a', 'b'), NULL)), 1)",
+  "asplit(matrix(1:6, 2), 1, drop = TRUE)",
+  "asplit(1:3, 1)",
+]
+
+["Sys.getlocale"]
+effect = "External"
+args = ["category"]
+domain = { category = ["=1L", "=2L", "=3L", "=4L", "=5L", "=6L", "=0L", "=99L", "@count"] }
+
+["Sys.setlocale"]
+effect = "External"
+args = ["category", "locale"]
+typical = { category = "=1L", locale = "=\"C\"" }
+domain = { category = ["=1L", "=2L", "=3L", "=0L", "=99L", "@count"], locale = ["=\"C\"", "=\"C.UTF-8\"", "=\"\"", "=\"nope\"", "@chr"] }
+# (the record does not hold the process locale: these read it back)
+extra = [
+  "{ .Internal(Sys.setlocale(1L, 'C')); Sys.getlocale() }",
+  "{ .Internal(Sys.setlocale(3L, 'C')); Sys.getlocale('LC_CTYPE') }",
+  "{ r <- .Internal(Sys.setlocale(1L, 'nope')); list(r, Sys.getlocale()) }",
+  "{ Sys.setlocale('LC_COLLATE', 'C'); sort(c('b', 'A', 'a')) }",
+]
+
+# ---- the builtins E's eapply PR (g3/e-eapply) registers --------------------
+[eapply]
+effect = "Calls"
+special = true
+budget = 600
+typical = { env = "env", FUN = "fun.id", "all.names" = "=FALSE", "USE.NAMES" = "=TRUE" }
+domain = { env = ["@env", "NULL", "list2"], FUN = ["@fun", "NULL"], "all.names" = ["@lgl"], "USE.NAMES" = ["@lgl"] }
+
+# builtins() is every symbol GNU R knows (internal = TRUE: the symbol
+# table), so a generated case compares robigo-rt's whole base with GNU R's
+# and stays a mismatch until they are the same: one such case, and the
+# extras ask what can be compared now.
+[builtins]
+effect = "Env"
+domain = { internal = ["=FALSE"] }
+extra = [
+  "is.character(.Internal(builtins(FALSE)))",
+  "all(c('sum', 'c', 'list', 'builtins', 'eapply', '+', 'if') %in% .Internal(builtins(FALSE)))",
+  "all(c('sum', 'c', 'list') %in% .Internal(builtins(TRUE)))",
+  "anyDuplicated(.Internal(builtins(FALSE))) == 0L",
+  "is.character(.Internal(builtins(NA)))",
+  "is.character(builtins())",
+]
+
+# ---- B's #913, merged ------------------------------------------------------
+[tabulate]
+budget = 600
+typical = { bin = "=c(2L, 3L, 3L, 5L)", nbins = "=5L" }
+domain = { bin = ["=c(2L, 3L, 3L, 5L)", "=c(1L, NA, -1L, 0L, 7L)", "=integer(0)", "int3", "1:10", "@any"], nbins = ["=5L", "=0L", "=-1L", "=NA_integer_", "=3", "=c(2L, 9L)", "@count"] }
+extra = [
+  "tabulate(c(2, 3, 3, 5), nbins = 3)",
+  "tabulate(c(-2, 0, 2, 3, 3, 5))",
+  "tabulate(factor(c('a', 'b', 'a')))",
+  "tabulate(integer(0))",
+]
+
+# ---- the builtins E's g3/e-tools-stops registers ---------------------------
+# (ahead of the registry. Its one generated case is the clock, which GNU
+# R's two runs of a batch cannot agree on, so it is excluded as unstable;
+# the extras ask what can be compared.)
+["Sys.time"]
+effect = "External"
+extra = [
+  "is.double(.Internal(Sys.time()))",
+  "length(.Internal(Sys.time())) == 1L",
+  "is.null(attributes(.Internal(Sys.time())))",
+  ".Internal(Sys.time()) > 1.7e9",
+  "class(Sys.time())",
+]
+
+# (Sys.info's values are the machine's, the container's for GNU R and the
+# host's for robigo-rt: its two generated cases (nodename, login) are known
+# failures off CI's one machine, so the extras ask what can be compared,
+# the names and the shape.)
+["Sys.info"]
+effect = "External"
+extra = [
+  "names(.Internal(Sys.info()))",
+  "typeof(.Internal(Sys.info()))",
+  "names(attributes(.Internal(Sys.info())))",
+  "all(nzchar(.Internal(Sys.info())))",
+  ".Internal(Sys.info())[[\"sysname\"]]",
+]
+
+# (Sys.glob reads the file system, the container's for GNU R and the host's
+# for robigo-rt: only paths both have, the root and names neither has.
+# Known failure: the `long` path's path.expand warning, which GNU R's
+# warning buffer cuts at R_WarnLength with " [... truncated]" and
+# robigo-rt's does not.)
+["Sys.glob"]
+args = ["paths", "dirmark"]
+effect = "External"
+typical = { paths = "=\"/\"", dirmark = "=FALSE" }
+domain = { paths = ["=\"/\"", "=\"/robigo-no-such*\"", "=c(\"/\", NA, \"/robigo-no-such\")", "=NA_character_", "=character(0)", "@any"], dirmark = ["@lgl", "=1", "=\"a\"", "NULL"] }
+
+# ---- B's #908, merged ------------------------------------------------------
+# (no NULL x: iconv(NULL, ...) is iconvlist(), the platform's list of
+# encodings, which GNU R's container and robigo-rt cannot share)
+[iconv]
+args = ["x", "from", "to", "sub", "mark", "toRaw"]
+typical = { x = "=c(\"a\", \"\\u00e9\", NA)", from = "=\"UTF-8\"", to = "=\"latin1\"", sub = "=NA_character_", mark = "=TRUE", toRaw = "=FALSE" }
+domain = { x = ["=c(\"a\", \"\\u00e9\", NA)", "utf8", "latin1", "bytes", "chr0", "=list(as.raw(c(0x61, 0xe9)))", "1.5"], from = ["=\"UTF-8\"", "=\"latin1\"", "=\"\"", "=\"nope\"", "=NA_character_"], to = ["=\"latin1\"", "=\"ASCII\"", "=\"UTF-8\"", "=\"ASCII//TRANSLIT\"", "=\"nope\""], sub = ["=NA_character_", "=\"byte\"", "=\"?\"", "=\"Unicode\"", "=\"c99\""], mark = ["=TRUE", "=FALSE"], toRaw = ["=FALSE", "=TRUE"] }
+
+["as.POSIXlt"]
+typical = { x = "=c(0, 1e9 + 0.25, -1.5)", tz = "=\"UTC\"" }
+domain = { x = ["=c(0, 1e9 + 0.25, -1.5)", "=c(a = 1719835200, b = NA, c = Inf)", "=-775526400", "=numeric(0)", "=TRUE", "=\"x\"", "@any"], tz = ["=\"UTC\"", "=\"GMT\"", "=\"Europe/Berlin\"", "=\"America/New_York\"", "=\"\"", "=c(\"UTC\", \"GMT\")", "=1", "=NA_character_"] }
+
+["Date2POSIXlt"]
+typical = { x = "=c(0, 19000.75, -719528)", tz = "=\"UTC\"" }
+domain = { x = ["=c(0, 19000.75, -719528)", "=c(x = 1, y = NA, z = 1e12)", "=numeric(0)", "=TRUE", "@any"], tz = ["=\"UTC\"", "=\"\"", "=\"Europe/Paris\"", "=1", "=c(\"a\", \"b\")"] }
+
+["POSIXlt2Date"]
+typical = { x = "=.Internal(as.POSIXlt(c(p = 1e9, q = -1e9, r = NA), \"UTC\"))" }
+domain = { x = ["=.Internal(as.POSIXlt(c(p = 1e9, q = -1e9, r = NA), \"UTC\"))", "=local({lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$mday <- 40L; lt$hour <- 30L; lt})", "=local({lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$sec <- c(0, 1); names(lt$year) <- \"a\"; lt})", "=list(1)", "@any"] }
+
+["format.POSIXlt"]
+args = ["x", "format", "usetz", "digits"]
+typical = { x = "=.Internal(as.POSIXlt(c(0, 1e9 + 0.25, NA), \"UTC\"))", format = "=\"%Y-%m-%d %H:%M:%S\"", usetz = "=FALSE", digits = "=0L" }
+domain = { x = ["=.Internal(as.POSIXlt(c(0, 1e9 + 0.25, NA), \"UTC\"))", "=.Internal(as.POSIXlt(c(1719835200, -775526400), \"Europe/Berlin\"))", "=local({b <- .Internal(as.POSIXlt(1719835200, \"Europe/Berlin\")); b$gmtoff <- NA_integer_; b})", "=local({z <- .Internal(as.POSIXlt(0, \"UTC\")); z$mday <- 40L; z})", "=list(1)", "@any"], format = ["=\"%Y-%m-%d %H:%M:%S\"", "=\"%OS3\"", "=\"%OS\"", "=\"%Z %z\"", "=c(\"%d\", \"%m\", \"%Y\")", "=\"%p\"", "=\"\"", "=character(0)", "=1"], usetz = ["=FALSE", "=TRUE", "=NA"], digits = ["=0L", "=3L", "=NA_integer_", "=\"x\""] }
+
+[uncovered]
+"External, the session's or random by design: its records differ per run (tests/rt covers it)" = [
+  "tempdir", "tempfile"
+]
+"special: a VM op or a special (tests/rt covers it)" = [
+  "rep"
+]
+"Env, Calls or External: no row yet" = [
+  "...elt", "...length", "...names", "copyDFattr", "delayedAssign", "env.profile",
+  "getBindingType", "getOption", "ls", "match.call", "mget", "nargs", "options", "parent.frame",
+  "putconst", "sys.call", "sys.calls", "sys.frame", "sys.frames", "sys.function", "sys.nframe",
+  "sys.on.exit", "sys.parent", "sys.parents"
 ]
 "Pure: no row yet" = [
   "!", "!=", "%%", "%/%", "&", "*", "+", "-", ".subset", ".subset2", "/", ":", "<", "<=", "==",
   ">", ">=", "Encoding", "Version", "^", "acos", "acosh", "all", "any", "anyDuplicated", "anyNA",
-  "as.call", "as.character", "as.complex", "as.double", "as.function.default", "as.integer",
-  "as.logical", "as.numeric", "as.raw", "as.vector", "asCharacterFactor", "asin", "asinh", "atan",
-  "atanh", "attr", "attr<-", "attributes", "attributes<-", "baseenv", "bcClose", "bcVersion",
-  "body", "bodyCode", "c", "ceiling", "class", "class<-", "colMeans", "colSums", "comment",
-  "comment<-", "compareNumericVersion", "complex", "cos", "cosh", "cospi", "cummax", "cummin",
-  "cumprod", "cumsum", "digamma", "dim", "dim<-", "dimnames", "dimnames<-", "disassemble",
-  "duplicated", "emptyenv", "encodeString", "endsWith", "exp", "expm1", "file.path", "floor",
-  "formals", "gamma", "getconst", "gettext", "globalenv", "gregexpr", "grep", "grepl", "growconst",
-  "gsub", "identical", "inherits", "interactive", "is.array", "is.atomic", "is.builtin.internal",
-  "is.call", "is.character", "is.complex", "is.double", "is.environment", "is.expression",
-  "is.finite", "is.function", "is.infinite", "is.integer", "is.language", "is.list", "is.logical",
-  "is.matrix", "is.na", "is.name", "is.nan", "is.null", "is.numeric", "is.object", "is.pairlist",
-  "is.raw", "is.recursive", "is.single", "is.symbol", "is.unsorted", "is.vector", "isS4",
-  "islistfactor", "l10n_info", "length", "length<-", "lengths", "levels<-", "lgamma", "log10",
-  "log1p", "log2", "match", "matrix", "max", "min", "mkCode", "names<-", "ngettext",
-  "oldClass", "oldClass<-", "order", "parent.env", "paste", "paste0", "pmatch", "pmax", "pmin",
-  "prod", "psort", "qsort", "radixsort", "rank", "regexec", "regexpr", "rep.int", "rowMeans",
-  "rowSums", "seq_along", "setEncoding", "shortRowNames", "sign", "sin", "sinh", "sinpi", "sort",
-  "sorted_fpass", "sprintf", "sqrt", "startsWith", "storage.mode<-", "strrep", "strsplit", "sub",
-  "substr", "sum", "tan", "tanh", "tanpi", "trigamma", "trunc", "typeof", "unclass", "unique",
-  "unlist", "vector", "which", "which.max", "which.min", "wrap_meta", "|"
+  "array", "as.call", "as.character", "as.complex", "as.double", "as.function.default",
+  "as.integer", "as.logical", "as.numeric", "as.raw", "as.vector", "asCharacterFactor", "asin",
+  "asinh", "atan", "atanh", "attr", "attr<-", "attributes", "attributes<-", "baseenv", "bcClose",
+  "bcVersion", "body", "bodyCode", "c", "ceiling", "class", "class<-", "colMeans", "colSums",
+  "comment", "comment<-", "compareNumericVersion", "complex", "cos", "cosh", "cospi", "cummax",
+  "cummin", "cumprod", "cumsum", "digamma", "dim", "dim<-", "dimnames", "dimnames<-",
+  "disassemble", "drop", "duplicated", "emptyenv", "encodeString", "endsWith", "exp", "expm1",
+  "file.path", "floor", "formals", "gamma", "getconst", "gettext", "globalenv", "gregexpr", "grep",
+  "grepl", "growconst", "gsub", "identical", "inherits", "interactive", "is.array", "is.atomic",
+  "is.builtin.internal", "is.call", "is.character", "is.complex", "is.double", "is.environment",
+  "is.expression", "is.finite", "is.function", "is.infinite", "is.integer", "is.language",
+  "is.list", "is.logical", "is.matrix", "is.na", "is.name", "is.nan", "is.null", "is.numeric",
+  "is.object", "is.pairlist", "is.raw", "is.recursive", "is.single", "is.symbol", "is.unsorted",
+  "is.vector", "isS4", "islistfactor", "l10n_info", "length", "length<-", "lengths", "levels<-",
+  "lgamma", "log10", "log1p", "log2", "match", "matrix", "max", "min", "mkCode", "names<-",
+  "ngettext", "oldClass", "oldClass<-", "order", "parent.env", "paste", "paste0", "pmatch", "pmax",
+  "pmin", "prod", "psort", "qsort", "radixsort", "rank", "regexec", "regexpr", "rep.int",
+  "rowMeans", "rowSums", "seq_along", "setEncoding", "shortRowNames", "sign", "sin", "sinh",
+  "sinpi", "sort", "sorted_fpass", "sprintf", "sqrt", "startsWith", "storage.mode<-", "strrep",
+  "strsplit", "sub", "substr", "sum", "tan", "tanh", "tanpi", "trigamma", "trunc", "typeof",
+  "unclass", "unique", "unlist", "vector", "which", "which.max", "which.min", "wrap_meta", "|"
 ]

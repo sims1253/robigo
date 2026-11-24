@@ -21,14 +21,15 @@ fn session() -> (OwnedIsolate, Loaded) {
 fn run(cx: &mut Cx, src: &str) -> (String, String, bool) {
     let (c, out, err) = robigo_rtcore::Console::capture();
     let old = cx.replace_console(c);
-    let ok = run_console(cx, src.as_bytes());
+    let ok = run_console(cx, &mut robigo_rt::repl::Input::Bytes(src.as_bytes()));
     cx.replace_console(old);
     (String::from_utf8(out.take()).unwrap(), String::from_utf8(err.take()).unwrap(), ok)
 }
 
 /// INTERIM(L5): the wide base binds every name GNU R 4.6.2 binds in base
-/// lazily, M1's bound among them: the index has each, and nothing is read
-/// or run at load.
+/// lazily, M1's bound among them: the index has each, and only the
+/// profile's three `boot` forms (the Autoloads environment) are read and
+/// run at load.
 #[test]
 fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     let (mut iso, st) = session();
@@ -37,12 +38,34 @@ fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     assert_eq!(st.files, w.files().len());
     assert!(st.stubs > 0);
     // the index's own shape: chains' inner names, blocks, forms after a
-    // definition, the profile's sequence, the unrun name
+    // definition, the profile's sequence, the profile's forms run at boot
     let def = |n: &str| w.find(n).unwrap_or_else(|| panic!("{n}")).def.clone();
     assert!(matches!(def("license"), Def::Assign(v) if v.len() == 1 && v[0].1 == 1));
     assert!(matches!(def("as.data.frame.raw"), Def::Block(f) if f.src == "base/R/zzz.R"));
     assert!(matches!(def(".Library.site"), Def::Assign(v) if v.len() == 3));
-    assert!(matches!(def(".AutoloadEnv"), Def::Unrun(_)));
+    // the Autoloads environment: attach, .AutoloadEnv, .Autoloaded
+    assert!(w.find(".AutoloadEnv").is_none());
+    // the forms, in their order (Common.R's: attach, then .AutoloadEnv,
+    // then .Autoloaded in it)
+    // (their text as the loader evaluates it: configure's substitutions made)
+    let dir = robigo_rt::base::source_dir().unwrap_or_else(|e| panic!("{e}"));
+    let texts: Vec<String> = w
+        .boot
+        .iter()
+        .map(|f| {
+            assert_eq!(f.src, "profile/Common.R");
+            let t = robigo_rt::base::form_text(&dir.join("src/library"), *f).unwrap_or_else(|e| panic!("{e}"));
+            String::from_utf8_lossy(&t).into_owned()
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "attach(NULL, name = \"Autoloads\")",
+            ".AutoloadEnv <- as.environment(2)",
+            "assign(\".Autoloaded\", NULL, envir = .AutoloadEnv)"
+        ]
+    );
     assert_eq!(w.find(".ArgsEnv").unwrap().after.len(), 88);
     let b = Bound::get();
     for c in &b.closures {
@@ -233,6 +256,25 @@ fn r_parse_vector_statuses() {
     assert_eq!(out, 42.0);
 }
 
+/// gram.y's classed parse errors are signalled from inside the parse, as
+/// raiseParseError/raiseLexError signal them: R_ParseVector's caller gets
+/// the error, not a status.
+#[test]
+fn r_parse_vector_signals_parse_error_conditions() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    robigo_rt::install(cx);
+    for src in ["function(a, a) 1", "1 |> f(_)", "\"\\q\""] {
+        let r = cx.scope(|cx, s| {
+            let o = s.out(cx);
+            parse_bytes(cx, src.as_bytes(), -1, o).map(|r| r.0)
+        });
+        assert!(r.is_err(), "{src}: {r:?}");
+    }
+    // a grammar error is still a status
+    assert_eq!(strings(cx, &["x y"], -1).0, ParseStatus::Error);
+}
+
 /// The lexer's warnings of the tokens R_Parse reads: none past the n-th
 /// expression, and those before a syntax error.
 #[test]
@@ -292,4 +334,19 @@ fn sys_setenv_refuses_in_an_isolate_not_given_the_environment() {
     );
     assert!(std::env::var_os("ROBIGO_NO_GRANT_A").is_none() && std::env::var_os("ROBIGO_NO_GRANT_B").is_none());
     assert_eq!(std::env::var_os("HOME"), home, "Sys.unsetenv() unset HOME");
+}
+
+/// The `boot` forms' effect once the wide base is loaded: the Autoloads
+/// environment is attached second, `.AutoloadEnv` is it, and it has
+/// `.Autoloaded` (`NULL`), as Common.R leaves them in GNU R.
+#[test]
+fn the_boot_forms_attach_the_autoloads_environment() {
+    let (mut iso, _) = session();
+    let cx = iso.cx();
+    let (out, err, ok) = run(
+        cx,
+        "cat(search()[2], identical(.AutoloadEnv, as.environment(2)), \
+         exists('.Autoloaded', envir = .AutoloadEnv, inherits = FALSE), is.null(.AutoloadEnv$.Autoloaded), '\\n')\n",
+    );
+    assert_eq!((out.as_str(), err.as_str(), ok), ("Autoloads TRUE TRUE TRUE \n", "", true));
 }

@@ -1,0 +1,2 @@
+# builtin-diff known failures: list2env, seed 0, key d8ad90fcdc44b0287c3339db
+# list2env: 583 / 583 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

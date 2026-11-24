@@ -1,0 +1,9 @@
+repeatedFormal | "a" | <input> 2 21 | repeated formal argument 'a' (<input>:2:21) 
+placeholderNotNamed | NULL | <input> 1 6 | pipe placeholder can only be used as a named argument (<input>:1:6) 
+placeholderNotNamed | NULL | <input> 1 6 | pipe placeholder can only be used as a named argument (<input>:1:6) 
+unrecognizedEscape | "q" | <input> 2 3 | '\q' is an unrecognized escape in character string (<input>:2:3) 
+[1] "the subclass"
+[1] "parseError"
+calling: repeatedFormal 
+Error : repeated formal argument 'a' (<input>:1:13)
+[1] "simpleError" "error"       "condition"  

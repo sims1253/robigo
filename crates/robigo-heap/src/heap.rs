@@ -72,7 +72,11 @@ pub struct Block {
     /// ever been on a class block list; guards chunk deallocation (a stale
     /// list entry must never point at returned memory).
     pub sticky_listed: u8,
-    _pad: u8,
+    /// 1: a boot block ([`Heap::mark_boot_blocks`]), until the lazy freeze
+    /// ends the boundary: its objects below [`Block::boot_bump`] are boot
+    /// objects. Large chunks do not use it (their +8 word is the mark
+    /// epoch): the core keeps their bases instead.
+    pub boot: u8,
     pub live_objects: u32,
     pub bump_next: u32, // next granule to carve (data-relative)
     pub granules: u32,
@@ -98,7 +102,30 @@ pub struct Block {
     /// in every block and large chunk: the store barrier's slow path
     /// finds it from the object's address alone
     pub remembered: *mut Remembered,
-    _rsv: [u8; 8],
+    /// A boot block's `bump_next` at the boundary: an object at a granule
+    /// below it was allocated before the boundary (the free list is set
+    /// aside meanwhile, so a later one is carved above it).
+    pub boot_bump: u32,
+    /// The vector cells (`heapsize::object_cells`, GNU R's VECREC units)
+    /// charged to the vector heap's use (`valloc`) for the objects in this
+    /// block and not yet given back: added by the allocation of each (the
+    /// heap's slot paths take them), and settled by the sweep once per
+    /// walked block (`Core::sweep`), from whichever side is smaller: the
+    /// dead objects' cells, or this less the survivors'.
+    ///
+    /// **The invariant it rests on:** a live object's `object_cells` is its
+    /// charge. A change in place that may alter it goes through
+    /// [`crate::gc::Core::recharge`], which moves the charge with it: the
+    /// frame quarantine's poisoned frames (rtcore's `recycle.rs`) and
+    /// unserialize's levels (`Cx::set_levels`). Every other change robigo-rt
+    /// makes keeps it: a vector shortened in place is GROWABLE with its
+    /// capacity as truelength (rtcore's `fresh.rs`) and grows only within it
+    /// (`edit.rs`); a hashed table's truelength never exceeds its length;
+    /// `set_typ` retypes nodes. robigo-rtapi exports none of the C API's
+    /// SETLENGTH, SET_TRUELENGTH, SET_GROWABLE_BIT or SET_TYPEOF: one that
+    /// does goes through `recharge` too. Debug builds check the invariant
+    /// at each walked block (`Core::sweep`).
+    pub cells: u32,
     /// one bit per granule: this granule starts an object.
     pub starts: [u64; START_WORDS],
     /// one bit per granule: the object starting here was marked by the
@@ -119,12 +146,54 @@ const _: () = assert!(std::mem::offset_of!(Block, remembered) == REMEMBERED_OFF)
 /// set: the object's address rounded down to [`BLOCK`], plus this.
 pub const REMEMBERED_OFF: usize = 48;
 
+/// Where a large chunk's header keeps its object's charge to the vector
+/// heap's use (a `u64`): a block's `boot_bump` and `cells` there, which a
+/// large chunk does not use.
+pub const LARGE_CELLS_OFF: usize = 56;
+const _: () = assert!(std::mem::offset_of!(Block, boot_bump) == LARGE_CELLS_OFF);
+const _: () = assert!(std::mem::offset_of!(Block, cells) == LARGE_CELLS_OFF + 4);
+
+/// The charge of the large object whose chunk starts at `base`.
+///
+/// # Safety
+/// `base` is a large chunk's base.
+pub unsafe fn large_cells(base: usize) -> *mut u64 {
+    (base + LARGE_CELLS_OFF) as *mut u64
+}
+
 /// The objects a store made the collector trace on every collection (the
 /// store barrier's log): today the immortal objects something was stored
 /// into. A heap has one, in its own allocation, so that the barrier can
 /// append to it without a reference to the `Core` (which the API's callers
-/// own): the slow path finds it through the block header.
-pub struct Remembered(pub std::cell::UnsafeCell<Vec<crate::Sexp>>);
+/// own): the slow path finds it through the block header. Its second word
+/// holds the boot heap's freeze's two notes ([`Remembered::DIRTY`],
+/// [`Remembered::PATH_WRITTEN`]), which the frozen-reachability pass reads
+/// at the next collection (`gc/freeze.rs`). Its third, the pinned
+/// lazy-load frames (the embedder's, given at the boot boundary:
+/// `Core::freeze_boundary`), each with the number of frozen promises whose
+/// PRENV it is: a frozen promise's PRENV cleared over one of them needs no
+/// note until the last (`gc::store_slow`).
+pub struct Remembered(
+    pub std::cell::UnsafeCell<Vec<crate::Sexp>>,
+    pub std::cell::Cell<u8>,
+    pub std::cell::UnsafeCell<Vec<(crate::Sexp, u32)>>,
+);
+
+impl Remembered {
+    /// An edge into a frozen object left the frozen graph (a frozen value
+    /// overwritten in a frozen object or a freeze root, or an object queued
+    /// to unfreeze): the next collection runs the frozen-reachability pass.
+    pub const DIRTY: u8 = 1;
+    /// An environment's ENCLOS was written: the next collection compares the
+    /// search path's frozen members with its last snapshot.
+    pub const PATH_WRITTEN: u8 = 2;
+
+    /// Add `note` to this heap's notes.
+    #[inline]
+    pub fn note(&self, note: u8) {
+        self.1.set(self.1.get() | note);
+    }
+}
 
 /// The remembered set of the heap that contains `p`.
 ///
@@ -281,7 +350,7 @@ impl Heap {
                             class: CLASS_NONE,
                             owner: OWNER_NONE,
                             sticky_listed: 0,
-                            _pad: 0,
+                            boot: 0,
                             live_objects: 0,
                             bump_next: 0,
                             granules: BLOCK_GRANULES,
@@ -290,7 +359,8 @@ impl Heap {
                             marked: 0,
                             immortals: 0,
                             remembered: self.remembered,
-                            _rsv: [0; 8],
+                            boot_bump: 0,
+                            cells: 0,
                             starts: [0; START_WORDS],
                             marks: [0; START_WORDS],
                         },
@@ -323,22 +393,24 @@ impl Heap {
     /// `size` bytes for an object; null if the system refuses the chunk a
     /// small object needs (GNU R's refused page, `GetNewPage`). A refused
     /// large chunk aborts: large requests go through `try_alloc_large`.
+    /// `cells` is the object's charge to the vector heap's use, counted in
+    /// its block ([`Block::cells`]) or its large chunk ([`large_cells`]).
     #[inline(always)]
-    pub fn alloc(&mut self, size: usize) -> *mut u8 {
+    pub fn alloc(&mut self, size: usize, cells: usize) -> *mut u8 {
         debug_assert!(size >= GRANULE);
         if size > MAX_MEDIUM {
-            return self.alloc_large(size);
+            return self.alloc_large(size, cells);
         }
-        match self.alloc_fast(size) {
+        match self.alloc_fast(size, cells) {
             Some(p) => p.as_ptr(),
-            None => self.alloc_small(size),
+            None => self.alloc_small(size, cells),
         }
     }
 
     /// [`Heap::alloc`] where a refusal cannot be answered (the debug
     /// mover's copies, during a collection): it aborts.
-    pub fn alloc_or_abort(&mut self, size: usize) -> *mut u8 {
-        let p = self.alloc(size);
+    pub fn alloc_or_abort(&mut self, size: usize, cells: usize) -> *mut u8 {
+        let p = self.alloc(size, cells);
         if p.is_null() {
             handle_alloc_error(Layout::from_size_align(CHUNK_BYTES, BLOCK).unwrap());
         }
@@ -349,7 +421,7 @@ impl Heap {
     /// no call: the current block's free list, then its bump region; none
     /// when neither has a slot.
     #[inline(always)]
-    pub fn alloc_fast(&mut self, size: usize) -> Option<std::ptr::NonNull<u8>> {
+    pub fn alloc_fast(&mut self, size: usize, cells: usize) -> Option<std::ptr::NonNull<u8>> {
         debug_assert!((GRANULE..=MAX_MEDIUM).contains(&size));
         let ci = class_index(size);
         // the fast path, inlined into the callers: the current block's
@@ -367,6 +439,7 @@ impl Heap {
                 b.freelist = unsafe { *(p.as_ptr().add(header::OFF_LINK) as *mut *mut u8) };
                 b.start_set((p.as_ptr() as usize - Block::data_ptr(cur) as usize) / GRANULE);
                 b.live_objects += 1;
+                b.cells += cells as u32;
                 return Some(p);
             }
             let g = (SIZES[ci] / GRANULE) as u32;
@@ -379,6 +452,7 @@ impl Heap {
                 b.start_set(b.bump_next as usize);
                 b.bump_next += g;
                 b.live_objects += 1;
+                b.cells += cells as u32;
                 return Some(p);
             }
         }
@@ -387,7 +461,7 @@ impl Heap {
 
     #[cold]
     #[inline(never)]
-    fn alloc_small(&mut self, size: usize) -> *mut u8 {
+    fn alloc_small(&mut self, size: usize, cells: usize) -> *mut u8 {
         let ci = class_index(size);
         // every slot of a class is carved at the class size: free-list
         // slots are reused for any request of the class, so a slot cut
@@ -410,6 +484,7 @@ impl Heap {
                     // resolve) the new object
                     b.start_set((p as usize - Block::data_ptr(cur) as usize) / GRANULE);
                     b.live_objects += 1;
+                    b.cells += cells as u32;
                     return p;
                 }
                 if b.bump_next + g <= b.granules {
@@ -418,6 +493,7 @@ impl Heap {
                     b.start_set(b.bump_next as usize);
                     b.bump_next += g;
                     b.live_objects += 1;
+                    b.cells += cells as u32;
                     return p;
                 }
                 cs.cur = std::ptr::null_mut();
@@ -457,12 +533,79 @@ impl Heap {
         }
     }
 
-    fn alloc_large(&mut self, size: usize) -> *mut u8 {
-        self.try_alloc_large(size).unwrap_or_else(|| handle_alloc_error(Layout::new::<u8>()))
+    /// The boot boundary (the lazy freeze, `gc/freeze.rs`): every block
+    /// that holds objects becomes a boot block, its bump position recorded
+    /// and its free list set aside until [`Heap::end_boot_blocks`]. An
+    /// object allocated from now on is carved above that position or in
+    /// another block, so the block and the position tell a boot object from
+    /// a later one; the blocks stay in use (retiring them made each class
+    /// start a fresh block: +5% of the interim loader's peak RSS at start).
+    /// Returns the large chunks' bases, which have no block header to mark,
+    /// and the free lists set aside. O(blocks), no object visited.
+    pub fn mark_boot_blocks(&mut self) -> (Vec<usize>, Vec<(usize, usize)>) {
+        let mut large = Vec::new();
+        let mut lists = Vec::new();
+        for c in &self.chunks {
+            if c.large {
+                large.push(c.base);
+                continue;
+            }
+            for bi in 0..c.claimed as usize {
+                let b = (c.base + bi * BLOCK) as *mut Block;
+                // SAFETY: a claimed block of a live chunk: its header is
+                // initialized, and no reference to it is held.
+                let bb = unsafe { &mut *b };
+                if bb.class != CLASS_NONE && bb.owner != OWNER_EMPTY {
+                    bb.boot = 1;
+                    bb.boot_bump = bb.bump_next;
+                    if !bb.freelist.is_null() {
+                        lists.push((b as usize, bb.freelist as usize));
+                        bb.freelist = std::ptr::null_mut();
+                    }
+                }
+            }
+        }
+        (large, lists)
     }
 
-    /// A large object, or None if the system has no memory for it.
-    pub fn try_alloc_large(&mut self, size: usize) -> Option<*mut u8> {
+    /// End the boot boundary: the boot blocks are ordinary again, their free
+    /// lists given back (after any slot freed meanwhile), before the sweep
+    /// that follows adds to them.
+    pub fn end_boot_blocks(&mut self, lists: &[(usize, usize)]) {
+        for c in &self.chunks {
+            if c.large {
+                continue;
+            }
+            for bi in 0..c.claimed as usize {
+                let b = (c.base + bi * BLOCK) as *mut Block;
+                // SAFETY: as in `mark_boot_blocks`.
+                unsafe { (*b).boot = 0 };
+            }
+        }
+        for &(b, head) in lists {
+            let b = b as *mut Block;
+            // SAFETY: a block `mark_boot_blocks` found, of a chunk no sweep
+            // has released since (the boundary ends before the first sweep);
+            // its free-list entries are free slots whose link words hold the
+            // next link.
+            unsafe {
+                let mut tail = &mut (*b).freelist as *mut *mut u8;
+                while !(*tail).is_null() {
+                    tail = (*tail).add(header::OFF_LINK) as *mut *mut u8;
+                }
+                *tail = head as *mut u8;
+            }
+        }
+    }
+
+    fn alloc_large(&mut self, size: usize, cells: usize) -> *mut u8 {
+        self.try_alloc_large(size, cells).unwrap_or_else(|| handle_alloc_error(Layout::new::<u8>()))
+    }
+
+    /// A large object, or None if the system has no memory for it; `cells`
+    /// is its charge to the vector heap's use, kept in its chunk's header
+    /// ([`large_cells`]) and given back whole at its death.
+    pub fn try_alloc_large(&mut self, size: usize, cells: usize) -> Option<*mut u8> {
         // object header + payload live after a pseudo block header area
         let total_payload = size.checked_add(DATA_OFF)?;
         let (base, _) = self.try_new_chunk(true, total_payload)?;
@@ -476,21 +619,27 @@ impl Heap {
             *(base as *mut u64) = 0;
             *(base as *mut u64).add(1) = 0;
             *((base + REMEMBERED_OFF) as *mut *mut Remembered) = self.remembered;
+            *((base + LARGE_CELLS_OFF) as *mut u64) = cells as u64;
         }
         Some((base + DATA_OFF) as *mut u8)
     }
 
-    /// Immediate free of a small object.
+    /// Immediate free of a small object (the heap's own tests: it gives
+    /// back no cells, [`Block::cells`]).
     ///
     /// # Safety
     /// `p` must be a live small object of this heap, freed once, with no
     /// reference to it left: it goes straight on the free list.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub unsafe fn free_small(&mut self, p: *mut u8) {
         let b = (p as usize & !(BLOCK - 1)) as *mut Block;
         // SAFETY: the caller's contract: `p` is in a block with a class.
         let ci = unsafe { (*b).class as usize };
         debug_assert!(ci < SIZES.len());
+        // a slot freed into a boot block before the lazy freeze would be
+        // reused below its boot position and read as a boot object
+        // SAFETY: as above.
+        debug_assert_eq!(unsafe { (*b).boot }, 0, "robigo: an immediate free inside the boot boundary");
         // SAFETY: as above, and the slot at `p` is no longer an object, so
         // its link word is ours to write.
         unsafe {
@@ -645,9 +794,9 @@ mod tests {
             for &a in &sizes {
                 for &b in &sizes {
                     let mut h = Heap::new();
-                    let p = h.alloc(a);
-                    let q = h.alloc(a);
-                    let r = h.alloc(a);
+                    let p = h.alloc(a, 0);
+                    let q = h.alloc(a, 0);
+                    let r = h.alloc(a, 0);
                     // SAFETY: `q`, `r` and the reused slots have `a` or `b`
                     // bytes, the point of the test, and each slot is freed once.
                     unsafe {
@@ -656,10 +805,10 @@ mod tests {
                         h.free_small(p);
                         h.free_small(r);
                         // the most recently freed slot comes back first
-                        let s = h.alloc(b);
+                        let s = h.alloc(b, 0);
                         assert_eq!(s, r, "class {ci}: reuse");
                         std::ptr::write_bytes(s, 0xEF, b);
-                        let s2 = h.alloc(b);
+                        let s2 = h.alloc(b, 0);
                         assert_eq!(s2, p);
                         std::ptr::write_bytes(s2, 0x11, b);
                         let qs = std::slice::from_raw_parts(q, a);
@@ -688,8 +837,8 @@ mod medium_tests {
         assert_eq!(class_index(MAX_MEDIUM), SIZES.len() - 1);
         // a 1000-double vector (8032 bytes) shares a block with 7 others
         let mut h = Heap::new();
-        let a = h.alloc(8032);
-        let b = h.alloc(8032);
+        let a = h.alloc(8032, 0);
+        let b = h.alloc(8032, 0);
         assert_eq!(a as usize & !(BLOCK - 1), b as usize & !(BLOCK - 1));
         assert_eq!(h.reserved, CHUNK_BYTES);
     }
@@ -725,7 +874,7 @@ mod bitmap_tests {
     fn start_bits_mark_objects_and_resolve_interior_words() {
         let mut h = Heap::new();
         let size = 3 * GRANULE;
-        let objs: Vec<*mut u8> = (0..70).map(|_| h.alloc(size)).collect();
+        let objs: Vec<*mut u8> = (0..70).map(|_| h.alloc(size, 0)).collect();
         let b = h.block_of(objs[0]);
         for &p in &objs {
             assert_eq!(h.block_of(p), b, "one block");

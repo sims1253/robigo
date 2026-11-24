@@ -9,6 +9,9 @@
 # a few records (a forced promise's PRENV, R_NilValue, becomes the base
 # environment, serialize.c's ReadItem_Iterative), so its re-serialization of
 # those is not their bytes either, and robigo-rt's must be GNU R's.
+# Then crates/robigo-rtapi/tests/lazyload.rs: base's own lazyLoad of the same
+# databases on robigo-rt (makeLazy, lazyLoadDBfetch) against GNU R's lazyLoad
+# of them (PKG.lazyload, written beside by GNU R in the image).
 #   scripts/rt-rdb-roundtrip.sh [DIR]              # DIR: where to copy (default .robigo/oracle-lib)
 #   scripts/rt-rdb-roundtrip.sh --data-only DIR    # make the data only (CI's rdb-data job)
 # Where GNU R 4.6.2 is the R on PATH (inside the oracle image: CI), the data
@@ -27,6 +30,7 @@ dir=$(cd "$dir" && pwd)
 # the data's maker, run by the oracle's sh with OUT the output directory
 # shellcheck disable=SC2016 # single quotes on purpose: the inner sh expands it
 make_data='
+  set -eu
   for p in base compiler tools; do
     mkdir -p "$OUT/$p/R" && cp "$(R RHOME)/library/$p/R/$p.rdb" "$(R RHOME)/library/$p/R/$p.rdx" "$OUT/$p/R/"
   done
@@ -53,7 +57,30 @@ make_data='
       }
       close(out); close(con)
       if (!file.rename(paste0(f, \".tmp\"), f)) stop(\"cannot rename \", f, \".tmp\")
+    }"
+  Rscript --vanilla -e "
+    # GNU R'"'"'s own lazyLoad of each database (PKG.lazyload): per variable, in
+    # sorted order, a checksum of its serialization (version 2, after the
+    # header) and one with every closure in it (itself, in a list or an
+    # environment) replaced by its formals, body and attributes, and the
+    # top-level environment by its sorted contents (nested ones by a mark): closures and environments
+    # enclosures aside (tests/lazyload.rs computes the same two)
+    # ck and nz: scripts/lazyload-ck.R, copied beside the data
+    source(file.path(Sys.getenv(\"OUT\"), \"lazyload-ck.R\"))
+    for (p in c(\"base\", \"compiler\", \"tools\")) {
+      d <- file.path(Sys.getenv(\"OUT\"), p, \"R\")
+      e <- new.env()
+      lazyLoad(file.path(d, p), envir = e)
+      lines <- vapply(sort(ls(e, all.names = TRUE)), function(n) {
+        x <- get(n, envir = e)
+        paste(n, ck(x), ck(nz(x)))
+      }, \"\")
+      f <- file.path(d, paste0(p, \".lazyload\"))
+      writeLines(lines, paste0(f, \".tmp\"))
+      if (!file.rename(paste0(f, \".tmp\"), f)) stop(\"cannot rename \", f, \".tmp\")
     }"'
+# the checksums' one copy (the oracle container sees only the data's directory)
+cp "$(dirname "$0")/lazyload-ck.R" "$dir/lazyload-ck.R"
 # captured first: a pipeline into head or grep -q could end R with SIGPIPE,
 # which pipefail would report as a failure
 rv=$(R --version 2> /dev/null) || rv=
@@ -72,4 +99,9 @@ else
     robigo-oracle:4.6.2 sh -c "$make_data"
 fi
 [ -n "$data_only" ] && exit 0
-ROBIGO_ORACLE_LIBRARY=$dir cargo test --release -p robigo-rt --test rdb_roundtrip -- --nocapture
+# both tests run, each reported; the script fails if either does
+status=0
+ROBIGO_ORACLE_LIBRARY=$dir cargo test --release -p robigo-rt --test rdb_roundtrip -- --nocapture || status=1
+ROBIGO_ORACLE_LIBRARY=$dir cargo test --release -p robigo-rtapi --test lazyload -- --nocapture || status=1
+[ "$status" = 0 ] && echo "rt-rdb-roundtrip: both tests passed" || echo "rt-rdb-roundtrip: a test failed (above)" >&2
+exit "$status"

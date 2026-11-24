@@ -66,9 +66,24 @@ if (!inputs_only) {
 # files' R code. Each exits with the status GNU R 4.6.2's recording of it has
 # (tests/rt/R-4.6.2/AREA/NAME.Rstatus). (Not `args`: tracing changes the
 # binding types its cases print.)
+# Cases left out: what they print depends on the evaluation depth at which
+# a promise is forced, against a lowered options(expressions), and the
+# tracer's recording bodies change that depth (GNU R prints differently
+# traced): conditions/promise-setup-*.R pin where byte code's force of a
+# promise meets the limit (S1, #986); conditions/trycatch-depth-*.R where a
+# handler's work meets it after a caught overflow (S1, #964).
+# bytecode/cmpfun-node-stack.R's subject is a depth: where cmp.R, run as R
+# code, overflows GNU R's byte-code node stack (1,477 nested calls compile,
+# 1,478 do not; C1, #976), which the tracer's recording bodies move.
+untraceable <- c("bytecode:cmpfun-node-stack",
+                 "conditions:promise-setup-missok", "conditions:promise-setup-missok-errors",
+                 "conditions:promise-setup-overflow", "conditions:promise-setup-overflow-volume",
+                 "conditions:trycatch-depth-caught", "conditions:trycatch-depth-cond",
+                 "conditions:trycatch-depth-handler")
 for (area in c("bytecode", "conditions", "env", "ns", "parse", "regex", "s3", "serialize", "sort")) {
   for (f in sort(Sys.glob(file.path(root, "tests", "rt", area, "*.R")), method = "radix")) {
     name <- sub("[.]R$", "", basename(f))
+    if (paste0(area, ":", name) %in% untraceable) next
     st <- if (inputs_only) NA_integer_ else
       as.integer(readLines(file.path(root, "tests", "rt", "R-4.6.2", area, paste0(name, ".Rstatus"))))
     inputs <- c(inputs, list(list(id = paste0(area, ":", name), file = substring(f, nchar(root) + 2L), status = st)))

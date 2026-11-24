@@ -46,11 +46,13 @@ mod bcassign;
 mod bind;
 pub mod builtin;
 mod call;
+mod call_fn;
 pub mod cenv;
 pub mod code;
 pub mod compile;
 pub mod conditions;
 pub mod connections;
+mod declare;
 pub mod deparse;
 pub mod dispatch;
 mod early;
@@ -68,6 +70,7 @@ pub mod memory;
 mod missing;
 mod ns;
 pub mod ops;
+pub mod parse_cond;
 pub mod platform;
 pub mod prims;
 pub mod print;
@@ -79,8 +82,27 @@ pub mod search;
 pub mod serialize;
 pub mod source;
 mod specials;
+pub(crate) mod srcref;
+mod tailcall;
+mod tcache;
+/// The translation cache's writer: its files, written at the end of the
+/// session that translated for it (`ROBIGO_TRANSLATION_CACHE_WRITE`).
+/// Where a translation-cache file's build ID begins (its header's
+/// layout): what a test damages to make a file another build's.
+pub use tcache::format::BUILD_ID_AT as TRANSLATION_CACHE_BUILD_ID_AT;
+pub use tcache::{
+    fuzz_decode as translation_cache_fuzz_decode, mismatches as translation_cache_mismatches,
+    report as report_translation_cache, verifying_all as verifying_translation_cache,
+    write_files as write_translation_cache, writing as writing_translation_cache,
+};
 mod util;
 pub mod vm;
+
+/// The D9 deaths the evaluators that run compiled code outside the VM make
+/// under `ROBIGO_POISON_DEAD` (tests/poison.rs).
+#[cfg(feature = "poison-dead")]
+#[doc(hidden)]
+pub use early::poison_deaths;
 
 use robigo_rtcore::Cx;
 
@@ -129,16 +151,31 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         Ok("0") | Ok("") | Err(_) => false,
         Ok(other) => panic!("robigo: ROBIGO_RETRY_TORTURE={other:?} is neither \"0\" nor \"1\""),
     };
-    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT)
-    cx.set_retry_torture(retry_torture);
+    // (refused without its feature, and with ROBIGO_FAIL_ALLOC_AT); held
+    // with the heap's torture when the embedder holds it (robigo-rt's front
+    // end under ROBIGO_TORTURE_AFTER_START=1), armed where the program under
+    // test starts ([`arm_torture_after_start`]): never held by an embedder
+    // that does not arm
+    let after_start = cx.torture_held();
+    if retry_torture && after_start {
+        // held, but refused now as it would be (no feature, or
+        // ROBIGO_FAIL_ALLOC_AT too): its setter's checks, then off until
+        // arm_torture_after_start
+        cx.set_retry_torture(true);
+        cx.set_retry_torture(false);
+    } else {
+        cx.set_retry_torture(retry_torture);
+    }
     let cond = conditions::CondState::new(cx);
     let defs = prims::base_defs();
-    let (objs, names) = prims::make_prims(cx, &defs, 0);
-    let by_sym = names.iter().enumerate().map(|(i, s)| (s.as_ptr() as usize, i)).collect();
+    // (a later name for the same symbol replaces the earlier)
+    let mut by_sym = prims::BySym::default();
+    let (objs, names) = prims::make_prims(cx, &defs, 0, &mut by_sym, prims::Policy::Replace);
     cx.set_ext(prims::RtState {
         forced,
         jit: std::cell::Cell::new(jit::Config::from_env()),
         compile_pkgs: std::cell::Cell::new(jit::compile_pkgs_from_env()),
+        gnu_boot: std::cell::Cell::new(false),
         jit_cache: Default::default(),
         shipped: Default::default(),
         syms,
@@ -147,15 +184,20 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         names,
         by_sym,
         running_finalizers: std::cell::Cell::new(false),
+        retry_held: std::cell::Cell::new(retry_torture && after_start),
         materialize: std::cell::Cell::new(materialize),
         inline: std::cell::Cell::new(!no_inline),
         inline_runs: std::cell::Cell::new(0),
+        early_bytecode: std::cell::Cell::new(true),
         inline_writes: Default::default(),
         tagbuf: Default::default(),
         cond: std::rc::Rc::new(cond),
         links: Default::default(),
         assign_fns: Default::default(),
         folds: Default::default(),
+        scratch: Default::default(),
+        compile_warnings: Default::default(),
+        tcache: Default::default(),
         base_src: Default::default(),
     });
     // the connection table and the lazy-load databases' cache (L1)
@@ -169,7 +211,9 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     h.eval_bytecode = eval::eval_bytecode;
     h.apply = call::apply_hook;
     h.force_and_call = apply::force_and_call;
+    h.force_and_call_indexed = apply::force_and_call_indexed;
     h.force = eval::force;
+    h.eval_promise = eval::eval_promise;
     h.force_arg = eval::force_arg_eval;
     h.early_force = early::early_force;
     h.eval_args = specials::eval_args_hook;
@@ -189,7 +233,12 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
     // failure is R_Suicide's (stdout this early, status 2)
     if let Err(msg) = robigo_rtbuiltins::errors::bind_domain(cx) {
         println!("Fatal error: {msg}");
-        std::process::exit(2);
+        // R_Suicide's R_CleanUp(SA_SUICIDE, 2, 0): the temporary directory
+        // InitTempDir made goes too
+        match repl::clean_up(cx, repl::SaveAction::Suicide, 2, false) {
+            Ok(never) => match never {},
+            Err(_) => unreachable!("robigo: SA_SUICIDE saves nothing"),
+        }
     }
 }
 
@@ -235,6 +284,12 @@ pub fn set_inline(cx: &mut Cx, on: bool) {
     prims::state(cx).inline.set(on);
 }
 
+/// Turn early evaluation of a translated call's promise code on or off (for
+/// tests: the counts a force makes must not differ).
+pub fn set_early_bytecode(cx: &mut Cx, on: bool) {
+    prims::state(cx).early_bytecode.set(on);
+}
+
 /// The calls run inline so far (for tests).
 pub fn inline_runs(cx: &Cx) -> u64 {
     prims::state(cx).inline_runs.get()
@@ -254,43 +309,47 @@ pub fn define_builtins(cx: &mut Cx, defs: &[prims::PrimDef]) {
         return;
     }
     let first = prims::state(cx).defs.len();
-    let (objs, names) = prims::make_prims(cx, defs, first);
+    let mut by_sym = prims::state(cx).by_sym.clone();
+    let (objs, names) = prims::make_prims(cx, defs, first, &mut by_sym, prims::Policy::InternalKeeps);
     // the state is replaced whole: `ext` hands out shared references only
-    let mut st = take_state(cx);
+    let mut st = take_state(cx, defs.len());
+    st.by_sym = by_sym;
     st.defs.extend_from_slice(defs);
     st.objs.extend(objs);
-    for (i, n) in names.iter().enumerate() {
-        // the compiler's lookup is by symbol: an `.Internal` never hides a
-        // primitive of the same name
-        if defs[i].internal() {
-            st.by_sym.entry(n.as_ptr() as usize).or_insert(first + i);
-        } else {
-            st.by_sym.insert(n.as_ptr() as usize, first + i);
-        }
-    }
     st.names.extend(names);
     cx.set_ext(st);
 }
 
-/// The state, moved out of the isolate (to grow it).
-fn take_state(cx: &mut Cx) -> prims::RtState {
+/// The state, moved out of the isolate (to grow it), its primitive tables
+/// with room for `more` entries (one allocation each, no growth when the
+/// caller extends them).
+fn take_state(cx: &mut Cx, more: usize) -> prims::RtState {
     let st = prims::state(cx);
-    let objs = st.objs.iter().map(|g| cx.global(g.bind(cx))).collect();
+    let mut objs = Vec::with_capacity(st.objs.len() + more);
+    objs.extend(st.objs.iter().map(|g| cx.global(g.bind(cx))));
+    let mut defs = Vec::with_capacity(st.defs.len() + more);
+    defs.extend_from_slice(&st.defs);
+    let mut names = Vec::with_capacity(st.names.len() + more);
+    names.extend_from_slice(&st.names);
     let shipped = st.shipped.borrow().iter().map(|g| g.as_ref().map(|g| cx.global(g.bind(cx)))).collect();
     prims::RtState {
         forced: st.forced,
         jit: st.jit.clone(),
         compile_pkgs: st.compile_pkgs.clone(),
+        gnu_boot: st.gnu_boot.clone(),
         jit_cache: std::cell::RefCell::new(st.jit_cache.borrow_mut().take()),
         shipped: std::cell::RefCell::new(shipped),
         syms: st.syms,
-        defs: st.defs.clone(),
+        defs,
         objs,
-        names: st.names.clone(),
-        by_sym: st.by_sym.clone(),
+        names,
+        // (define_builtins, the only caller, puts its own updated table here)
+        by_sym: Default::default(),
         running_finalizers: std::cell::Cell::new(st.running_finalizers.get()),
+        retry_held: std::cell::Cell::new(st.retry_held.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         inline: std::cell::Cell::new(st.inline.get()),
+        early_bytecode: std::cell::Cell::new(st.early_bytecode.get()),
         inline_runs: std::cell::Cell::new(st.inline_runs.get()),
         inline_writes: Default::default(),
         tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),
@@ -298,7 +357,11 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
         links: st.links.clone(),
         assign_fns: st.assign_fns.clone(),
         folds: st.folds.copy(cx),
-        base_src: std::cell::RefCell::new(st.base_src.borrow().clone()),
+        // (the spare buffers stay behind: the new state starts with none)
+        scratch: Default::default(),
+        compile_warnings: Default::default(),
+        tcache: Default::default(),
+        base_src: st.base_src.clone(),
     }
 }
 
@@ -306,3 +369,39 @@ fn take_state(cx: &mut Cx) -> prims::RtState {
 // rebuilds the crate when another worktree built it last in a shared
 // target directory.
 const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
+/// `ROBIGO_TORTURE_AFTER_START=1` (a test hook, not a GNU R setting: see
+/// robigo-heap's `torture_after_start_from_env`) with no torture mode to
+/// hold is a mistake that would do nothing silently: the error, or `Ok`.
+/// The modes: gctorture (`R_GCTORTURE`, `ROBIGO_GCTORTURE`, a positive gap),
+/// `ROBIGO_GC_MOVE`, `ROBIGO_RETRY_TORTURE=1`.
+pub fn torture_after_start_check() -> Result<(), String> {
+    if !robigo_heap::torture_after_start_from_env() {
+        return Ok(());
+    }
+    let set = |n: &str| std::env::var(n).is_ok_and(|v| !v.is_empty() && v != "0");
+    // (gctorture as the heap will read it, not a parse of our own)
+    if robigo_heap::gctorture_from_env()
+        || set("ROBIGO_GC_MOVE")
+        || std::env::var("ROBIGO_RETRY_TORTURE").is_ok_and(|v| v == "1")
+    {
+        Ok(())
+    } else {
+        Err("ROBIGO_TORTURE_AFTER_START=1 holds torture until the start is over, but no torture mode is set \
+             (R_GCTORTURE or ROBIGO_GCTORTURE, ROBIGO_GC_MOVE, ROBIGO_RETRY_TORTURE=1)"
+            .into())
+    }
+}
+
+/// Arm what `ROBIGO_TORTURE_AFTER_START=1` held through the start: the
+/// heap's gctorture and moves, and `ROBIGO_RETRY_TORTURE`, as they were
+/// decided when the heap was made and robigo-rt installed (the environment
+/// is not read again: a profile or `.First` may have changed it). The
+/// embedder calls it where the program under test starts (robigo-rt:
+/// beside `Cx::arm_fail_alloc`); with nothing held it changes nothing.
+pub fn arm_torture_after_start(cx: &mut Cx) {
+    if prims::state(cx).retry_held.replace(false) {
+        cx.set_retry_torture(true);
+    }
+    cx.arm_torture_after_start();
+}

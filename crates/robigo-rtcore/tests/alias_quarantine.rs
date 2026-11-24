@@ -100,4 +100,17 @@ fn a_methods_frame_outlives_its_generics_poisoned_frame() {
         let View::Promise(py) = y.view() else { panic!("y: not a promise") };
         assert_eq!(py.value().sexp(), five.bind(cx).sexp());
     });
+    // the poisoned frame, held as a root, counts no vector cells: the sweep
+    // walks its block (garbage was made beside it), and in a debug build
+    // checks each walked block's count against its objects' cells
+    // (robigo-heap's `Block::cells`). Not under Miri, where a collection
+    // reaches the heap's C shim: neither the collections nor the garbage,
+    // whose trigger would make the isolate's drop collect
+    if !cfg!(miri) {
+        for _ in 0..1000 {
+            let _ = cx.alloc_copy(&[1.0, 2.0, 3.0]).unwrap().finish();
+        }
+        cx.collect();
+        cx.collect();
+    }
 }

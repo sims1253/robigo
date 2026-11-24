@@ -1,0 +1,2 @@
+# builtin-diff known failures: bindingIsActive, seed 0, key faaf297fa3a39bd3606cfbe8
+# bindingIsActive: 160 / 160 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

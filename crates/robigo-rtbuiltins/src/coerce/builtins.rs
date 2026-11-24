@@ -144,7 +144,7 @@ pub(crate) fn ascommon<'g, 'r>(
         let (v, w) = if ty != ANYSXP && t != ty {
             match coerce(cx, u, ty, !clear)? {
                 Built::Done(v, w) => (v, w),
-                Built::Fail(d) => return Ok(Built::fail(Diag::error(d.message().to_owned()))),
+                Built::Fail(d) => return Ok(Built::fail(d.into_error())),
             }
         } else {
             (u, Warns::new())
@@ -734,6 +734,11 @@ pub fn do_docall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             })
         })?;
         // under PROTECT(names) and PROTECT(c) (robigo_rtcore's ppacct)
+        if crate::util::a4_plant_case(cx, call) && args.get(cx, 1).len() == Some(2) {
+            // PLANT(A4, log): the function called one more time, its value dropped
+            let o2 = s.out(cx);
+            cx.with_pp_excess(2, |cx| cx.eval(c, envir, o2))?;
+        }
         cx.with_pp_excess(2, |cx| cx.eval(c, envir, out))
     })
 }

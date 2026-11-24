@@ -28,9 +28,13 @@
 #   d10    D10's string rows (docs/ledger/g3/2026-11-17-d10-bar.md).
 #   d2s    D2s's dynamic-definition microbench: a callee frame gains a name
 #          its closure's body does not define (docs/ledger/g3.md, D2s bar).
-#   layout, envs, growth, cold, d0
-#          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D11; D0's
-#          pilot), docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   layout, envs, growth, d0
+#          the M2/M3 decisions' rows (D8 and D13; D2u; D12; D0's pilot),
+#          docs/ledger/g3/2026-11-17-m2m3-bars.md.
+#   cold   run-once code: D11's rows (runonce, source5k; the m2m3 ledger
+#          above), and the report-only rows a call made afresh and
+#          compiled at its first evaluation costs (toplevel-lines, do-call,
+#          eval-parse, map), docs/ledger/g3/2026-11-23-compile-census.md.
 #   guard  common VM paths no bar's row reaches, held by the perf-rt gate to
 #          the 0.5% rule against main only (m1-bars.toml's [[guard]]): `[`
 #          and `[<-` of a double vector, and `[` of a matrix, by scalar
@@ -44,6 +48,11 @@
 #          only (no bar cites them): what X9 (frames, argument matching), X7
 #          (D11) and S3x-d measure against
 #          (docs/ledger/g3/2026-11-17-s3x-d-trycatch-gap.md).
+#   datetime
+#          date-time conversions in a time zone (a TZ session each call:
+#          set_tz, one conversion per element, reset_tz), reported only
+#          (no bar cites them): strptime's and as.POSIXct's per-element
+#          paths (docs/ledger/g3/2026-11-22-datetime-rows.md).
 #   jit    V4's JIT-cost bar (docs/ledger/g3/2026-11-17-v4-4-jit-cost.md):
 #          one JIT compile of a closure of benchmarks/suite/calls.R that GNU
 #          R's JIT compiles running it, as R_cmpfun1 makes it
@@ -53,9 +62,28 @@
 #          (at 40, the extra N compiles catch 0 or 1 of robigo-rt's full
 #          collections, ±0.65M per compile: X's profile). GNU R's
 #          side only until V4 step 3 lands: robigo-rt cannot load the
-#          compiler namespace yet, and idiom-vs-r.py stops at a row that
-#          fails, so measure them with --no-robigo, or keep them out of a
-#          run under both (--filter) until then.
+#          compiler namespace yet, and idiom-vs-r.py refuses a row that
+#          fails (below), so measure them with --no-robigo, or keep them
+#          out of a run under both (--filter) until then.
+#
+# No collection in a row's window: idiom-vs-r.py runs each row at N and 2N
+# first, without callgrind, and refuses it unless robigo-rt collects 0 times
+# in both runs (docs/ledger/g3/2026-11-23-row-collections.md). A collection
+# between them would put one whole collection, whose cost follows the boot's
+# live heap, into the row's per-iteration figure (guard-vec-arith was +1.20%
+# under the rdb boot for that alone). An allocating row sizes its heap with
+# `heap = { R_VSIZE = "...", R_NSIZE = "..." }`, applied to both sides' runs
+# (GNU R reads the same variables, startup.c:R_SizeFromEnv). A row whose work
+# collects by design is marked `collects = true` (the jit rows: a compile
+# allocates): the mark waives the refusal (idiom-vs-r.py's collection_error
+# passes the row whatever it counts), so such a row's counts are only
+# reported: perf.py rt-bars prints them for both binaries and warns when
+# they differ. GNU R's counts are reported beside robigo-rt's, not enforced.
+#
+# No failing row: the same runs refuse a row whose script exits non-zero or
+# prints an R error on either side, by name, before anything is measured,
+# `collects = true` or not (source5k on robigo-rt today: base's source()
+# calls utils::localeToCharset(), and robigo-rt's library has no utils).
 #
 # `address_sensitive = true` marks a row whose count follows where its strings
 # were allocated: GNU R's string hash, and robigo-rt's port of it, hashes a
@@ -471,6 +499,48 @@ writeLines(sprintf("x%d <- %d + 1", 1:5000, 1:5000), src)
 body = 'source(src)'
 n = 4
 
+# Run-once code (the compile census, docs/ledger/g3/2026-11-23-compile-census.md):
+# each iteration evaluates a call made afresh, which robigo-rt compiles at
+# its first evaluation (eval::expr_code) and GNU R evaluates as an AST.
+# Report-only: no bar or guard cites them. Their first numbers, robigo-rt's
+# and GNU R 4.6.2's, are in that ledger entry.
+
+[[row]]
+name = "toplevel-lines"
+group = "cold"
+note = "a top-level assignment as the REPL reads one: parsed and evaluated once (the parse included), as R_ReplFile does each line of a script"
+setup = ""
+body = 'eval(parse(text = "x1 <- 1 + 1"))'
+n = 1000
+
+[[row]]
+name = "do-call"
+group = "cold"
+note = "do.call(f, list(i, 1)): do_docall builds the call of its values and evaluates it"
+setup = '''
+f <- function(a, b) a + b
+'''
+body = 'do.call(f, list(i, 1))'
+n = 1000
+
+[[row]]
+name = "eval-parse"
+group = "cold"
+note = "eval(parse(text = \"i + 1\")): a freshly parsed call, evaluated once"
+setup = ""
+body = 'eval(parse(text = "i + 1"))'
+n = 500
+
+[[row]]
+name = "map"
+group = "cold"
+note = "Map(f, 1:5, 1:5): mapply's FUN call and its dots[[j]][[i]] arguments, built per call (until the apply family reuses one call object per call, B's change in progress, each Map call compiles them afresh)"
+setup = '''
+f <- function(x, y) x + y
+'''
+body = 'r <- Map(f, 1:5, 1:5)'
+n = 500
+
 [[row]]
 name = "d0-attr"
 group = "d0"
@@ -589,6 +659,8 @@ x <- seq_len(1000L) * 0.5
 '''
 body = 'y <- x * 2 + x'
 n = 4000
+# 16 KB per iteration: the default heap collects once between N and 2N
+heap = { R_VSIZE = "256M" }
 
 [[row]]
 name = "guard-vec-sum"
@@ -642,6 +714,7 @@ n = 4000
 [[row]]
 name = "jit-scale_by"
 group = "jit"
+collects = true
 note = "one JIT compile of calls.R's `scale_by`: compiler:::tryCmpfun(scale_by), as R_cmpfun1 calls it, checked to be byte code"
 setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(scale_by)))) != "bytecode") stop("tryCmpfun left scale_by uncompiled")'
@@ -650,6 +723,7 @@ n = 400
 [[row]]
 name = "jit-weigh"
 group = "jit"
+collects = true
 note = "one JIT compile of calls.R's `weigh`: compiler:::tryCmpfun(weigh), as R_cmpfun1 calls it, checked to be byte code"
 setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(weigh)))) != "bytecode") stop("tryCmpfun left weigh uncompiled")'
@@ -658,6 +732,7 @@ n = 400
 [[row]]
 name = "jit-tag"
 group = "jit"
+collects = true
 note = "one JIT compile of calls.R's `tag`: compiler:::tryCmpfun(tag), as R_cmpfun1 calls it, checked to be byte code"
 setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(tag)))) != "bytecode") stop("tryCmpfun left tag uncompiled")'
@@ -666,6 +741,7 @@ n = 400
 [[row]]
 name = "jit-env-fn"
 group = "jit"
+collects = true
 note = "one JIT compile of calls.R's `e$f`: compiler:::tryCmpfun(e$f), as R_cmpfun1 calls it, checked to be byte code"
 setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(e$f)))) != "bytecode") stop("tryCmpfun left e$f uncompiled")'
@@ -674,6 +750,7 @@ n = 400
 [[row]]
 name = "jit-area"
 group = "jit"
+collects = true
 note = "one JIT compile of calls.R's `area`: compiler:::tryCmpfun(area), as R_cmpfun1 calls it, checked to be byte code"
 setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(area)))) != "bytecode") stop("tryCmpfun left area uncompiled")'
@@ -682,6 +759,7 @@ n = 400
 [[row]]
 name = "jit-area-sq"
 group = "jit"
+collects = true
 note = "one JIT compile of calls.R's `area.sq`: compiler:::tryCmpfun(area.sq), as R_cmpfun1 calls it, checked to be byte code"
 setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(area.sq)))) != "bytecode") stop("tryCmpfun left area.sq uncompiled")'
@@ -690,10 +768,33 @@ n = 400
 [[row]]
 name = "jit-safe"
 group = "jit"
+collects = true
 note = "one JIT compile of calls.R's `safe`: compiler:::tryCmpfun(safe), as R_cmpfun1 calls it, checked to be byte code"
 setup_ref = "calls"
 body = 'if (typeof(.Internal(bodyCode(compiler:::tryCmpfun(safe)))) != "bytecode") stop("tryCmpfun left safe uncompiled")'
 n = 400
+
+# --- date-time conversions in a time zone: reported, no bar --------------
+
+[[row]]
+name = "datetime-zone-strptime"
+group = "datetime"
+note = "strptime of 1e5 strings in Europe/Berlin: R_strptime, mktime and the zone name per element"
+setup = '''
+x <- rep("2024-07-01 12:34:56", 1e5)
+'''
+body = 'invisible(.Internal(strptime(x, "%Y-%m-%d %H:%M:%S", "Europe/Berlin")))'
+n = 2
+
+[[row]]
+name = "datetime-zone-asposixct"
+group = "datetime"
+note = "as.POSIXct of a 1e5-element POSIXlt in Europe/Berlin: one mktime per element"
+setup = '''
+lt <- .Internal(as.POSIXlt(seq(0, by = 3600, length.out = 1e5), "Europe/Berlin"))
+'''
+body = 'invisible(.Internal(as.POSIXct(lt, "Europe/Berlin")))'
+n = 2
 
 # The setups rows share (`setup_ref`): calls.R's definitions.
 [setups]
@@ -714,3 +815,58 @@ area.default <- function(s) 0
 sq <- structure(list(side = 2), class = "sq")
 safe <- function(x) tryCatch(if (x > 0) x else stop("neg"), error = function(err) 0)
 '''
+
+[[row]]
+name = "lapply"
+group = "calls"
+note = "lapply(x, f): base's lapply over ten elements, a small closure each; report-only (no bar or guard cites it). Each lapply call built its FUN(X[[i]], ...) afresh and compiled it at its first evaluation (eval::expr_code): about 5.5k of the row's instructions (X, 2026-11-23); base's lapply now keeps one such call per isolate (B, docs/ledger/g3/2026-11-23-apply-fcall.md)"
+setup = '''
+x <- 1:10
+f <- function(v) v + 1
+'''
+body = 'r <- lapply(x, f)'
+n = 2000
+
+[[row]]
+name = "vapply"
+group = "calls"
+note = "vapply(x, f, 0): lapply's row through vapply's own kept call; report-only"
+setup = '''
+x <- 1:10
+f <- function(v) v + 1
+'''
+body = 'r <- vapply(x, f, 0)'
+n = 2000
+
+[[row]]
+name = "sapply"
+group = "calls"
+note = "sapply(x, f): lapply's row and simplify2array; report-only"
+setup = '''
+x <- 1:10
+f <- function(v) v + 1
+'''
+body = 'r <- sapply(x, f)'
+n = 2000
+
+[[row]]
+name = "mapply"
+group = "calls"
+note = "mapply(f, x, x): one call built per invocation (it holds FUN, MoreArgs and the names), two [[ compiles per argument; report-only"
+setup = '''
+x <- 1:10
+f <- function(a, b) a + b
+'''
+body = 'r <- mapply(f, x, x)'
+n = 1000
+
+[[row]]
+name = "Map"
+group = "calls"
+note = "Map(f, x, x): R code over mapply; report-only"
+setup = '''
+x <- 1:10
+f <- function(a, b) a + b
+'''
+body = 'r <- Map(f, x, x)'
+n = 1000

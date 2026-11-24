@@ -56,6 +56,13 @@ pub enum ExitKind {
     Restart,
     /// A user interrupt (`onintr`).
     Interrupt,
+    /// `Exec` or `Tailcall`'s jump to the function record of the closure
+    /// that called it (eval.c's `do_tailcall`), carrying the continuation:
+    /// a list of the call, its environment and its function. Where it lands
+    /// the record ends as for a `return`, and the exit is pending again,
+    /// with no target, for the closure call that made the record to run
+    /// (robigo-rt's `tailcall`, GNU R's `handle_exec_continuation`).
+    Exec,
 }
 
 pub(crate) fn kind_from_u8(k: u8) -> ExitKind {
@@ -63,6 +70,8 @@ pub(crate) fn kind_from_u8(k: u8) -> ExitKind {
         0 => ExitKind::Error,
         1 => ExitKind::Jump,
         2 => ExitKind::Restart,
+        4 => ExitKind::Exec,
+        // (an unknown byte decodes as the inert Interrupt, never as Exec)
         _ => ExitKind::Interrupt,
     }
 }
@@ -168,8 +177,14 @@ impl Cx {
     }
 
     /// [`Cx::error`] of a message in the native encoding's bytes
-    /// ([`Cx::error_call_bytes`]).
+    /// ([`Cx::error_call_bytes`]). GNU R formats `error()`'s message into
+    /// `min(BUFSIZE, R_WarnLength)` bytes, its NUL included, so a longer one
+    /// is cut there (999 bytes at `warning.length`'s default), short of a
+    /// character it would split.
+    // R: errors.c:Rf_error, errors.c:Rvsnprintf_mbcs
     pub fn error_bytes(&mut self, msg: &[u8]) -> RError {
+        let size = ERROR_BUFSIZE.min(self.report_options().warn_length.get());
+        let msg = vsnprintf_cut(msg, size, self.locale().utf8);
         let call = self.error_context_call().sexp();
         self.error_call_sexp(call, msg)
     }
@@ -188,17 +203,50 @@ impl Cx {
         if g.callflag() & crate::ctxt::BUILTIN != 0 {
             return g.next().map_or_else(|| self.nil(), |r| r.call());
         }
-        let ctx = self.iso().contexts();
-        if !ctx.bc_active.get() {
+        if !self.iso().contexts().bc_active.get() {
             return g.call();
         }
+        self.bc_interpreter_expression()
+    }
+
+    /// The call `error()` and `warning()` report under a `CTXT_CCODE`
+    /// context begun with the call R_NilValue (datetime.c's
+    /// `prepare_reset_tz`): `getCurrentCall` finds that context first, so
+    /// while byte code runs the expression it evaluates
+    /// (`R_getBCInterpreterExpression`), else NULL.
+    // R: errors.c:getCurrentCall
+    pub fn ccode_context_call(&self) -> Ref<'_> {
+        if self.iso().contexts().bc_active.get() { self.bc_interpreter_expression() } else { self.nil() }
+    }
+
+    /// [`Cx::error`] under such a context ([`Cx::ccode_context_call`]).
+    pub fn error_in_ccode_context(&mut self, msg: &str) -> RError {
+        let call = self.ccode_context_call().sexp();
+        self.error_call_sexp(call, msg.as_bytes())
+    }
+
+    /// `R_getBCInterpreterExpression()`: the expression the running byte
+    /// code evaluates, as the AST interpreter would report it.
+    // R: eval.c:R_getBCInterpreterExpression
+    fn bc_interpreter_expression(&self) -> Ref<'_> {
+        let g = self.global_context();
+        let ctx = self.iso().contexts();
         // (a traced root of the context state: a constant of the running
         // code object, live)
         let e = self.raw_ref(ctx.bc_expr.get());
         if ctx.bc_expr_final.get() {
             return e;
         }
-        // (an assignment call is not inflated: robigo-rt sets none)
+        // an assignment call is shown: `x <<- v` as itself, where
+        // inflateAssignmentCall leaves it as it is (its last argument is
+        // not tagged `value`). INTERIM(C1): one it would inflate (a direct
+        // `` `f<-`(x, value = v) ``, GNU R's `f(x) <- v`) is not made here,
+        // under `&Cx` on an error's path; it falls through to the
+        // function's call, as before this check (robigo-rt's complex
+        // assignments set theirs inflated, `set_bc_expression_final`)
+        if maybe_assignment_call(e) && !inflates(e) {
+            return e;
+        }
         if e.sexptype() == robigo_heap::types::LANGSXP
             && !maybe_closure_wrapper(self, e)
             && !maybe_primitive_call(self, e)
@@ -216,6 +264,21 @@ impl Cx {
             c = r.next();
         }
         if e == self.nil() { g.call() } else { e }
+    }
+
+    /// `eval`'s `R_BCIntActive = 0`: byte code inactive from here, the
+    /// flag it had returned for [`Cx::bc_restore`].
+    #[inline(always)]
+    #[must_use = "the saved flag goes back to `Cx::bc_restore`, or byte code stays inactive"]
+    pub fn bc_deactivate(&self) -> bool {
+        self.iso().contexts().bc_active.replace(false)
+    }
+
+    /// `R_BCIntActive = bcintactivesave`: the flag [`Cx::bc_deactivate`]
+    /// returned, restored.
+    #[inline(always)]
+    pub fn bc_restore(&self, saved: bool) {
+        self.iso().contexts().bc_active.set(saved);
     }
 
     /// Run `f` as an activation of byte code (`bytecode`) or not: GNU R's
@@ -494,6 +557,35 @@ fn maybe_closure_wrapper(cx: &Cx, e: Ref<'_>) -> bool {
     wrapper && c.cdr().as_cons().is_some_and(|a| a.car() != cx.nil())
 }
 
+/// `maybeAssignmentCall(expr)`: a call whose function is a symbol of more
+/// than two bytes ending in `<-` (`<<-`, `names<-`; not `<-` itself).
+// R: eval.c:maybeAssignmentCall
+fn maybe_assignment_call(e: Ref<'_>) -> bool {
+    let Some(c) = e.as_cons() else { return false };
+    if e.sexptype() != robigo_heap::types::LANGSXP {
+        return false;
+    }
+    let Some(s) = c.car().as_sym() else { return false };
+    let name = s.name_bytes();
+    name.len() > 2 && name.ends_with(b"<-")
+}
+
+/// Whether `inflateAssignmentCall(expr)` makes a new call of `expr`, an
+/// assignment call: it has two arguments or more and its last is tagged
+/// `value`.
+// R: eval.c:inflateAssignmentCall
+fn inflates(e: Ref<'_>) -> bool {
+    let mut args = e.as_cons().map(|c| c.cdr());
+    let mut n = 0;
+    let mut last_value = false;
+    while let Some(a) = args.and_then(|a| a.as_cons()) {
+        n += 1;
+        last_value = a.tag().as_sym().is_some_and(|t| t.name_bytes() == b"value");
+        args = Some(a.cdr());
+    }
+    n >= 2 && last_value
+}
+
 /// `maybePrimitiveCall(expr)`: a call whose function symbol's value in base
 /// (`SYMVALUE`, an evaluated promise's value) is a builtin or a special.
 // R: eval.c:maybePrimitiveCall
@@ -514,5 +606,55 @@ fn maybe_primitive_call(cx: &Cx, e: Ref<'_>) -> bool {
             }
             _ => false,
         }
+    }
+}
+
+/// GNU R's `BUFSIZE` (errors.c): the size of `error()`'s buffer.
+pub(crate) const ERROR_BUFSIZE: usize = 8192;
+
+/// What `Rvsnprintf_mbcs(buf, size, "%s", msg)` leaves in `buf`: at most
+/// `size - 1` bytes, then (`mbcsTruncateToValid`, in a UTF-8 locale; the C
+/// locale is not multibyte) without a last character the cut left
+/// incomplete or invalid.
+// R: errors.c:Rvsnprintf_mbcs, util.c:mbcsTruncateToValid
+pub(crate) fn vsnprintf_cut(msg: &[u8], size: usize, utf8: bool) -> &[u8] {
+    if msg.len() < size {
+        return msg;
+    }
+    let b = &msg[..size.saturating_sub(1)];
+    if !utf8 || b.is_empty() {
+        return b;
+    }
+    // back to the last byte that is not a continuation byte
+    let mut good = b.len() - 1;
+    while good > 0 && (b[good] & 0xC0) == 0x80 {
+        good -= 1;
+    }
+    // mbrtowc of the rest, character by character: up to the first that is
+    // incomplete or invalid
+    let used = match std::str::from_utf8(&b[good..]) {
+        Ok(_) => b.len() - good,
+        Err(e) => e.valid_up_to(),
+    };
+    &b[..good + used]
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::vsnprintf_cut;
+
+    #[test]
+    fn error_buffer_cut() {
+        assert_eq!(vsnprintf_cut(b"abc", 4, true), b"abc");
+        assert_eq!(vsnprintf_cut(b"abcd", 4, true), b"abc");
+        // "a\u00e9" cut inside the 2-byte character drops it
+        assert_eq!(vsnprintf_cut("ab\u{e9}".as_bytes(), 4, true), b"ab");
+        assert_eq!(vsnprintf_cut("ab\u{e9}x".as_bytes(), 5, true), "ab\u{e9}".as_bytes());
+        // from the last lead byte only, as mbcsTruncateToValid scans: an
+        // invalid byte before it stays, one after a whole character goes
+        assert_eq!(vsnprintf_cut(b"a\x80bcd", 5, true), b"a\x80bc");
+        assert_eq!(vsnprintf_cut(b"ab\x80d", 4, true), b"ab");
+        // the C locale cuts bytes
+        assert_eq!(vsnprintf_cut("ab\u{e9}".as_bytes(), 4, false), b"ab\xc3");
     }
 }

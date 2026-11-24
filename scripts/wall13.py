@@ -212,6 +212,11 @@ def main(argv):
     progs = rivals.programs(conf(), a.filter)
     if not progs:
         sys.exit(f"no program matches {a.filter!r}")
+    # (before any run) base's database tree written by this binary: it names no boot, which
+    # boots rdb once that is the default (scripts/rt_trees.py)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import rt_trees
+    rt_trees.ensure(a.robigo_rt)
     doc = {"rule": "docs/g3.md §13", "machine": machine(),
            "robigo_rt": binary_identity(a.robigo_rt, "robigo-rtapi"),
            "images": {i: rivals.IMAGES[i][0] for i in rivals_}, "impls": impls, "rounds": a.rounds,

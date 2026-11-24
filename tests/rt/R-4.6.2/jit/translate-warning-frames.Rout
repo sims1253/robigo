@@ -1,0 +1,9 @@
+ [1] "withCallingHandlers"  "f"                    "compiler:::tryCmpfun"
+ [4] "tryCatch"             "tryCatchList"         "tryCatchOne"         
+ [7] "doTryCatch"           "cmpfun"               "make.functionContext"
+[10] "funEnv"               "findLocalsList"       "findLocalsList1"     
+[13] "lapply"               "FUN"                  "lapply"              
+[16] "findLocals1"          "addVar"               "assign"              
+[19] ".signalSimpleWarning" "withRestarts"         "withOneRestart"      
+[22] "doWithOneRestart"     "function (w) "       
+[1] 0

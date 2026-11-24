@@ -41,6 +41,7 @@ pub struct Scope<'s> {
 impl Cx {
     /// Open a root scope for `f`: roots pushed into it live until `f`
     /// returns, unwinds or errs, and cannot be named after that.
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn scope<R>(&mut self, f: impl for<'s> FnOnce(&mut Cx, Scope<'s>) -> R) -> R {
         let iso = self.iso();
         let frame = iso.frame();
@@ -486,6 +487,7 @@ impl<'a> Args<'a> {
             // SAFETY: the window has `n` live object slots from `base`
             // (`from_raw`'s and `Scope::args`'s contract), each read once.
             let s = unsafe { *self.base.add(i).as_ptr() };
+            s.check_live();
             // SAFETY: a live object of the window's isolate.
             s.as_object().is_some_and(|x| unsafe { x.is_altrep() && crate::altrep::own::own_class(x).is_none() })
         })
@@ -530,11 +532,26 @@ impl Global {
 }
 
 /// The global table: entries with free ones reused. A free entry is null
-/// (a null edge, which a collection skips).
-#[derive(Default, Trace)]
+/// (a null edge, which a collection skips). Roots, but not the boot heap's
+/// freeze roots (step 2): what only a global holds is never frozen, so
+/// releasing one removes no edge the frozen graph depends on and takes no
+/// note (S3 dispatch's method memo replaces its entries' globals as it
+/// runs, a pass each, before).
+#[derive(Trace)]
 pub(crate) struct Globals {
     slots: Vec<Sexp>,
     free: Vec<u32>,
+}
+
+/// The slots a start fills (3,220 at the interim boot's peak, 2,986 under
+/// rdb with the JIT on, 2,904 with it off; 2026-11-23): reserved at once,
+/// so that the table never grows by realloc during the start.
+const GLOBALS_AT_START: usize = 4096;
+
+impl Default for Globals {
+    fn default() -> Globals {
+        Globals { slots: Vec::with_capacity(GLOBALS_AT_START), free: Vec::new() }
+    }
 }
 
 impl Globals {

@@ -34,10 +34,11 @@ use robigo_rtcore::{Args, Char, Cx, Encoding, Global, Out, RResult, RSym, Ref, R
 use std::cell::{Cell, RefCell};
 use std::ffi::{CString, c_char, c_int};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 
 pub mod readers;
 pub mod scan;
+mod stdio;
 
 /// `NCONNECTIONS`.
 const NCONNECTIONS: usize = 128;
@@ -256,11 +257,41 @@ enum Imp {
     Gzcon(Box<GzconConn>),
 }
 
+/// `struct fileconn`: the C library's buffered stream ([`stdio::Stream`])
+/// and the read and write positions a stream open for both keeps apart.
 struct FileConn {
-    fp: Option<File>,
-    rpos: u64,
-    wpos: u64,
+    fp: Option<stdio::Stream<File>>,
+    rpos: i64,
+    wpos: i64,
     last_was_write: bool,
+}
+
+impl FileConn {
+    /// The stream moved to the read position after writing (`file_read`'s
+    /// and `file_fgetc_internal`'s start).
+    // R: connections.c:file_read
+    fn to_read(&mut self) -> Option<&mut stdio::Stream<File>> {
+        let fp = self.fp.as_mut()?;
+        if self.last_was_write {
+            self.wpos = fp.ftello();
+            self.last_was_write = false;
+            fp.fseeko(self.rpos, stdio::Whence::Set);
+        }
+        Some(fp)
+    }
+
+    /// The stream moved to the write position after reading
+    /// (`file_write`'s and `file_vfprintf`'s start).
+    // R: connections.c:file_write
+    fn to_write(&mut self) -> Option<&mut stdio::Stream<File>> {
+        let fp = self.fp.as_mut()?;
+        if !self.last_was_write {
+            self.rpos = fp.ftello();
+            self.last_was_write = true;
+            fp.fseeko(self.wpos, stdio::Whence::Set);
+        }
+        Some(fp)
+    }
 }
 
 /// A text connection's input (`struct textconn`): every string followed
@@ -313,7 +344,14 @@ impl Write for ConnWriter {
         // SAFETY: as for `ConnReader`.
         #[allow(unsafe_code)]
         let c = unsafe { &mut *self.0 };
-        conn_write(c, buf)
+        // gzcon_write's one `icon->write` per block: a short count is the
+        // write error, not a request to write the rest (a file's short count
+        // is a flush that failed and dropped the buffer)
+        let n = conn_write(c, buf)?;
+        if n < buf.len() {
+            return Err(std::io::Error::other("write error on 'gzcon' connection"));
+        }
+        Ok(n)
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
@@ -476,12 +514,24 @@ pub fn strerror(e: &std::io::Error) -> String {
     }
 }
 
+/// `strerror(errno)`.
+fn errno_text(errno: i32) -> String {
+    strerror(&std::io::Error::from_raw_os_error(errno))
+}
+
 fn is_dir(name: &[u8]) -> bool {
     std::fs::metadata(path_of(name)).is_ok_and(|m| m.is_dir())
 }
 
-/// `fopen(name, mode)`'s file.
-fn fopen(name: &[u8], mode: &str) -> std::io::Result<File> {
+/// `fopen(name, mode)`: the file opened as the mode says, as a buffered
+/// stream.
+// glibc: libio/fileops.c:_IO_new_file_fopen
+fn fopen(name: &[u8], mode: &str) -> std::io::Result<stdio::Stream<File>> {
+    stdio::Stream::open(open_file(name, mode)?, mode)
+}
+
+/// The file `fopen(name, mode)` opens (`open(2)` with the mode's flags).
+fn open_file(name: &[u8], mode: &str) -> std::io::Result<File> {
     let m = mode.as_bytes();
     let plus = m.get(1) == Some(&b'+') || m.get(2) == Some(&b'+');
     let mut o = std::fs::OpenOptions::new();
@@ -509,11 +559,12 @@ fn file_open(c: &mut Conn) -> OpenResult {
         return Err("robigo: 'file(\"stdin\")' is not implemented yet".into());
     }
     let shown = String::from_utf8_lossy(&name).into_owned();
-    let fp = match fopen(&name, &c.mode()) {
+    let mut fp = match fopen(&name, &c.mode()) {
         Ok(f) => f,
         Err(e) => return Err(format!("cannot open file '{shown}': {}", strerror(&e))),
     };
-    if fp.metadata().is_ok_and(|m| m.is_dir()) {
+    // isDir: fstat's S_ISDIR
+    if stdio::SysFile::stat(fp.fd()).is_ok_and(|m| m.is_dir) {
         return Err(format!("cannot open file '{shown}': it is a directory"));
     }
     let mode = c.mode();
@@ -529,11 +580,10 @@ fn file_open(c: &mut Conn) -> OpenResult {
     c.set_text(!(mlen >= 2 && m[mlen - 1] == b'b'));
     // set_buffer: a text connection read from a regular file is buffered
     // (shouldBuffer: fstat's S_ISREG)
-    if c.canread() && c.text() && fp.metadata().is_ok_and(|md| md.is_file()) {
+    if c.canread() && c.text() && stdio::SysFile::stat(fp.fd()).is_ok_and(|m| m.is_reg) {
         buff_init(c);
     }
-    let mut fp = fp;
-    let wpos = if c.canwrite() { fp.stream_position().unwrap_or(0) } else { 0 };
+    let wpos = if c.canwrite() { fp.ftello() } else { 0 };
     let canread = c.canread();
     if let Imp::File(f) = &mut c.imp {
         f.fp = Some(fp);
@@ -600,7 +650,7 @@ fn gzfile_open(c: &mut Conn) -> OpenResult {
     let write = mode.contains('w') || mode.starts_with('a');
     let Imp::Gz(g) = &mut c.imp else { unreachable!() };
     let io = if write {
-        let f = if mode.starts_with('a') { fopen(&name, "ab") } else { fopen(&name, "wb") };
+        let f = if mode.starts_with('a') { open_file(&name, "ab") } else { open_file(&name, "wb") };
         match f {
             Ok(f) => GzIo::Write(GzWriter::new(f, g.compress)),
             Err(e) => return Err(format!("cannot open compressed file '{shown}', probable reason '{}'", strerror(&e))),
@@ -668,7 +718,8 @@ fn open_conn(c: &mut Conn) -> OpenResult {
     }
 }
 
-/// `con->close(con)`, and `con_close1`'s release of the buffer.
+/// `con->close(con)`, and `con_close1`'s release of the buffer: the
+/// warning `checkClose` gives, if any.
 fn close_conn(c: &mut Conn) -> Option<String> {
     let mut err = None;
     buff_free(c);
@@ -676,28 +727,35 @@ fn close_conn(c: &mut Conn) -> Option<String> {
         Imp::Std | Imp::Text(_) => {}
         Imp::File(f) => {
             // (c.c's fields: the file's private part stays borrowed)
-            // con->status = fclose(this->fp): the writes went to the file as
-            // they were made (no stdio buffer), so there is nothing left to
-            // flush, and fclose does not sync to the disk; closing it is
-            // dropping it (a close(2) error is not reported, as no write is
-            // pending)
-            if c.c.isopen != 0 {
-                drop(f.fp.take());
-                c.c.status = 0;
+            // con->status = fclose(this->fp): the buffered output written,
+            // then the descriptor closed; checkClose's warning when either
+            // failed, with errno (cleared first) as the failure left it
+            // R: connections.c:file_close, checkClose
+            if c.c.isopen != 0
+                && let Some(mut fp) = f.fp.take()
+            {
+                fp.clear_errno();
+                c.c.status = fp.fclose();
+                if c.c.status < 0 {
+                    err = Some(match robigo_rtcore::clib::errno() {
+                        0 => "Problem closing connection".to_string(),
+                        e => format!("Problem closing connection:  {}", errno_text(e)),
+                    });
+                }
             }
         }
         Imp::Gz(g) => {
             if let Some(GzIo::Write(w)) = g.io.take()
                 && let Err(e) = w.finish()
             {
-                err = Some(strerror(&e));
+                err = Some(format!("Problem closing connection:  {}", strerror(&e)));
             }
         }
         Imp::Gzcon(g) => {
             if let Some(GzconIo::Write(w)) = g.io.take()
                 && w.finish().is_err()
             {
-                err = Some("writing error whilst flushing 'gzcon' connection".into());
+                err = Some("Problem closing connection:  writing error whilst flushing 'gzcon' connection".into());
             }
             g.io = None;
             if g.inner.isopen() {
@@ -733,23 +791,15 @@ fn conn_read_raw(c: &mut Conn, buf: &mut [u8]) -> std::io::Result<usize> {
         Imp::Std => Err(std::io::Error::other("robigo: reading the standard connections is not implemented yet")),
         // null_read
         Imp::Text(_) => Err(std::io::Error::other("'read' not enabled for this connection")),
+        // R: connections.c:file_read
         Imp::File(f) => {
-            let fp = f.fp.as_mut().ok_or_else(|| std::io::Error::other("not open"))?;
-            if f.last_was_write {
-                f.wpos = fp.stream_position()?;
-                f.last_was_write = false;
-                fp.seek(SeekFrom::Start(f.rpos))?;
+            let fp = f.to_read().ok_or_else(|| std::io::Error::other("not open"))?;
+            let res = fp.fread(buf);
+            if res != buf.len() && fp.feof() {
+                // see file_fgetc_internal
+                fp.clearerr();
             }
-            let mut n = 0;
-            while n < buf.len() {
-                match fp.read(&mut buf[n..]) {
-                    Ok(0) => break,
-                    Ok(k) => n += k,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(n)
+            Ok(res)
         }
         Imp::Gz(g) => match &mut g.io {
             Some(GzIo::Read(r)) => r.read_full(buf),
@@ -771,16 +821,10 @@ fn conn_write(c: &mut Conn, buf: &[u8]) -> std::io::Result<usize> {
         Imp::Std => Err(std::io::Error::other("robigo: writing the standard connections is not implemented yet")),
         // null_write
         Imp::Text(_) => Err(std::io::Error::other("'write' not enabled for this connection")),
+        // R: connections.c:file_write
         Imp::File(f) => {
-            let fp = f.fp.as_mut().ok_or_else(|| std::io::Error::other("not open"))?;
-            if !f.last_was_write {
-                f.rpos = fp.stream_position()?;
-                f.last_was_write = true;
-                fp.seek(SeekFrom::Start(f.wpos))?;
-            }
-            fp.write_all(buf)?;
-            f.wpos += buf.len() as u64;
-            Ok(buf.len())
+            let fp = f.to_write().ok_or_else(|| std::io::Error::other("not open"))?;
+            Ok(fp.fwrite(buf))
         }
         Imp::Gz(g) => match &mut g.io {
             Some(GzIo::Write(w)) => w.write_data(buf),
@@ -856,6 +900,22 @@ fn buff_fgetc(c: &mut Conn) -> Result<c_int, String> {
 /// `con->fgetc_internal(con)`: one byte of the stream, `R_EOF` at its end.
 // R: connections.c:file_fgetc_internal (and the other classes')
 fn fgetc_internal(c: &mut Conn) -> Result<c_int, String> {
+    // R: connections.c:file_fgetc_internal
+    if let Imp::File(f) = &mut c.imp
+        && let Some(fp) = f.to_read()
+    {
+        return Ok(match fp.fgetc() {
+            Some(b) => b as c_int,
+            None => {
+                // Clear the end-of-file indicator so that data appended to
+                // the file may be read by later calls.
+                if fp.feof() {
+                    fp.clearerr();
+                }
+                R_EOF
+            }
+        });
+    }
     let mut b = [0u8; 1];
     match conn_read_raw(c, &mut b) {
         Ok(0) => Ok(R_EOF),
@@ -893,9 +953,8 @@ fn r_is_na(x: f64) -> bool {
 }
 
 /// `con->seek(con, where, origin, rw)` of a file: the position before
-/// (the read position for `rw` 1, the write one for 2), then the move
-/// (none for `where` NA; a move the system refuses, as to a negative
-/// offset, leaves the position).
+/// (the read position for `rw` 1, the write one for 2; buffered output
+/// counted), then the move (none for `where` NA).
 // R: connections.c:file_seek
 fn file_seek(c: &mut Conn, where_: f64, origin: c_int, rw: c_int) -> Result<f64, String> {
     let (canread, canwrite) = (c.canread(), c.canwrite());
@@ -904,7 +963,7 @@ fn file_seek(c: &mut Conn, where_: f64, origin: c_int, rw: c_int) -> Result<f64,
     };
     let Some(fp) = f.fp.as_mut() else { return Err("connection is not open".into()) };
     // make sure both positions are set
-    let mut pos = fp.stream_position().unwrap_or(0);
+    let mut pos = fp.ftello();
     if f.last_was_write {
         f.wpos = pos;
     } else {
@@ -927,21 +986,14 @@ fn file_seek(c: &mut Conn, where_: f64, origin: c_int, rw: c_int) -> Result<f64,
     if r_is_na(where_) {
         return Ok(pos as f64);
     }
-    let w = where_ as i64;
-    let to = match origin {
-        2 => SeekFrom::Current(w),
-        3 => SeekFrom::End(w),
-        _ => {
-            if w < 0 {
-                // fseeko's EINVAL: no move
-                SeekFrom::Current(0)
-            } else {
-                SeekFrom::Start(w as u64)
-            }
-        }
+    let whence = match origin {
+        2 => stdio::Whence::Cur,
+        3 => stdio::Whence::End,
+        _ => stdio::Whence::Set,
     };
-    let _ = fp.seek(to);
-    let now = fp.stream_position().unwrap_or(0);
+    // (a move the system refuses leaves the stream where it was)
+    fp.fseeko(where_ as i64, whence);
+    let now = fp.ftello();
     if f.last_was_write {
         f.wpos = now;
     } else {
@@ -1050,14 +1102,68 @@ pub fn c_write(cx: &mut Cx, buf: &[u8], size: usize, con: *mut RconnC) -> RResul
     with_c(cx, con, |c| conn_write(c, buf).map(|n| n.checked_div(size).unwrap_or(0)).map_err(|e| e.to_string()))
 }
 
-/// `con->fflush(con)`: a file's stream has no buffer of its own here (0,
-/// fflush's success); the other classes' are not implemented yet.
-// R: connections.c:file_fflush
+/// What the process's `exit` does for the isolate's file connections left
+/// open: each stream's buffered output written, failures ignored (glibc's
+/// `_IO_cleanup`, after the `atexit` handlers; GNU R does not close them).
+/// glibc walks its list of streams, the newest opened first, and reaches a
+/// file a `gzcon` wraps as any other.
+// glibc: libio/genops.c:_IO_cleanup, _IO_flush_all
+pub fn flush_at_exit(cx: &Cx) {
+    fn streams<'a>(c: &'a mut Conn, out: &mut Vec<&'a mut stdio::Stream<File>>) {
+        match &mut c.imp {
+            Imp::File(f) => out.extend(f.fp.as_mut()),
+            Imp::Gzcon(g) => streams(&mut g.inner, out),
+            Imp::Std | Imp::Text(_) | Imp::Gz(_) => {}
+        }
+    }
+    let mut slots = table(cx).slots.borrow_mut();
+    let mut open = Vec::new();
+    for c in slots.iter_mut().flatten() {
+        streams(c, &mut open);
+    }
+    open.sort_by_key(|s| std::cmp::Reverse(s.opened()));
+    for s in open {
+        s.flush_at_exit();
+    }
+}
+
+/// `con->fflush(con)`.
 pub fn c_fflush(cx: &mut Cx, con: *mut RconnC) -> RResult<c_int> {
-    with_c(cx, con, |c| match c.imp {
-        Imp::File(_) => Ok(0),
-        _ => Err(format!("robigo: fflush of a '{}' connection is not implemented yet", c.class)),
-    })
+    match with_c(cx, con, |c| Ok(conn_fflush(c)))? {
+        Some(r) => Ok(r),
+        None => {
+            cx.flush_console();
+            Ok(0)
+        }
+    }
+}
+
+/// `con->fflush(con)`: a file's stream flushed, `fflush`'s 0 or `EOF`
+/// (none open: `fflush(NULL)`, which flushes the C library's streams,
+/// none of them robigo's); 0 for the classes without a buffer of their
+/// own; None for the standard connections, which flush the console.
+// R: connections.c:file_fflush, null_fflush, gzfile_fflush, stdout_fflush,
+//    stderr_fflush
+fn conn_fflush(c: &mut Conn) -> Option<c_int> {
+    match &mut c.imp {
+        Imp::File(f) => Some(f.fp.as_mut().map_or(0, |fp| fp.fflush())),
+        Imp::Std => None,
+        Imp::Text(_) | Imp::Gz(_) | Imp::Gzcon(_) => Some(0),
+    }
+}
+
+/// `flush(con)`: a connection open for writing flushed; what the flush
+/// returns is not looked at.
+// R: connections.c:do_flush
+pub fn do_flush(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "flush", 1, true)?;
+    let i = conn_number(cx, args.root(0))?;
+    let r = with_conn(cx, i, |c| if c.canwrite() { Some(conn_fflush(c)) } else { None })?;
+    if r == Some(None) {
+        cx.flush_console();
+    }
+    out.set(cx, cx.nil());
+    Ok(())
 }
 
 /// `Rconn_fgetc(con)`, C's entry.
@@ -1131,7 +1237,13 @@ enum Header {
 
 /// R_gzread: a gzip reader over `src` that takes a stream without the
 /// magic as uncompressed (`transparent`, when `allow`), concatenated members,
-/// and stops at trailing data that is not a member.
+/// and stops at trailing data that is not a member. When `seek` and `tell`
+/// on gz connections are ported: a seek drops the block buffer (`obuf`,
+/// `opos`, `oend`, `ahead`, `failed`), and `tell` is a position counted
+/// across members and transparent reads (gzio.h's `s->out`, which
+/// `R_gztell` returns), less the bytes not yet read from the buffer
+/// (`oend - opos`): not the inflater's `total_out`, which a new member
+/// resets and a transparent read never moves.
 struct GzReader<R> {
     src: R,
     buf: Vec<u8>,
@@ -1144,6 +1256,38 @@ struct GzReader<R> {
     done: bool,
     allow: bool,
     started: bool,
+    /// Inflated bytes not yet read, `obuf[opos..oend]`: a small read is
+    /// served from here, and the stream inflated a `Z_BUFSIZE` block at a
+    /// time (gzio.h reads its input through a buffer of that size too).
+    obuf: Vec<u8>,
+    opos: usize,
+    oend: usize,
+    /// An error found while inflating ahead ([`Ahead`]): raised by the read
+    /// that would have met it inflating in place, as before the buffer.
+    ahead: Option<Ahead>,
+    /// The error a read met: every later read meets one again, as the
+    /// stream left in its error state made them before the buffer. A bad
+    /// deflate stream's later reads ask the inflater again (its message
+    /// for a repeated call); a trailer's error is given again as it was.
+    failed: Option<(std::io::ErrorKind, String, bool)>,
+}
+
+/// An error a [`GzReader`] found inflating a block ahead of the reads: the
+/// block holds the bytes inflated before it, and `oend` is its boundary,
+/// which the read that reaches it meets: a member's trailer is checked when
+/// its last byte comes out, and inflate goes on to the next block header or
+/// symbol, and so to a bad one, with the output full.
+struct Ahead {
+    err: std::io::Error,
+    /// A bad deflate stream (else a member's trailer).
+    deflate: bool,
+}
+
+/// What one [`GzReader::inflate_into`] step made: the bytes, and an error
+/// met after them.
+struct Step {
+    made: usize,
+    err: Option<Ahead>,
 }
 
 impl<R: Read> GzReader<R> {
@@ -1160,6 +1304,11 @@ impl<R: Read> GzReader<R> {
             done: false,
             allow,
             started: false,
+            obuf: Vec::new(),
+            opos: 0,
+            oend: 0,
+            ahead: None,
+            failed: None,
         }
     }
 
@@ -1266,8 +1415,27 @@ impl<R: Read> GzReader<R> {
         Header::Ok
     }
 
+    /// Record `e` as the error every later read meets ([`GzReader::failed`]).
+    fn fail(&mut self, e: std::io::Error, deflate: bool) -> std::io::Error {
+        self.failed = Some((e.kind(), e.to_string(), deflate));
+        e
+    }
+
     /// Read up to `out.len()` bytes, as many as there are.
     fn read_full(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if let Some((kind, msg, deflate)) = &self.failed {
+            if *deflate {
+                // (the inflater's own answer to a call after its error)
+                let mut one = [0u8; 1];
+                if let Err(e) = self.inflate.decompress(&[], &mut one, FlushDecompress::None) {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+                }
+            }
+            return Err(std::io::Error::new(*kind, msg.clone()));
+        }
         if !self.started {
             match self.check_header() {
                 Header::Ok => {}
@@ -1280,7 +1448,7 @@ impl<R: Read> GzReader<R> {
                 }
             }
         }
-        let mut n = 0;
+        let mut n = self.from_block(out, 0)?;
         while n < out.len() && !self.done {
             if self.transparent {
                 let k = (self.end - self.pos).min(out.len() - n);
@@ -1296,49 +1464,100 @@ impl<R: Read> GzReader<R> {
                 }
                 continue;
             }
-            self.fill()?;
-            let before_in = self.inflate.total_in();
-            let before_out = self.inflate.total_out();
-            let st = self
-                .inflate
-                .decompress(&self.buf[self.pos..self.end], &mut out[n..], FlushDecompress::None)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            let used = (self.inflate.total_in() - before_in) as usize;
-            let made = (self.inflate.total_out() - before_out) as usize;
-            self.pos += used;
-            self.crc.update(&out[n..n + made]);
-            n += made;
-            match st {
-                Status::StreamEnd => {
-                    // the trailer: CRC-32 and length, little-endian
-                    let mut t = [0u8; 8];
-                    for x in t.iter_mut() {
-                        *x = self.byte()?.unwrap_or(0);
-                    }
-                    let crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
-                    if crc != self.crc.sum() {
-                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error"));
-                    }
-                    match self.check_header() {
-                        Header::Ok => {
-                            self.inflate.reset(false);
-                            self.crc = Crc::new();
-                        }
-                        _ => {
-                            self.transparent = false;
-                            self.done = true;
-                        }
-                    }
+            if out.len() - n >= Z_BUFSIZE {
+                // a large read: inflated in place, an error met at once
+                let st = self.inflate_into(&mut out[n..])?;
+                if let Some(a) = st.err {
+                    return Err(self.fail(a.err, a.deflate));
                 }
-                _ => {
-                    if used == 0 && made == 0 && self.src_eof {
-                        // truncated
+                n += st.made;
+            } else {
+                // a small one: a block into the buffer, then from there
+                let mut ob = std::mem::take(&mut self.obuf);
+                ob.resize(Z_BUFSIZE, 0);
+                let st = self.inflate_into(&mut ob);
+                self.obuf = ob;
+                let st = st?;
+                (self.opos, self.oend, self.ahead) = (0, st.made, st.err);
+                n = self.from_block(out, n)?;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Copy what the block holds into `out[n..]`; the new count. An error
+    /// found ahead ([`Ahead`]) is raised, with nothing copied, by the read
+    /// that would have met it inflating in place: one that reaches the
+    /// block's boundary.
+    fn from_block(&mut self, out: &mut [u8], n: usize) -> std::io::Result<usize> {
+        let left = self.oend - self.opos;
+        let want = out.len() - n;
+        if self.ahead.is_some() && want > 0 && want >= left {
+            let a = self.ahead.take().expect("robigo: an error ahead");
+            self.opos = self.oend;
+            return Err(self.fail(a.err, a.deflate));
+        }
+        let k = left.min(want);
+        out[n..n + k].copy_from_slice(&self.obuf[self.opos..self.opos + k]);
+        self.opos += k;
+        Ok(n + k)
+    }
+
+    /// One step of the stream into `dst`: inflate what the input buffer
+    /// holds (refilled when empty), the CRC-32 over what came out; at a
+    /// member's end its trailer checked and the next member's header read.
+    /// What came out (0 at the end, `done` then set), and an error met after
+    /// it: a bad deflate stream, or a member's trailer that does not match
+    /// (`done` set). An error of the source is returned as such.
+    fn inflate_into(&mut self, dst: &mut [u8]) -> std::io::Result<Step> {
+        self.fill()?;
+        let before_in = self.inflate.total_in();
+        let before_out = self.inflate.total_out();
+        let r = self.inflate.decompress(&self.buf[self.pos..self.end], dst, FlushDecompress::None);
+        let used = (self.inflate.total_in() - before_in) as usize;
+        let made = (self.inflate.total_out() - before_out) as usize;
+        self.pos += used;
+        self.crc.update(&dst[..made]);
+        let st = match r {
+            Ok(st) => st,
+            Err(e) => {
+                self.done = true;
+                let err = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+                return Ok(Step { made, err: Some(Ahead { err, deflate: true }) });
+            }
+        };
+        match st {
+            Status::StreamEnd => {
+                // the trailer: CRC-32 and length, little-endian
+                let mut t = [0u8; 8];
+                for x in t.iter_mut() {
+                    *x = self.byte()?.unwrap_or(0);
+                }
+                let crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+                if crc != self.crc.sum() {
+                    self.done = true;
+                    let err = std::io::Error::new(std::io::ErrorKind::InvalidData, "crc error");
+                    return Ok(Step { made, err: Some(Ahead { err, deflate: false }) });
+                }
+                match self.check_header() {
+                    Header::Ok => {
+                        self.inflate.reset(false);
+                        self.crc = Crc::new();
+                    }
+                    _ => {
+                        self.transparent = false;
                         self.done = true;
                     }
                 }
             }
+            _ => {
+                if used == 0 && made == 0 && self.src_eof {
+                    // truncated
+                    self.done = true;
+                }
+            }
         }
-        Ok(n)
+        Ok(Step { made, err: None })
     }
 }
 
@@ -1459,6 +1678,18 @@ pub fn read_exact(cx: &mut Cx, n: i32, buf: &mut [u8], msg: &str) -> RResult<()>
     r.map_err(|m| cx.error(&m))
 }
 
+/// `con->read(buf, 1, buf.len(), con)`: as many bytes as there are, up
+/// to `buf.len()` (robigo-rt's own refusals are errors; a read the system
+/// fails reads nothing more).
+pub fn read_upto(cx: &mut Cx, n: i32, buf: &mut [u8]) -> RResult<usize> {
+    let r = with_conn(cx, n, |c| match conn_read(c, buf) {
+        Ok(k) => Ok(k),
+        Err(e) if e.raw_os_error().is_none() => Err(e.to_string()),
+        Err(_) => Ok(0),
+    })?;
+    r.map_err(|m| cx.error(&m))
+}
+
 /// `InBytesConn`: exactly `buf.len()` bytes from connection `n`
 /// (`CheckInConn`'s messages, then "error reading from connection").
 // R: serialize.c:InBytesConn, CheckInConn
@@ -1495,6 +1726,54 @@ pub fn write_all(cx: &mut Cx, n: i32, buf: &[u8], msg: &str) -> RResult<()> {
             _ => Err(msg.to_string()),
         }
     })?;
+    r.map_err(|m| cx.error(&m))
+}
+
+/// `Rconn_printf(con, ...)` of the bytes `parts` (what the format made):
+/// `con->vfprintf`, and its error when that failed: "Error writing to
+/// connection:  <strerror(errno)>", with errno cleared first. A file's
+/// write is buffered ([`stdio::Stream::vfprintf`]), so the call that fails
+/// is the one whose bytes do not fit and whose flush fails; the other
+/// classes write at once (`dummy_vfprintf`'s `con->write`).
+// R: connections.c:Rconn_printf, file_vfprintf
+fn rconn_printf(c: &mut Conn, parts: &[&[u8]]) -> Result<(), String> {
+    if c.reencode {
+        // (con->outconv: dummy_vfprintf's re-encoding)
+        return Err("robigo: re-encoding a connection is not implemented yet".into());
+    }
+    // errno = 0, then con->vfprintf: file_vfprintf's move to the write
+    // position is inside the call, and its errno is the message's
+    robigo_rtcore::clib::set_errno(0);
+    let (res, errno) = match &mut c.imp {
+        Imp::File(f) => {
+            if let Some(fp) = f.fp.as_mut() {
+                fp.clear_errno();
+            }
+            let Some(fp) = f.to_write() else { return Err("not open".into()) };
+            let res = fp.vfprintf(parts);
+            (res, robigo_rtcore::clib::errno())
+        }
+        _ => match conn_write(c, &parts.concat()) {
+            Ok(_) => (0, 0),
+            Err(e) => match e.raw_os_error() {
+                Some(errno) => (-1, errno),
+                // robigo-rt's own refusals
+                None => return Err(e.to_string()),
+            },
+        },
+    };
+    if res < 0 {
+        return Err(match errno {
+            0 => "Error writing to connection".to_string(),
+            e => format!("Error writing to connection:  {}", errno_text(e)),
+        });
+    }
+    Ok(())
+}
+
+/// [`rconn_printf`] on connection `n`, its error raised.
+pub fn printf_write(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
+    let r = with_conn(cx, n, |c| rconn_printf(c, &[buf]))?;
     r.map_err(|m| cx.error(&m))
 }
 
@@ -1558,8 +1837,8 @@ fn con_destroy(cx: &mut Cx, i: usize) -> RResult<i32> {
     let err = if c.isopen() { close_conn(&mut c) } else { None };
     let status = c.status();
     c.clear_push_back();
-    if let Some(e) = err {
-        cx.warning(&format!("Problem closing connection:  {e}"))?;
+    if let Some(w) = err {
+        cx.warning(&w)?;
     }
     if let Some(g) = c.ex_ptr.take() {
         cx.release_global(g);
@@ -1644,6 +1923,71 @@ fn publish(cx: &mut Cx, ncon: usize, mut con: Conn, class: &str, out: Out<'_>) -
 }
 
 // ---- the builtins -------------------------------------------------------------
+
+/// `getAllConnections()`: the numbers of the slots that hold a connection.
+// R: connections.c:do_getallconnections
+pub fn do_getallconnections(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "getAllConnections", 0, true)?;
+    let ids: Vec<i32> =
+        table(cx).slots.borrow().iter().enumerate().filter(|(_, c)| c.is_some()).map(|(i, _)| i as i32).collect();
+    cx.build(out, |cx| Ok(cx.alloc_copy(&ids)?.finish().into()))
+}
+
+/// `getConnection(what)`: connection `what`'s object, its class
+/// `c(class, "connection")`, with its `conn_id` beyond the standard three.
+// R: connections.c:do_getconnection
+pub fn do_getconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "getConnection", 1, true)?;
+    let what = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    if what == i32::MIN {
+        return Err(cx.error("there is no connection NA"));
+    }
+    let found = if (0..NCONNECTIONS as i32).contains(&what) {
+        table(cx).slots.borrow()[what as usize]
+            .as_ref()
+            .map(|c| (c.class, c.ex_ptr.as_ref().map(|g| g.bind(cx).sexp())))
+    } else {
+        None
+    };
+    let Some((class, ptr)) = found else {
+        return Err(cx.error(&format!("there is no connection {what}")));
+    };
+    cx.scope(|cx, s| {
+        let ptr = ptr.filter(|_| what > 2).map(|p| {
+            // SAFETY: the connection's conn_id pointer, kept by its global.
+            #[allow(unsafe_code)]
+            let r = unsafe { Ref::from_sexp(p, cx) };
+            s.root(cx, r)
+        });
+        cx.build(out, |cx| {
+            let mut v = cx.alloc_copy(&[what])?;
+            let mut cl = cx.alloc_vector::<Char<'_>>(2)?;
+            cl.set(0, cx.mk_char(class.as_bytes(), Encoding::Native)?);
+            cl.set(1, cx.mk_char(b"connection", Encoding::Native)?);
+            let mut a = Attrs::new();
+            a.set_class(cx.sym(RSym::Class), Some(cl.finish().into()));
+            if let Some(p) = ptr {
+                a.install(Attr { tag: cx.install(b"conn_id")?, value: p.bind(cx) });
+            }
+            a.apply(cx, &mut v)?;
+            Ok(v.finish().into())
+        })
+    })
+}
+
+/// `sink.number(type)`: `R_SinkNumber` (output) or `R_ErrorCon`
+/// (messages). robigo-rt has no `sink()` yet, so these keep their starting
+/// values, 0 and 2 (`InitConnections`).
+// R: connections.c:do_sinknumber
+pub fn do_sinknumber(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "sink.number", 1, true)?;
+    let errcon = robigo_rtbuiltins::util::as_logical_n(cx, args.get(cx, 0)).0;
+    if errcon == i32::MIN {
+        return Err(cx.error("invalid 'type' argument"));
+    }
+    let v = if errcon != 0 { 0 } else { 2 };
+    cx.build(out, |cx| Ok(cx.alloc_copy(&[v])?.finish().into()))
+}
 
 fn string_arg<'g>(x: Ref<'g>) -> Option<Vec<u8>> {
     match x.view() {
@@ -2037,17 +2381,17 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         return Err(cx.error("invalid 'useBytes' argument"));
     }
     // translateChar0 (CHAR for a "bytes" string) or CHAR
-    let bytes_of = |cx: &Cx, c: Char<'_>| -> Vec<u8> {
+    fn bytes_of<'a>(cx: &Cx, c: Char<'a>, use_bytes: bool) -> std::borrow::Cow<'a, [u8]> {
         if c == cx.na_string() {
-            return b"NA".to_vec();
+            return std::borrow::Cow::Borrowed(b"NA");
         }
-        if use_bytes != 0 {
-            return c.bytes().to_vec();
+        if use_bytes {
+            return std::borrow::Cow::Borrowed(c.bytes());
         }
         robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
-            .map(|b| b.into_owned())
-            .unwrap_or_else(|_| c.bytes().to_vec())
-    };
+            .unwrap_or(std::borrow::Cow::Borrowed(c.bytes()))
+    }
+    let use_bytes = use_bytes != 0;
     let wasopen = flags(cx, n)?.isopen;
     if !wasopen && !open_with_mode(cx, n, "wt")? {
         return Err(cx.error("cannot open the connection"));
@@ -2059,8 +2403,7 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         let altrep = |cx: &mut Cx| {
             robigo_rtbuiltins::util::not_yet(cx, Some(call), "writeLines() of a package ALTREP character vector")
         };
-        let mut buf = Vec::new();
-        {
+        let sep: Vec<u8> = {
             let Some(sep) = args.get(cx, 2).as_vector::<Char<'_>>() else { return Err(altrep(cx)) };
             // STRING_ELT(sep, 0) of an empty vector is R_NilValue, which
             // translateChar0 refuses (CHAR of it, with useBytes, reads past
@@ -2068,34 +2411,48 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             if sep.is_empty() {
                 return Err(cx.error("'Rf_translateChar0' must be called on a CHARSXP, but got 'NULL'"));
             }
-            let sep = bytes_of(cx, sep.get(0));
-            let Some(text) = args.get(cx, 0).as_vector::<Char<'_>>() else { return Err(altrep(cx)) };
-            for i in 0..text.len() {
-                buf.extend_from_slice(&bytes_of(cx, text.get(i)));
-                buf.extend_from_slice(&sep);
-            }
+            bytes_of(cx, sep.get(0), use_bytes).into_owned()
+        };
+        if args.get(cx, 0).as_vector::<Char<'_>>().is_none() {
+            return Err(altrep(cx));
         }
-        // Rconn_printf's result is not looked at: a write the system fails
-        // raises nothing (robigo-rt's own refusals do)
-        match n {
-            1 => cx.rprintf(&buf),
-            2 => cx.reprintf(&buf),
-            _ => {
-                let refused = with_conn(cx, n, |c| match conn_write(c, &buf) {
-                    Err(e) if e.raw_os_error().is_none() => Some(e.to_string()),
-                    _ => None,
-                })?;
-                if let Some(m) = refused {
-                    return Err(cx.error(&m));
+        if n == 1 || n == 2 {
+            let mut buf = Vec::new();
+            {
+                let text = args.get(cx, 0).as_vector::<Char<'_>>().expect("checked");
+                for i in 0..text.len() {
+                    buf.extend_from_slice(&bytes_of(cx, text.get(i), use_bytes));
+                    buf.extend_from_slice(&sep);
                 }
             }
+            if n == 1 {
+                cx.rprintf(&buf)
+            } else {
+                cx.reprintf(&buf)
+            }
+            return Ok(());
         }
+        // Rconn_printf(con, "%s%s", ...) for each string as it is
+        // translated: the first that fails raises its error, the rest are
+        // not written
+        let r: Result<(), String> = {
+            let cx: &Cx = cx;
+            let text = args.get(cx, 0).as_vector::<Char<'_>>().expect("checked");
+            let mut slots = table(cx).slots.borrow_mut();
+            match usize::try_from(n).ok().and_then(|i| slots.get_mut(i)).and_then(|s| s.as_deref_mut()) {
+                None => Err("invalid connection".to_string()),
+                Some(c) => {
+                    (0..text.len()).try_for_each(|i| rconn_printf(c, &[&bytes_of(cx, text.get(i), use_bytes), &sep]))
+                }
+            }
+        };
+        r.map_err(|m| cx.error(&m))?;
         Ok(())
     })();
     if !wasopen {
-        let err = with_conn(cx, n, close_conn)?;
-        if let Some(e) = err {
-            cx.warning(&format!("Problem closing connection:  {e}"))?;
+        // checkClose (con_cleanup's, on an error)
+        if let Some(w) = with_conn(cx, n, close_conn)? {
+            cx.warning(&w)?;
         }
     }
     r?;
@@ -2109,7 +2466,7 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
     with_conn(cx, n, |c| match &mut c.imp {
         Imp::File(f) => match f.fp.as_mut() {
-            Some(fp) if !f.last_was_write => fp.seek(SeekFrom::Current(-(k as i64))).is_ok(),
+            Some(fp) if !f.last_was_write => fp.fseeko(-(k as i64), stdio::Whence::Cur) == 0,
             _ => false,
         },
         _ => false,
@@ -2201,5 +2558,92 @@ mod expand_tests {
         assert!(v.starts_with(&home));
         assert_eq!(w.len(), 1);
         assert_eq!(expand_file_name(b"~root/x").0, [&home[..], b"/x"].concat());
+    }
+}
+
+#[cfg(test)]
+mod gz_reader_tests {
+    //! `GzReader`'s output buffer: the bytes are those of reading in
+    //! place, and an error found inflating ahead is met by the read that
+    //! would have met it in place (the read reaching its boundary), then by
+    //! every later read.
+    use super::{GzReader, Z_BUFSIZE};
+    use std::io::{Cursor, Write};
+
+    fn gz(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// A member of one stored, non-final block holding `data`, then an
+    /// invalid block type.
+    fn stored_then_bad(data: &[u8]) -> Vec<u8> {
+        let mut v = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 0];
+        v.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        v.extend_from_slice(&(!(data.len() as u16)).to_le_bytes());
+        v.extend_from_slice(data);
+        v.push(0x07);
+        v.extend_from_slice(&[0; 16]);
+        v
+    }
+
+    fn reader(bytes: Vec<u8>) -> GzReader<Cursor<Vec<u8>>> {
+        GzReader::new(Cursor::new(bytes), true)
+    }
+
+    #[test]
+    fn small_and_large_reads_give_the_data() {
+        let data: Vec<u8> = (0..3 * Z_BUFSIZE as u32 + 17).map(|i| (i * 7 % 251) as u8).collect();
+        for pattern in [&[1usize, 3, 4][..], &[4], &[Z_BUFSIZE], &[5, Z_BUFSIZE + 3, 2]] {
+            let mut r = reader([gz(&data[..1000]), gz(&data[1000..])].concat());
+            let mut got = Vec::new();
+            let mut i = 0;
+            loop {
+                let mut b = vec![0; pattern[i % pattern.len()]];
+                i += 1;
+                let n = r.read_full(&mut b).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&b[..n]);
+            }
+            assert_eq!(got, data, "{pattern:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_crc_is_met_by_the_read_reaching_the_end_and_sticks() {
+        let mut bytes = gz(b"abcdef");
+        let k = bytes.len() - 8;
+        bytes[k] ^= 0xff;
+        let mut r = reader(bytes.clone());
+        let mut b = [0u8; 4];
+        assert_eq!(r.read_full(&mut b).unwrap(), 4);
+        assert!(r.read_full(&mut b[..2]).is_err(), "the read reaching the end");
+        assert!(r.read_full(&mut b).is_err(), "and every later one");
+        let mut r = reader(bytes);
+        assert!(r.read_full(&mut [0u8; 6]).is_err());
+    }
+
+    #[test]
+    fn a_bad_block_is_met_at_its_boundary_not_before() {
+        let data = [9u8; 40];
+        // before the boundary: fine
+        let mut r = reader(stored_then_bad(&data));
+        let mut b = [0u8; 39];
+        assert_eq!(r.read_full(&mut b).unwrap(), 39);
+        // a read reaching it exactly, or past it: the error, then always
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        let mut r = reader(stored_then_bad(&data));
+        assert!(r.read_full(&mut [0u8; 40]).is_err());
+        // a zero-length read meets nothing
+        let mut r = reader(stored_then_bad(&data));
+        assert_eq!(r.read_full(&mut [0u8; 39]).unwrap(), 39);
+        assert_eq!(r.read_full(&mut []).unwrap(), 0);
+        // nor after the error
+        assert!(r.read_full(&mut [0u8; 1]).is_err());
+        assert_eq!(r.read_full(&mut []).unwrap(), 0);
     }
 }

@@ -85,6 +85,99 @@ pub fn native_elt(cx: &mut Cx, x: Root<'_>, i: usize) -> robigo_rtcore::RResult<
     r.map_err(|e| cx.error(&e.to_string()))
 }
 
+/// GNU R's "unable to translate '%s' to native encoding", of the text
+/// [`robigo_text::translate_char_warn`] and its siblings give.
+// R: sysutils.c:translateToNative
+pub fn unable_to_translate(text: &str) -> String {
+    format!("unable to translate '{text}' to native encoding")
+}
+
+/// `installTrChar(c)`'s name: `c` in the native encoding
+/// (`translateToNative(mustWork = 2)`: what iconv cannot convert escaped),
+/// with the complete text of the warning GNU R then gives
+/// ([`unable_to_translate`], not `translate_char_warn`'s fragment); or the
+/// error it raises, after that warning: a "bytes" string, or (`install`,
+/// `installNoTrChar`) a name of no bytes or of more than 10000.
+// R: sysutils.c:installTrChar, names.c:installNoTrChar, names.c:install
+pub fn install_tr_name(s: Str<'_>, loc: Locale) -> Result<(Cow<'_, [u8]>, Option<String>), Diag<'static>> {
+    let (n, w) = robigo_text::translate_char_warn(s, ctype(loc)).map_err(|e| Diag::error(e.to_string()))?;
+    let w = w.map(|t| unable_to_translate(&t));
+    // (translateToNative's warning comes before install's error)
+    match check_install_name(&n) {
+        Err(m) => Err(Diag::error(m).after_warnings(w.into_iter().collect())),
+        Ok(()) => Ok((n, w)),
+    }
+}
+
+/// `install(name)`'s checks of a name.
+// R: names.c:install, names.c:installNoTrChar
+pub fn check_install_name(name: &[u8]) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("attempt to use zero-length variable name".into());
+    }
+    if name.len() > MAXIDSIZE {
+        return Err(format!("variable names are limited to {MAXIDSIZE} bytes"));
+    }
+    Ok(())
+}
+
+/// GNU R's `MAXIDSIZE`: the longest symbol name, in bytes.
+pub const MAXIDSIZE: usize = 10000;
+
+/// `installTrChar(STRING_ELT(c, i))`, rooted in `s`: the symbol named by
+/// the native translation of element `i` of the character vector `c`,
+/// with GNU R's warning for what could not be translated (given before an
+/// error of `install`'s) and its errors ([`install_tr_name`]). A name the
+/// isolate has already is found in place. A package ALTREP `c` is robigo's
+/// "not implemented" error (`STRING_ELT` would run its method); a `c` that
+/// is not a character vector, or an `i` past its end, `STRING_ELT`'s
+/// error.
+// R: sysutils.c:installTrChar
+pub fn install_tr_char<'s>(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'s>,
+    c: Root<'_>,
+    i: usize,
+) -> robigo_rtcore::RResult<Root<'s>> {
+    // (STRING_ELT tests the type before it runs a class's method)
+    if c.bind(cx).sexptype() == robigo_rtcore::types::STRSXP && c.bind(cx).is_package_altrep() {
+        return Err(crate::util::not_yet(cx, None, "installTrChar() of a package ALTREP vector"));
+    }
+    let r = {
+        let cx = &*cx;
+        let x = c.bind(cx);
+        match x.as_vector::<robigo_rtcore::Char<'_>>() {
+            // R: memory.c:STRING_ELT
+            None => Err(Diag::error(format!(
+                "STRING_ELT() can only be applied to a 'character vector', not a '{}'",
+                crate::util::type_to_char(x)
+            ))),
+            Some(v) if i >= v.len() => Err(Diag::error(format!("attempt access index {i}/{} in STRING_ELT", v.len()))),
+            Some(v) => match install_tr_name(crate::coerce::text(v.get(i)), cx.locale()) {
+                Ok((n, None)) => match cx.find_symbol(&n) {
+                    Some(y) => return Ok(s.root(cx, y.as_ref())),
+                    None => Ok((n.into_owned(), None)),
+                },
+                Ok((n, w)) => Ok((n.into_owned(), w)),
+                Err(d) => Err(d),
+            },
+        }
+    };
+    let (name, w) = r.map_err(|d| cx.raise(d))?;
+    if let Some(w) = w {
+        cx.warning(&w)?;
+    }
+    // (a new symbol's PRINTNAME is the string itself, mark and all, when
+    // no translation was needed: `Cx::install_tr`, names.c:installNoTrChar)
+    let o = s.out(cx);
+    let r = o.root();
+    cx.build(o, |cx| {
+        let ch = c.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i);
+        Ok(cx.install_tr(ch, &name)?.into())
+    })?;
+    Ok(r)
+}
+
 /// `translateCharFP(s)`: `s` in the native encoding, or the message of GNU
 /// R's `error()`: a "bytes" string, or what iconv could not convert.
 // R: sysutils.c:translateCharFP, translateToNative(mustWork = 1)
@@ -94,7 +187,7 @@ pub fn to_native_fp(s: Str<'_>, loc: Locale) -> Result<Cow<'_, [u8]>, String> {
         Err(robigo_text::Untranslatable::Bytes) => {
             Err("translating strings with \"bytes\" encoding is not allowed".to_owned())
         }
-        Err(robigo_text::Untranslatable::Failed(m)) => Err(format!("unable to translate '{m}' to native encoding")),
+        Err(robigo_text::Untranslatable::Failed(m)) => Err(unable_to_translate(&m)),
     }
 }
 

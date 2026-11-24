@@ -927,7 +927,8 @@ pub fn env_value_sym(cx: &mut Cx, env: Root<'_>, sym: Root<'_>, out: Out<'_>) ->
         if val == cx.unbound() {
             out.set(cx, cx.nil());
         } else if val.sexptype() == PROMSXP {
-            cx.force(vr, out)?;
+            // R: y = eval(y, R_GlobalEnv)
+            cx.eval_promise(vr, out)?;
         } else {
             out.set(cx, val);
         }
@@ -958,9 +959,12 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
     };
     let inp = {
         let c = input.bind(cx).as_char().expect("robigo: '$' takes a CHARSXP name");
-        crate::text::to_native(crate::coerce::text(c), cx.locale())
-            .map(|b| b.into_owned())
-            .unwrap_or(c.bytes().to_vec())
+        // (one copy, on the stack for a short name: the name outlives the
+        // `&mut Cx` uses below; GNU R reads translateChar(input) in place)
+        match crate::text::to_native(crate::coerce::text(c), cx.locale()) {
+            Ok(b) => robigo_rtcore::NameBuf::new(&b),
+            Err(_) => robigo_rtcore::NameBuf::new(c.bytes()),
+        }
     };
     match xt {
         OBJSXP if s4 => Err(util::not_yet(cx, Some(call), "'$' of an S4 object")),
@@ -1014,9 +1018,12 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
                 let (mut exact, mut first, mut nmatch) = (None, None, 0);
                 for i in 0..n {
                     let nm = names.unwrap().get(i);
-                    let b = crate::text::to_native(crate::coerce::text(nm), cx.locale())
-                        .map(|b| b.into_owned())
-                        .unwrap_or(nm.bytes().to_vec());
+                    // translateChar: a native name is read in place, not
+                    // copied (pstrmatch, subset.c:1194)
+                    let b = match crate::text::to_native(crate::coerce::text(nm), cx.locale()) {
+                        Ok(b) => b,
+                        Err(_) => std::borrow::Cow::Borrowed(nm.bytes()),
+                    };
                     match pstrmatch(Some(&b), &inp) {
                         2 => {
                             exact = Some(i);
@@ -1048,7 +1055,27 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
             out.set(cx, v);
             Ok(())
         }
-        ENVSXP => env_value(cx, x, &inp, out),
+        ENVSXP => {
+            // installTrChar(input): a name that needs translating is
+            // translated with its warning (translateChar's, for a list or
+            // pairlist above, gives none)
+            let c = input.bind(cx).as_char().expect("robigo: '$' takes a CHARSXP name");
+            if c.is_ascii() {
+                // (install's checks: an empty name, one past 10000 bytes)
+                if let Err(m) = crate::text::check_install_name(&inp) {
+                    return Err(cx.error(&m));
+                }
+                return env_value(cx, x, &inp, out);
+            }
+            let (name, w) = match crate::text::install_tr_name(crate::coerce::text(c), cx.locale()) {
+                Ok((n, w)) => (robigo_rtcore::NameBuf::new(&n), w),
+                Err(d) => return Err(cx.raise(d)),
+            };
+            if let Some(w) = w {
+                cx.warning(&w)?;
+            }
+            env_value(cx, x, &name, out)
+        }
         LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
             Err(cx.error_call(Some(call), "$ operator is invalid for atomic vectors"))
         }

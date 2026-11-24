@@ -1,0 +1,77 @@
+# array.c do_aperm: the permuted array, its dim's names and its dimnames
+# (and their names) permuted with it, or only the old dim (resize = FALSE).
+# Printed by attributes and elements (no printMatrix yet).
+show <- function(x) {
+  if (inherits(x, "error")) {
+    cat("error:", conditionMessage(x), "| call:", deparse(conditionCall(x)), "\n")
+    return(invisible())
+  }
+  elts(x, typeof(x))
+  a <- attributes(x)
+  for (n in names(a)) elts(a[[n]], paste0("  ", n))
+  invisible()
+}
+# a vector's elements by cat() (no format() needed), a list's one by one
+elts <- function(v, label) {
+  if (is.list(v)) {
+    cat(label, ": list of", length(v), if (!is.null(names(v))) paste("names:", paste(names(v), collapse = ",")), "\n")
+    for (i in seq_along(v)) elts(v[[i]], paste0(label, "[[", i, "]]"))
+  } else {
+    cat(label, ":", if (is.null(v)) "NULL" else v, if (!is.null(names(v))) paste("| names:", paste(names(v), collapse = ",")), "\n")
+  }
+}
+try1 <- function(expr) show(tryCatch(expr, error = function(e) e))
+a <- array(1:24, c(2, 3, 4))
+try1(aperm(a))
+try1(aperm(a, c(2, 1, 3)))
+try1(aperm(a, c(3, 1, 2)))
+try1(.Internal(aperm(a, c(2, 3, 1), FALSE)))
+# dimnames, their names, and names(dim)
+b <- array(1:6, c(2, 3), dimnames = list(r = c("a", "b"), c = c("x", "y", "z")))
+try1(aperm(b))
+try1(aperm(b, c("c", "r")))
+try1(aperm(b, c(2, 1), resize = FALSE))
+d <- array(1:6, c(p = 2, q = 3))
+try1(aperm(d))
+e <- array(1:8, c(2, 2, 2), dimnames = list(c("u", "v"), NULL, c("s", "t")))
+try1(aperm(e, c(3, 2, 1)))
+# other attributes are not kept
+k <- array(1:4, c(2, 2)); attr(k, "foo") <- "bar"; names(k) <- letters[1:4]
+try1(aperm(k))
+# every type
+try1(aperm(matrix(c(TRUE, NA, FALSE, TRUE), 2)))
+try1(aperm(matrix(c(1.5, 2.5, NA, 4), 2)))
+try1(aperm(matrix(c(1+2i, 3i, NA, 4), 2)))
+try1(aperm(matrix(c("a", NA, "c", "d"), 2)))
+try1(aperm(matrix(as.raw(1:4), 2)))
+try1(aperm(matrix(list(1, "a", NULL, 2:3), 2)))
+try1(aperm(array(1:3, 3)))
+try1(aperm(array(integer(), c(0, 3))))
+# a compact sequence with a dim
+s <- 1:6
+dim(s) <- 2:3
+try1(aperm(s))
+# perm as double, logical, with NA
+try1(aperm(a, c(2.9, 1, 3)))
+try1(aperm(a, c(2L, NA, 1L)))
+# errors
+try1(aperm(1:3))
+try1(.Internal(aperm(1:3, NULL, TRUE)))
+try1(aperm(a, 1:2))
+try1(aperm(a, c(1, 1, 2)))
+try1(aperm(a, c(1, 2, 4)))
+try1(aperm(a, c(0, 1, 2)))
+try1(aperm(b, c("c", "zz")))
+try1(aperm(a, c("a", "b", "c")))
+try1(aperm(array(1:4, c(2, 2), dimnames = list(c("a", "b"), c("c", "d"))), c("a", "b")))
+try1(.Internal(aperm(a, NULL, NA)))
+try1(.Internal(aperm(array(expression(1, 2), 2), NULL, TRUE)))
+try1(.Internal(aperm(a, NULL)))
+f <- function(x) aperm(x, 1)
+try1(f(a))
+# a dimension name is translated only when the search reaches it
+bad <- "\xff"; Encoding(bad) <- "bytes"
+nb <- array(1:4, c(2, 2), dimnames = list(first = c("a", "b"), c("c", "d")))
+names(dimnames(nb))[2] <- bad
+try1(aperm(nb, c("first", "first")))
+try1(aperm(nb, c("nope", "first")))

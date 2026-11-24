@@ -1,0 +1,3 @@
+Error in str(cc(.Internal(as.POSIXlt(0, "Europe/Berlin")))) : 
+  could not find function "str"
+Execution halted

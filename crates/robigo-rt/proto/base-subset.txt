@@ -27,6 +27,8 @@
 closure %in% match.R
 closure %||% utils.R
 closure ..getNamespace namespace.R
+closure .Date dates.R
+closure .POSIXct datetime.R
 closure .deparseOpts New-Internal.R
 closure .doSortWrap sort.R
 closure .getNamespace namespace.R
@@ -41,6 +43,7 @@ closure .signalSimpleWarning conditions.R
 closure .standard_regexps utils.R
 closure .traceback traceback.R
 closure .valid.factor factor.R
+closure Encoding New-Internal.R
 closure Encoding<- New-Internal.R
 closure Filter funprog.R
 closure I dataframe.R
@@ -51,6 +54,7 @@ closure Sys.getenv getenv.R
 closure Sys.getpid getenv.R
 closure Sys.setenv getenv.R
 closure Sys.unsetenv getenv.R
+closure [.Date dates.R
 closure [.factor factor.R
 closure activeBindingFunction bindenv.R
 closure alist formals.R
@@ -69,12 +73,15 @@ closure as.pairlist pairlist.R
 closure as.vector as.R
 closure asNamespace namespace.R
 closure assign assign.R
+closure attach attach.R
 closure basename files.R
 closure bindingIsActive bindenv.R
 closure bindingIsLocked bindenv.R
 closure bindtextdomain stop.R
 closure body formals.R
+closure builtins builtins.R
 closure cat cat.R
+closure charToRaw raw.R
 closure character vector.R
 closure chkDots warnings.R
 closure close connections.R
@@ -88,6 +95,7 @@ closure conditionMessage.condition conditions.R
 closure dQuote character.R
 closure delayedAssign delay.R
 closure deparse New-Internal.R
+closure detach attach.R
 closure diff diff.R
 closure diff.default diff.R
 closure dir.exists files.R
@@ -96,6 +104,7 @@ closure do.call New-Internal.R
 closure dput dput.R
 closure dyn.load dynload.R
 closure dynGet namespace.R
+closure eapply eapply.R
 closure encodeString New-Internal.R
 closure enquote backquote.R
 closure env.profile environment.R
@@ -108,8 +117,10 @@ closure exists get.R
 closure factor factor.R
 closure file connections.R
 closure file.exists files.R
+closure file.info files.R
 closure file.path files.R
 closure file.remove files.R
+closure file.size files.R
 closure find.package library.R
 closure findRestart conditions.R
 closure force eval.R
@@ -137,6 +148,7 @@ closure identity funprog.R
 closure ifelse ifelse.R
 closure infoRDS serialize.R
 closure inherits New-Internal.R
+closure intToUtf8 raw.R
 closure integer vector.R
 closure invokeRestart conditions.R
 closure is.data.frame dataframe.R
@@ -149,6 +161,7 @@ closure is.vector is.R
 closure isBaseNamespace namespace.R
 closure isFALSE identical.R
 closure isNamespace namespace.R
+closure isOpen connections.R
 closure isRestart conditions.R
 closure isTRUE identical.R
 closure isa New-Internal.R
@@ -160,6 +173,7 @@ closure lengths New-Internal.R
 closure levels factor.R
 closure levels.default factor.R
 closure list2env assign.R
+closure load load.R
 closure loadNamespace namespace.R
 closure loadingNamespaceInfo namespace.R
 closure local eval.R
@@ -207,6 +221,9 @@ closure print.restart conditions.R
 closure print.warnings warnings.R
 closure rank rank.R
 closure raw raw.R
+closure rawToChar raw.R
+closure readChar connections.R
+closure readLines connections.R
 closure readRDS serialize.R
 closure reg.finalizer New-Internal.R
 closure regexec grep.R
@@ -220,7 +237,9 @@ closure rev rev.R
 closure rev.default rev.R
 closure rm rm.R
 closure rowSums colSums.R
+closure sQuote character.R
 closure sapply sapply.R
+closure save load.R
 closure saveRDS serialize.R
 closure search New-Internal.R
 closure seq seq.R
@@ -238,24 +257,31 @@ closure sort.default sort.R
 closure sort.int sort.R
 closure sort.list sort.R
 closure sprintf New-Internal.R
+closure startsWith character.R
 closure stderr connections.R
 closure stdin connections.R
 closure stdout connections.R
 closure stop stop.R
 closure stopifnot stop.R
+closure str2expression parse.R
+closure str2lang parse.R
 closure strrep character.R
 closure strsplit grep.R
 closure structure structure.R
 closure sub grep.R
+closure substr character.R
 closure summary summary.R
 closure summary.connection connections.R
 closure suppressWarnings conditions.R
 closure sys.call sys.R
+closure sys.calls sys.R
 closure sys.frame sys.R
 closure sys.function sys.R
 closure sys.nframe sys.R
 closure sys.parent sys.R
 closure sys.source source.R
+closure tempdir temp.R
+closure tempfile temp.R
 closure topenv namespace.R
 closure traceback traceback.R
 closure try New-Internal.R
@@ -276,6 +302,7 @@ closure warnings warnings.R
 closure which which.R
 closure withCallingHandlers conditions.R
 closure withRestarts conditions.R
+closure withVisible withVisible.R
 closure writeLines connections.R
 closure xtfrm.AsIs sort.R
 closure xtfrm.default sort.R
@@ -335,6 +362,7 @@ primitive baseenv
 primitive break
 primitive browser
 primitive c
+primitive call
 primitive class
 primitive class<-
 primitive cumsum
@@ -411,6 +439,7 @@ internal .dfltWarn
 internal .getRestart
 internal .invokeRestart
 internal .signalCondition
+internal Encoding
 internal NextMethod
 internal Sys.getenv
 internal Sys.getpid
@@ -431,7 +460,9 @@ internal bindingIsLocked
 internal bindtextdomain
 internal body
 internal bodyCode
+internal builtins
 internal cat
+internal charToRaw
 internal close
 internal compareNumericVersion
 internal compilePKGS
@@ -447,6 +478,7 @@ internal disassemble
 internal do.call
 internal dput
 internal dyn.load
+internal eapply
 internal enableJIT
 internal encodeString
 internal env.profile
@@ -458,6 +490,7 @@ internal eval
 internal exists
 internal file
 internal file.exists
+internal file.info
 internal file.path
 internal file.remove
 internal forcedBindingExpression
@@ -484,11 +517,13 @@ internal gzfile
 internal identical
 internal importIntoEnv
 internal inherits
+internal intToUtf8
 internal internalsID
 internal is.builtin.internal
 internal is.unsorted
 internal is.vector
 internal isNamespaceEnv
+internal isOpen
 internal isRegisteredNamespace
 internal islistfactor
 internal l10n_info
@@ -497,6 +532,9 @@ internal lazyLoadDBflush
 internal lazyLoadDBinsertValue
 internal lengths
 internal list2env
+internal load.from.file
+internal loadFromConn2
+internal loadInfoFromConn2
 internal lockBinding
 internal lockEnvironment
 internal ls
@@ -530,6 +568,9 @@ internal putconst
 internal qsort
 internal radixsort
 internal rank
+internal rawToChar
+internal readChar
+internal readLines
 internal reg.finalizer
 internal regexec
 internal regexpr
@@ -539,6 +580,8 @@ internal rep.int
 internal rep_len
 internal returnValue
 internal rowSums
+internal save.to.file
+internal saveToConn
 internal search
 internal serialize
 internal serializeInfoFromConn
@@ -548,19 +591,26 @@ internal seterrmessage
 internal sort
 internal sorted_fpass
 internal sprintf
+internal startsWith
 internal stderr
 internal stdin
 internal stdout
 internal stop
+internal str2expression
+internal str2lang
 internal strrep
 internal strsplit
 internal sub
+internal substr
 internal summary.connection
 internal sys.call
+internal sys.calls
 internal sys.frame
 internal sys.function
 internal sys.nframe
 internal sys.parent
+internal tempdir
+internal tempfile
 internal topenv
 internal traceback
 internal typeof
@@ -574,5 +624,6 @@ internal vapply
 internal vector
 internal warning
 internal which
+internal withVisible
 internal wrap_meta
 internal writeLines

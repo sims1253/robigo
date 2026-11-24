@@ -1,2 +1,2 @@
-# builtin-diff known failures: nzchar, seed 0, key 233c18b28307a8b91593ff51
+# builtin-diff known failures: nzchar, seed 0, key 60457cee1ecd4ea16b67c3a7
 # nzchar: 2200 / 2200 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

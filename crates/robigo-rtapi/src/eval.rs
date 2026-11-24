@@ -31,6 +31,54 @@ fn eval<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>) -> RResult<Ro
     Ok(r)
 }
 
+/// `R_getVarEx(sym, rho, inherits, ifnotfound)`: `ifnotfound` (what C
+/// passed, which may be a C NULL) returned as it is for an unbound `sym`.
+/// The checks' messages name `R_getVarEx` (its `__func__`), also under
+/// `R_getVar`, as GNU R's do.
+// R: envir.c:R_getVarEx
+fn get_var_ex(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    sym: Root<'_>,
+    rho: Root<'_>,
+    inherits: bool,
+    ifnotfound: Option<Root<'_>>,
+) -> RResult<Sexp> {
+    if sym.bind(cx).sexptype() != SYMSXP {
+        return Err(cx.error("first argument to 'R_getVarEx' must be a symbol"));
+    }
+    if rho.bind(cx).sexptype() != ENVSXP {
+        return Err(cx.error("second argument to 'R_getVarEx' must be an environment"));
+    }
+    let o = s.out(cx);
+    let val = o.root();
+    if inherits {
+        cx.find_var(sym, rho, o)?;
+    } else {
+        cx.find_var_in_frame3(rho, sym, true, o)?;
+    }
+    let v = val.bind(cx).sexp();
+    if v == cx.missing_arg().sexp() {
+        // R_MissingArgError_c(EncodeChar(PRINTNAME(sym)), getLexicalCall(rho), "getVarExError")
+        let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
+        let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
+        return Err(cx.missing_arg_error(&name, Some(call), "getVarExError"));
+    }
+    if v == cx.unbound().sexp() {
+        return Ok(ifnotfound.map_or(Sexp::NULL, |x| x.bind(cx).sexp()));
+    }
+    if val.bind(cx).sexptype() == PROMSXP {
+        // (C code's eval of the promise: GNU R's eval(val, rho))
+        let p = s.root(cx, val.bind(cx));
+        let o = s.out(cx);
+        let r = o.root();
+        // (GNU R's PROTECT(val) around its eval)
+        cx.with_pp_excess(1, |cx| cx.eval_promise(p, o))?;
+        return Ok(r.bind(cx).sexp());
+    }
+    Ok(v)
+}
+
 /// `R_tryEval(e, env, ErrorOccurred)`: `e` evaluated in a top-level
 /// context; an error is reported there (GNU R's default handler, before
 /// the jump) and gives NULL with `*err` set.
@@ -234,11 +282,12 @@ entry! {
 // R: coerce.c:coerceVector (COERCE_ERROR), util.c:type2char
 #[cold]
 fn coerce_to_unknown(cx: &mut Cx, v: Root<'_>, t: c_uint) -> RError {
-    if let Err(e) = cx.warning(&format!("type {t} is unimplemented in 'type2char'")) {
-        return e;
-    }
+    let to = match robigo_rtbuiltins::util::type2char_warn(cx, t) {
+        Ok(to) => to,
+        Err(e) => return e,
+    };
     let from = r_type_to_char(v.bind(cx));
-    cx.error(&format!("cannot coerce type '{from}' to vector of type 'unknown type #{t}'"))
+    cx.error(&format!("cannot coerce type '{from}' to vector of type '{to}'"))
 }
 
 entry! {
@@ -247,10 +296,19 @@ entry! {
     [2] fn Rf_coerceVector(v: Sexp, t: c_uint) -> Sexp => |cx, s| {
         let o = s.out(cx);
         let r = o.root();
-        let Ok(t) = u8::try_from(t) else {
+        let Ok(t8) = u8::try_from(t) else {
             return Err(coerce_to_unknown(cx, v, t));
         };
-        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t, o)?;
+        // A code no type names: GNU R's type2char warns where the
+        // coercion's error names the target (the error itself says
+        // "unknown type #N", type2char's text), so the warning comes first,
+        // here, for the coercions whose error does name it.
+        if robigo_rtbuiltins::util::type_name(t8).is_none()
+            && robigo_rtbuiltins::coerce::vector::error_names_target(v.bind(cx), t8)
+        {
+            robigo_rtbuiltins::util::type2char_warn(cx, t)?;
+        }
+        robigo_rtbuiltins::coerce::vector::coerce_vector(cx, v, t8, o)?;
         Ok(r.bind(cx).sexp())
     }
 
@@ -268,6 +326,29 @@ entry! {
         let r = o.root();
         cx.find_var(sym, rho, o)?;
         Ok(r.bind(cx).sexp())
+    }
+
+    /// `R_getVarEx(sym, rho, inherits, ifnotfound)`: `sym`'s value in
+    /// `rho` (and its enclosures with `inherits`), a promise forced,
+    /// `ifnotfound` when it is unbound; a missing argument is the
+    /// `getVarExError` reported against `rho`'s lexical call.
+    // R: envir.c:R_getVarEx
+    [4] fn R_getVarEx(sym: Sexp, rho: Sexp, inherits: c_int, ifnotfound: OrNull) -> Sexp => |cx, s| {
+        get_var_ex(cx, s, sym, rho, inherits != 0, ifnotfound)
+    }
+
+    /// `R_getVar(sym, rho, inherits)`: [`R_getVarEx`]'s value with
+    /// R_UnboundValue as the fallback, "object '%s' not found" when that is
+    /// the value (also a promise's that gave it).
+    // R: envir.c:R_getVar
+    [3] fn R_getVar(sym: Sexp, rho: Sexp, inherits: c_int) -> Sexp => |cx, s| {
+        let unbound = s.root(cx, cx.unbound());
+        let v = get_var_ex(cx, s, sym, rho, inherits != 0, Some(unbound))?;
+        if v == cx.unbound().sexp() {
+            let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
+            return Err(cx.error(&format!("object '{name}' not found")));
+        }
+        Ok(v)
     }
 
     /// `R_NewHashedEnv(enclos, size)`: a hashed environment (`size` the

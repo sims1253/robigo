@@ -102,6 +102,18 @@ impl FramePool {
         }
     }
 
+    /// Drop every pooled frame, as a collection does: the boot heap's lazy
+    /// freeze's boundary, after which no frame allocated before it may be
+    /// handed out as a new one (it would read as a boot object: Sol r9 S15).
+    /// The quarantined frames stay (they are roots, and never reused).
+    pub(crate) fn clear_pool(&self) {
+        // SAFETY: a borrow that ends with this call, which calls nothing of
+        // ours.
+        for l in unsafe { &mut *self.lists.get() } {
+            l.clear();
+        }
+    }
+
     /// A pooled frame of `capacity` slots, if any (LIFO).
     pub(crate) fn take(&self, capacity: usize) -> Option<Sexp> {
         if capacity > MAX_CAPACITY {
@@ -113,12 +125,14 @@ impl FramePool {
     }
 
     /// Offer the frame `f` of a call that returned `v` (null: no value).
+    /// `core` is the heap's, for the quarantine's poisoned frames: their
+    /// cells move with the poisoning (`Core::recharge`).
     ///
     /// # Safety
     /// `f` is a live environment and `v` null or a live object, of the heap
-    /// this pool's isolate owns; the call's `R_CleanupEnvir` and argument
-    /// list cleanup have run.
-    pub(crate) unsafe fn offer(&self, f: Sexp, v: Sexp, nil: Sexp) {
+    /// this pool's isolate owns (`core`); the call's `R_CleanupEnvir` and
+    /// argument list cleanup have run.
+    pub(crate) unsafe fn offer(&self, f: Sexp, v: Sexp, nil: Sexp, core: &mut robigo_heap::Core) {
         // SAFETY: the caller's contract.
         unsafe {
             if f == v || !layout::is_slots(f) || f.refcnt() != 0 {
@@ -142,9 +156,14 @@ impl FramePool {
             if self.quarantine_mode {
                 // poisoned: neither a slot frame nor a hashed one (its
                 // HASHTAB word, the shape's, is R_NilValue), so `kind`
-                // panics on it; held back as a root
-                layout::set(f, OFF_SHAPE, nil);
-                f.set_flag(flags::SLOTS, false);
+                // panics on it; held back as a root. Without SLOTS it is no
+                // frame and counts no cells: the change goes through the
+                // heap, which moves its charge (robigo-heap's `Block::cells`
+                // invariant)
+                core.recharge(f, |f| {
+                    layout::set(f, OFF_SHAPE, nil);
+                    f.set_flag(flags::SLOTS, false);
+                });
                 (*self.quarantine.get()).push(f);
                 return;
             }

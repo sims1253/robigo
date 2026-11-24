@@ -20,5 +20,15 @@ robigo-text = { path = "../robigo-text" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std", "rust-allocator"] }
 
+[build-dependencies]
+# libdeflate's decompressor (vendor/libdeflate), build.rs
+cc = "1"
+
+[features]
+# ROBIGO_POISON_DEAD=1 (robigo-rtcore's feature, C1-PZ), and with it
+# ROBIGO_POISON_PLANT=1: the compiler clears each closure's value register
+# just before its Ret, the early clear the poison must catch (tests/poison.rs)
+poison-dead = ["robigo-rtcore/poison-dead"]
+
 [lints]
 workspace = true

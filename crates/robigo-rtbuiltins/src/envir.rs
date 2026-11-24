@@ -49,35 +49,6 @@ fn mode_class(t: u8) -> u8 {
     }
 }
 
-/// `installTrChar(c)`: the symbol named by the native translation of `c`,
-/// rooted in `s`, with `install`'s errors.
-// R: sysutils.c:installTrChar, names.c:install
-pub(crate) fn install_tr<'s>(cx: &mut Cx, s: Scope<'s>, c: Root<'_>, i: usize) -> RResult<Root<'s>> {
-    let name: Vec<u8> = {
-        let ch = c.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        match to_native(crate::coerce::text(ch), cx.locale()) {
-            Ok(n) => n.into_owned(),
-            Err(e) => return Err(cx.error(&e.to_string())),
-        }
-    };
-    install(cx, s, &name)
-}
-
-/// `install(name)`, rooted, with its errors.
-// R: names.c:install
-fn install<'s>(cx: &mut Cx, s: Scope<'s>, name: &[u8]) -> RResult<Root<'s>> {
-    if name.is_empty() {
-        return Err(cx.error("attempt to use zero-length variable name"));
-    }
-    if name.len() > 10000 {
-        return Err(cx.error("variable names are limited to 10000 bytes"));
-    }
-    let o = s.out(cx);
-    let r = o.root();
-    cx.build(o, |cx| Ok(cx.install(name)?.into()))?;
-    Ok(r)
-}
-
 /// `simple_as_environment(arg)` failing: an S4 object is robigo's to add
 /// (`R_getS4DataSlot`), anything else GNU R's "invalid 'envir' argument".
 fn bad_envir(cx: &mut Cx, call: Root<'_>, env: Root<'_>) -> RError {
@@ -106,7 +77,7 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         cx.warning("only the first element is used as variable name")?;
     }
     cx.scope(|cx, s| {
-        let name = install_tr(cx, s, x, 0)?;
+        let name = crate::text::install_tr_char(cx, s, x, 0)?;
         let (val, aenv) = (args.root(1), args.root(2));
         match aenv.bind(cx).sexptype() {
             NILSXP => return Err(cx.error("use of NULL environment is defunct")),
@@ -121,6 +92,22 @@ pub fn do_assign(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
             cx.set_var(name, val, aenv)?;
         } else {
             cx.define_var(name, val, aenv)?;
+        }
+        if crate::util::a4_plant_case(cx, call)
+            && val.bind(cx).len() == Some(3)
+            && val.bind(cx).sexptype() != ENVSXP
+            && ![cx.global_env(), cx.base_env(), cx.empty_env()].contains(&aenv.bind(cx))
+            && !cx.environment_is_locked(aenv)?
+        {
+            // PLANT(A4, env): a second binding GNU R does not make, only in
+            // an environment that takes it (so never an error) and that is
+            // neither the global one (the globals field) nor the value; and
+            // only a new one (an existing `a4plant` could be locked, or
+            // active and run its setter)
+            let k = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"a4plant")?.into())))?;
+            if !cx.exists_var_in_frame(aenv, k)? {
+                cx.define_var(k, val, aenv)?;
+            }
         }
         out.set(cx, val.bind(cx));
         Ok(())
@@ -142,7 +129,7 @@ pub fn do_delayed(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         return Err(cx.error("invalid first argument"));
     }
     cx.scope(|cx, s| {
-        let name = install_tr(cx, s, x, 0)?;
+        let name = crate::text::install_tr_char(cx, s, x, 0)?;
         let (expr, eenv, aenv) = (args.root(1), args.root(2), args.root(3));
         for (e, what) in [(eenv, "eval.env"), (aenv, "assign.env")] {
             match e.bind(cx).sexptype() {
@@ -199,7 +186,8 @@ fn find_var1_mode(
                 if vl.bind(cx).sexptype() == PROMSXP {
                     p.replace_with(cx, |cx| Ok(vl.bind(cx)))?;
                     let o = vl.reset(cx);
-                    cx.force(p, o)?;
+                    // R: vl = eval(vl, rho)
+                    cx.eval_promise(p, o)?;
                 }
                 let v = vl.bind(cx);
                 if mode_class(v.sexptype()) == want && (want != OBJSXP || v.is_s4() == mode.s4) {
@@ -233,8 +221,18 @@ fn mode_arg(cx: &mut Cx, m: Root<'_>) -> RResult<Mode> {
     };
     match str2mode(&s) {
         Some(m) => Ok(m),
-        None => Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&s)))),
+        None => Err(bad_mode(cx, &s)),
     }
+}
+
+/// str2mode's "invalid 'mode' argument '%s'" of `CHAR(mode)`: the string's
+/// bytes as they are.
+// R: envir.c:str2mode
+fn bad_mode(cx: &mut Cx, mode: &[u8]) -> RError {
+    let mut m = b"invalid 'mode' argument '".to_vec();
+    m.extend_from_slice(mode);
+    m.push(b'\'');
+    cx.error_bytes(&m)
 }
 
 /// `.Internal(exists(x, envir, mode, inherits))` (`CODE` 0),
@@ -263,7 +261,7 @@ pub fn do_get<const CODE: u8>(
                 if v.len() > 1 {
                     return Err(cx.error("first argument has length > 1"));
                 }
-                install_tr(cx, s, x, 0)?
+                crate::text::install_tr_char(cx, s, x, 0)?
             }
             _ => return Err(cx.error("invalid first argument")),
         };
@@ -309,10 +307,10 @@ pub fn do_get<const CODE: u8>(
     })
 }
 
-/// `GET_VALUE`: a promise is forced (`eval(rval, genv)`).
+/// `GET_VALUE`: a promise is evaluated (`eval(rval, genv)`).
 fn get_value(cx: &mut Cx, rval: Root<'_>, out: Out<'_>) -> RResult<()> {
     if rval.bind(cx).sexptype() == PROMSXP {
-        return cx.force(rval, out);
+        return cx.eval_promise(rval, out);
     }
     out.set(cx, rval.bind(cx));
     Ok(())
@@ -372,7 +370,7 @@ pub fn do_mget(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: 
         for i in 0..nvals {
             let m = mode.bind(cx).as_vector::<Char<'_>>().unwrap().get(i % nmode).bytes().to_vec();
             let Some(gmode) = str2mode(&m) else {
-                return Err(cx.error(&format!("invalid 'mode' argument '{}'", String::from_utf8_lossy(&m))));
+                return Err(bad_mode(cx, &m));
             };
             cx.scope(|cx, t| {
                 let nf = ifnotfound_elt(cx, t, ifnf, i % nifnfnd)?;
@@ -428,7 +426,7 @@ fn gfind<'s>(
     inherits: bool,
     enclos: Root<'_>,
 ) -> RResult<Root<'s>> {
-    let t1 = install_tr(cx, s, x, i)?;
+    let t1 = crate::text::install_tr_char(cx, s, x, i)?;
     let o = s.out(cx);
     let rval = o.root();
     find_var1_mode(cx, t1, env, mode, inherits, true, o)?;
@@ -456,7 +454,8 @@ fn gfind<'s>(
     if rval.bind(cx).sexptype() == PROMSXP {
         let p = s.root(cx, rval.bind(cx));
         let o = rval.reset(cx);
-        cx.force(p, o)?;
+        // R: rval = eval(rval, env)
+        cx.eval_promise(p, o)?;
     }
     Ok(rval)
 }
@@ -616,7 +615,8 @@ pub fn do_env2list(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
                 if v.bind(cx).sexptype() == PROMSXP {
                     let p = t.root(cx, v.bind(cx));
                     let o = v.reset(cx);
-                    cx.force(p, o)?;
+                    // R: FrameValues's value = eval(value, R_GlobalEnv)
+                    cx.eval_promise(p, o)?;
                 }
                 cx.owned_list(ans)?.set(i, v);
                 Ok(())
@@ -970,7 +970,7 @@ pub fn do_list2env(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         }
         for i in 0..n {
             cx.scope(|cx, s| {
-                let name = install_tr(cx, s, xnms, i)?;
+                let name = crate::text::install_tr_char(cx, s, xnms, i)?;
                 // lazy_duplicate(VECTOR_ELT(x, i)): the element itself under
                 // reference counting
                 let v = s.root(cx, x.bind(cx).as_vector::<Ref<'_>>().unwrap().get(i));
@@ -1346,6 +1346,161 @@ pub fn do_dot_forced_expr(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Roo
     dot_element(cx, args, DotWhat::ForcedExpr, out)
 }
 
+// ---- eapply, builtins --------------------------------------------------------
+
+/// `.Internal(eapply(env, FUN, all.names, USE.NAMES))`, a special: `FUN`
+/// (a symbol) applied to each value of `env`'s frame in `as.list(env)`'s
+/// order (a promise forced), as `FUN(X[[i]], ...)` with `X` the list of
+/// values and `i` bound in `rho` (written in place each time, as GNU R
+/// writes `INTEGER(ind)[0]`); the names, with `USE.NAMES`, listed again
+/// after the calls.
+// R: envir.c:do_eapply, FrameValues, FrameNames
+pub fn do_eapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("eapply", true).check_arity(cx, call, args)?;
+    cx.scope(|cx, s| {
+        let env = s.capture(cx, |cx, o| cx.eval(args.root(0), rho, o))?;
+        match env.bind(cx).sexptype() {
+            NILSXP => return Err(cx.error("use of NULL environment is defunct")),
+            ENVSXP => {}
+            OBJSXP if env.bind(cx).is_s4() => {
+                return Err(not_yet(cx, Some(call), "eapply() over an S4 object's environment"));
+            }
+            _ => return Err(cx.error("argument must be an environment")),
+        }
+        let fun = args.root(1);
+        if fun.bind(cx).sexptype() != SYMSXP {
+            return Err(cx.error("arguments must be symbolic"));
+        }
+        let flag = |cx: &mut Cx, i: usize| -> RResult<bool> {
+            let v = s.capture(cx, |cx, o| cx.eval(args.root(i), rho, o))?;
+            let l = as_logical(cx, v.bind(cx));
+            Ok(l != crate::coerce::vector::NA_LOGICAL && l != 0)
+        };
+        let all = flag(cx, 2)?;
+        let use_nms = flag(cx, 3)?;
+        // the symbols listed, then each value (FrameValues: a promise forced)
+        let syms = s.capture(cx, |cx, o| cx.env_symbols(env, o))?;
+        let list: Vec<Root<'_>> = {
+            let v = syms.bind(cx).as_vector::<Ref<'_>>().unwrap();
+            (0..v.len())
+                .map(|i| v.get(i))
+                .filter(|y| all || y.as_sym().is_some_and(|y| y.name_bytes().first() != Some(&b'.')))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|y| s.root(cx, y))
+                .collect()
+        };
+        let k = list.len();
+        let tmp2 = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(k)?.finish().into())))?;
+        for (i, &y) in list.iter().enumerate() {
+            cx.scope(|cx, t| {
+                let o = t.out(cx);
+                let v = o.root();
+                cx.find_var_in_frame3(env, y, true, o)?;
+                if v.bind(cx).sexptype() == PROMSXP {
+                    let p = t.root(cx, v.bind(cx));
+                    let o = v.reset(cx);
+                    // R: FrameValues's value = eval(value, R_GlobalEnv)
+                    cx.eval_promise(p, o)?;
+                }
+                cx.owned_list(tmp2)?.set(i, v);
+                Ok(())
+            })?;
+        }
+        let ans = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_vector::<Ref<'_>>(k)?.finish().into())))?;
+        // X and i bound in rho; fcall := FUN(X[[i]], ...)
+        let xsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"X")?.into())))?;
+        let isym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"i")?.into())))?;
+        let ind = s.capture(cx, |cx, o| cx.build_scalar(o, 0i32))?;
+        let fcall = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let b2 = cx.install(b"[[")?;
+                let tmp = cx.lang3(b2.into(), xsym.bind(cx), isym.bind(cx))?;
+                cx.lang3(fun.bind(cx), tmp, cx.sym(RSym::Dots).into())
+            })
+        })?;
+        cx.define_var(xsym, tmp2, rho)?;
+        cx.define_var(isym, ind, rho)?;
+        for i in 0..k {
+            cx.scope(|cx, t| {
+                // INTEGER(ind)[0] = i+1: the vector `i` was bound to, in place
+                cx.set_plain_shared::<i32>(ind, 0, (i + 1) as i32)?;
+                let r = t.capture(cx, |cx, o| cx.with_pp_excess(6, |cx| cx.force_and_call(fcall, 1, rho, o)))?;
+                cx.owned_list(ans)?.set(i, r);
+                Ok(())
+            })?;
+        }
+        if use_nms {
+            // FrameNames, listed again (FUN may have changed the frame; the
+            // vector keeps the length the values had)
+            let syms2 = s.capture(cx, |cx, o| cx.env_symbols(env, o))?;
+            let names = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let v = syms2.bind(cx).as_vector::<Ref<'_>>().unwrap();
+                    let picked: Vec<Ref<'_>> = (0..v.len())
+                        .map(|i| v.get(i))
+                        .filter(|y| all || y.as_sym().is_some_and(|y| y.name_bytes().first() != Some(&b'.')))
+                        .collect();
+                    let mut r = cx.alloc_vector::<Char<'_>>(k)?;
+                    for (i, y) in picked.iter().take(k).enumerate() {
+                        r.set(i, y.as_sym().unwrap().name(cx));
+                    }
+                    Ok(r.finish().into())
+                })
+            })?;
+            crate::attrib::set::set_attrib(cx, ans, b"names", names)?;
+        }
+        out.set(cx, ans.bind(cx));
+        Ok(())
+    })
+}
+
+/// `.Internal(builtins(internal))`: the names of the symbols with a base
+/// binding (with `internal`, of those with an `.Internal`), sorted
+/// decreasing by `Scollate` (`sortVector(ans, TRUE)`).
+// R: envir.c:do_builtins, BuiltinNames, sort.c:sortVector
+pub fn do_builtins(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("builtins", true).check_arity(cx, call, args)?;
+    let intern = as_logical(cx, args.get(cx, 0));
+    let intern = intern != crate::coerce::vector::NA_LOGICAL && intern != 0;
+    cx.scope(|cx, s| {
+        let syms = s.capture(cx, |cx, o| cx.builtin_symbols(intern, o))?;
+        let names: Vec<(Vec<u8>, Encoding)> = {
+            let v = syms.bind(cx).as_vector::<Ref<'_>>().unwrap();
+            (0..v.len())
+                .map(|i| {
+                    let n = v.get(i).as_sym().unwrap().name(cx);
+                    (n.bytes().to_vec(), n.enc())
+                })
+                .collect()
+        };
+        // INTERIM(L5): the wide base loader's fetch (robigo-rt's base.rs,
+        // `..robigo_base_fetch`) is an `.Internal` GNU R has not; it goes
+        // with that loader
+        let mut order: Vec<usize> = (0..names.len()).filter(|&i| names[i].0 != b"..robigo_base_fetch").collect();
+        let loc = cx.locale();
+        let mut err = None;
+        order.sort_by(|&i, &j| {
+            let (a, b) = (crate::coerce::text_held(&names[i]), crate::coerce::text_held(&names[j]));
+            crate::text::scollate(b, a, loc).unwrap_or_else(|e| {
+                err.get_or_insert(e);
+                std::cmp::Ordering::Equal
+            })
+        });
+        if let Some(e) = err {
+            return Err(e.raise(cx, None));
+        }
+        cx.build(out, |cx| {
+            let v = syms.bind(cx).as_vector::<Ref<'_>>().unwrap();
+            let mut r = cx.alloc_vector::<Char<'_>>(order.len())?;
+            for (i, &j) in order.iter().enumerate() {
+                r.set(i, v.get(j).as_sym().unwrap().name(cx));
+            }
+            Ok(r.finish().into())
+        })
+    })
+}
+
 /// `.Internal(remove(list, envir, inherits))`: each named variable removed
 /// from `envir` (or, with `inherits`, the first frame outwards that has
 /// it); a warning for each not found.
@@ -1376,12 +1531,7 @@ pub fn do_remove(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     let n = name.bind(cx).len().unwrap_or(0);
     for i in 0..n {
         cx.scope(|cx, s| {
-            let sym = s.capture(cx, |cx, o| {
-                cx.build(o, |cx| {
-                    let c = name.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-                    Ok(cx.install(c.bytes())?.into())
-                })
-            })?;
+            let sym = crate::text::install_tr_char(cx, s, name, i)?;
             let tenv = s.root(cx, args.get(cx, 1));
             let mut done = false;
             while tenv.bind(cx) != cx.empty_env() {

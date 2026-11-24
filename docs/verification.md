@@ -33,6 +33,18 @@ layouts. Run it by hand or from a timer. Never point `CARGO_TARGET_DIR` at
 a directory of your own: each holds several GB. If a task truly needs one
 (a build that must not mix with others), delete it before handing back.
 
+A tool's temporary directories come from `scripts/scratch.py`
+(`scratch_dir(prefix)`): builtin-diff's `a4-*`, perf.py's `rt-bars-` and
+`rt-gnur-`, rast.py's and the C API bench's. A tool removes its own
+directories on every exit path, an exception or SIGTERM included (which
+first ends its descendants). A run killed by SIGKILL (an OOM kill) still
+leaves them; remove those by hand: your own entries with those prefixes in
+`/tmp` that are more than six hours old, with nothing in them newer, and
+that no process has as its working directory or holds open (`/proc/*/cwd`,
+`/proc/*/fd`). `scripts/test-scratch.py` checks the module and each tool;
+the conformance runner's test fakes live in cargo's `target/tmp` and are
+swept by process id.
+
 ## Correctness
 
 | check | command | what it compares |
@@ -42,7 +54,9 @@ a directory of your own: each holds several GB. If a task truly needs one
 | text oracle | `cargo test -p robigo-text` | number and string formatting against GNU R 4.6.2's `format.info()`, `format()`, `encodeString()`, `print()` and `as.character()` in C.UTF-8 and C, and collation against its ICU root collator (`order()` of 10,000 generated strings and the signs of 20,000 pairs, recorded in the oracle image) (`crates/robigo-text/oracle/record.sh` records them) |
 | parse corpus | `scripts/parse-corpus.py check` | parse trees and parse errors of the fastr/gnur-tests/gnur-examples corpora and GNU R's own sources against GNU R's dumps (`tests/parse/passing/` ratchets) |
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
-| rt conformance | `cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns"). The cases that load tools' native code (`.requires` `r-home-tools`) run when `robigo-rt`'s `R_HOME` tree has it: `scripts/rt-home.sh` builds `library/tools/libs/tools.so` from GNU R's sources against robigo's headers for the natives (`crates/robigo-rtapi/internal`), as the rt job does before its conformance steps |
+| rt conformance | `scripts/rt-home-db.sh --robigo-rt BIN && cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns"), under its default boot: base from the database tree (`.robigo/rt-home-db`, which the default boot needs: without it a start exits 2 naming the script). `ROBIGO_RT_BOOT=m1` runs M1's loader instead (INTERIM(L5): rt-ci keeps three such steps until its deletion). The cases that load tools' native code (`.requires` `r-home-tools`) run when `robigo-rt`'s `R_HOME` tree has it: `scripts/rt-home.sh` builds `library/tools/libs/tools.so` from GNU R's sources against robigo's headers for the natives (`crates/robigo-rtapi/internal`), and `scripts/rt-home-db.sh`'s tree copies it, as the rt job does before its conformance steps |
+| rt boot from base's database | `scripts/rt-home-db.sh --robigo-rt "$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/release/robigo-rt" && ROBIGO_RT_HOME_DB=1 cargo test --release -p robigo-rtapi --test boot_db` | robigo-rt's default boot (`ROBIGO_RT_BOOT` unset, or `rdb`): `scripts/rt-home-db.sh` runs base's database rule (`makebasedb.R`, robigo-rt booted from base's source) into a copy of the `R_HOME` tree and installs `baseloader.R` as its base file; the test boots from it (byte-code closures, baseloader.R's symbols and S3 table, base's 1407 names) and pins the system profile's lines that still stop. The rt job runs both after the `R_HOME` tree |
+| rt translation cache with source references | `scripts/rt-srcref-tcache.sh --robigo-rt BIN` | a tree built with `R_KEEP_PKG_SOURCE=yes` (about 35 s with its cache): the compiler's functions keep their srcrefs through its database, and the closures `compiler:::make.codeBuf` makes (MAKECLOSURE) get the srcref that is their pool constant (`identical()`), with the translation cache on (hits), off and in verify mode (none differing). The cache reads only the tree's own databases, so no smaller database stands in. A release check, not yet in CI |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin differential | `scripts/builtin-diff.py run [--only NAME]` | robigo-rt's builtins against GNU R 4.6.2 on generated inputs, out of process (§ Builtin differential) |
@@ -66,13 +80,21 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   names.c name. An empty table is a valid row; the file's header lists the
   fields. `check-rows` reports a registry builtin that has neither a row nor
   a reason under `[uncovered]`, so a newly ported builtin shows up, and an
-  `[uncovered]` name the registry lacks. For now both are warnings, listed
-  in the summary, so the builtin PRs queued before A4 still pass;
-  `UNLISTED_FAILS` in `scripts/builtin-diff.py` makes them failures once
-  that queue has drained. A builtin with both a row and a reason always
-  fails.
+  `[uncovered]` name the registry lacks. Both fail (`UNLISTED_FAILS`; they
+  were warnings while the builtin PRs queued before A4 drained), so a pull
+  request that registers a builtin gives it a row or a reason. A builtin with both a row and a reason always
+  fails. A row's `domain` or `typical` key must name one of its arguments
+  (gen.R stops otherwise). A wrapper that passes `as.character(x)` names
+  nothing, so such a row gives `args`. A special runs when its row says
+  `special = true`: its arguments reach it as the case's symbols `a1`,
+  `a2`, ..., the same expressions in both runtimes.
 - **Cases:** `scripts/builtin-diff/gen.R` makes them, in GNU R alone, from
-  one value lattice (version 1, about 70 values with their decorations).
+  one value lattice (version 2, about 70 values with their decorations).
+  Two fixture pools are outside `@any`, for the rows that name them:
+  - `@env`: environments with bindings, a locked binding, locked, with an
+    active binding, empty, base and global;
+  - `@fun`: closures that append their arguments to `.a4log` in the global
+    environment, plus `sum`.
   The kinds are:
   - every value alone in every position;
   - a greedy pairwise covering set;
@@ -100,13 +122,38 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
     serialization is the same as before the call, else
     `list(unchanged = FALSE, value)`;
   - the global environment's names;
-  - `.Random.seed`.
+  - `.Random.seed`;
+  - `.a4log`: what the fixture closures were called with, in order.
+
+  A big value (the call's, or a changed binding's), one whose
+  serialization would be over 16 MiB (`A4_BIG_BYTES`) and holds no
+  reference object, is recorded as its summary: type, length, attribute
+  names, its first and last 3 elements. The value itself goes to
+  `<id>.big<k>.rds` (`saveRDS` version 2, which writes plain vectors, so
+  both runtimes write the same bytes), and the harness replaces that by its
+  sha256 at once. The driver marks each summary `<id>.big<k>.want`, and a
+  case passes only with the same marks on both sides, each with its
+  digest, and the digests equal. A value over 1 GiB (`A4_BIG_MAX_BYTES`),
+  which an expanded copy might not fit under the address-space cap, stays
+  in the record as before (`seq.int(intmax)`, compact in GNU R).
 
   The records are compared byte for byte. So is what each case printed: the
   driver writes a marker line before each case, and the harness splits
   stdout at them. A case counts as done when its `.ok` marker exists, which
   the driver writes after the record, so a crash while writing the record
-  costs that case and no other. `render.R`, run in any R ≥ 4, names the
+  costs that case and no other.
+
+  An External row's cases each run in a process of their own, in a fresh
+  directory at the same absolute path (`/tmp/robigo-a4-<uid>-<key>`) in
+  GNU R's container and on the host. The environment is made from nothing
+  but the one below plus `PATH`, `HOME` and `TMPDIR`, so `Sys.getenv()` and
+  the paths a case sees are the same for both runtimes. The files a case
+  leaves in its directory are compared too: path, kind, mode, size and
+  sha256, the directory's own mode first. Every runtime process runs under
+  umask 022, which is part of the key. The record does not hold the process
+  environment, so `Sys.setenv` and `Sys.unsetenv` rows read it back in
+  their `extra` cases; a zero-length `Sys.getenv` (the whole environment)
+  is not generated, because the R_* and harness variables differ. Such rows default to 150 cases. `render.R`, run in any R ≥ 4, names the
   first field that differs, for display only.
 - **Environment:** both runtimes run in this environment, which is part of
   the cache key:
@@ -165,11 +212,21 @@ robigo-rt's builtins with GNU R 4.6.2's on generated inputs, out of process.
   - `names`: an attribute written on the shared argument;
   - `abs`: a panic;
   - `set.seed`: one more draw;
-  - `nzchar`: printed output.
+  - `nzchar`: printed output;
+  - `assign`: a second binding in an environment that is neither the
+    global one nor the value;
+  - `do.call`: one more call of the function (the log, and the warnings
+    a warning fixture gives);
+  - `Sys.getenv`: a file left in the working directory.
+
+  A plant on a builtin the driver itself calls (`assign`, `do.call`,
+  `Sys.getenv`) trips only on a case's own call, whose first argument is
+  the symbol `a1`.
 
   Each must fail in its own field, the panic must cost only its own cases,
   and the control must not change. `ci`, rt-ci.py's step, runs
-  `check-rows`, then `run`, then `plant`.
+  `check-rows`, then `run`, then `plant`; `plant` reuses `run`'s results
+  for the planted and control rows, so only the plant binary runs them again.
 
 ### Timezone fixtures
 
@@ -757,6 +814,46 @@ scripts/counters.py check -v   # every fixture in the ast, vm and jit tiers
 - Performance: CI compares every pull request with `main`'s instruction
   counts for the commit it is built on (the benchmarks its paths select).
 
+### `.requires` tags: what each case needs and why
+
+A `.requires` file holds only tags; the harness splits it on whitespace and
+rejects an unknown token, so it cannot hold a reason. The reasons are here,
+one row per tagged case. A case is tagged only when its recording depends on
+what the mode gives up, never because it fails there (a case that gives a
+different value under a mode whose change is unobservable is a finding).
+The tags with no table yet (`volume`, `default-vsize`, `promise-identity`,
+`bytecode-fidelity`, `r-home-tools`) are described by
+`robigo_conformance::KNOWN_FEATURES`.
+
+**`inplace-identity`**: the recording depends on GNU R writing an object in
+place. The case is not run under `ROBIGO_NO_INPLACE=1`; the old runtime,
+which has no such mode, always runs it.
+
+| case | why the recording needs in-place writes |
+|---|---|
+| tests/r/conditions/replacement-rebind-in-handler.R | `class<-` writes the target in place before the handler sees it (0023e17f2) |
+| tests/r/conditions/replacement-warning-binding.R | `class<-`/`storage.mode<-` clear the class of the target's own value before the coercion warns, so the handler prints it declassed; when the target is shared, applydefine's `evalseq` → `EnsureLocal` first rebinds it to a duplicate, which is then written in place (#1026) |
+| tests/r/lang/replacement-chain-root.R | the inner `$<-` of `a[[i]]$c <- v` updates `a[["b"]]` in place, so the index, evaluated again for the outer setter, reads the new value; with the inner list shared GNU R prints the old one (#1026) |
+| tests/rt/assign/link-walk.R | a builtin's arguments hold no link while it runs, so a pending value is written in place (eval.c's node stack, INCLNK_stack_commit) |
+| tests/rt/assign/link-walk-eval-call.R | `eval` of a call that rewrites itself: the call, referenced only by its binding, is written in place and `{` evaluates the new element |
+| tests/rt/assign/link-walk-subset.R | `[[`'s default runs a calling handler that writes the list it reads; the write is made in place and `[[` reads it |
+| tests/rt/capi/inplace-identity.R | a native observer compares the object bound before and after each write (`rt_assign_copies`) |
+| tests/rt/capi/dispatch-inplace.R | the same observer on a method's write to an argument only the generic's promise references |
+| tests/rt/capi/link-lifetime.R | the same observer on when stack links end (STARTASSIGN, INCLNKSTK) |
+
+**`collection-schedule`**: the recording depends on where collections
+happen. The case is not run under gctorture (`ROBIGO_GCTORTURE=1`, a
+collection at every allocation) or retry torture
+(`ROBIGO_RETRY_TORTURE=1`, one at every build); the old runtime, which has
+neither, always runs it.
+
+| case | why the recording depends on collections |
+|---|---|
+| tests/rt/memory/gcinfo-on.R | collections between the two `gcinfo` calls report on stderr |
+| tests/rt/alloc/near-vector-limit.R | which limit error ends the requests depends on GNU R's collection schedule: a collection moves AdjustHeapSize's heap growth (also `volume`, `default-vsize`) |
+| tests/r/cli/exit-warnings.R | an unreferenced environment's exit finalizer warns at exit after `.Last()`; a collection before exit runs it earlier, so its warning comes first (GNU R 4.6.2 under `gctorture(TRUE)` prints that order too) |
+| tests/r/memory/gctorture.R | `gctorture()` returns the previous torture state, which the mode itself has turned on |
+
 ## Unsafe code
 
 `docs/architecture.md` has the rules; the compiler and clippy enforce them
@@ -798,16 +895,64 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    unreadable diff runs everything. `scripts/test-ci-select.py` checks the mapping.
    It also makes sure the CI image for this tree exists (below) and hands
    its references to the other jobs.
-2. **lint:** `cargo fmt --check` and `scripts/lint.sh`.
+2. **lint:** `scripts/lint-job.sh`, the job's only command: `cargo fmt
+   --check`, `scripts/lint.sh` (clippy and the Sexp rule), and the tooling's
+   script suites (test_corpus, test-oracle-diff, test-check-sexp-safety,
+   test-wall13, test-pgo-build, test-prune-target, test-scratch,
+   test-rt-bc-mutate).
+   **Before pushing, run `scripts/lint-job.sh`**: a green run is a green lint
+   job. `scripts/test-rt-ci.py` checks that the workflow runs the script and
+   nothing else, and that this list names every suite the script runs.
    **miri:** `RString` and the `Rc` alias writes (§ Unsafe code).
    **bytecode-fidelity:** bytecode metadata and GNU bytecode fixtures. These
    jobs do not depend on the release binary and still run when a pull request
    skips the heavy jobs.
    **counters:** its own quick build with `--features counters` and the
    counter gate (§ Counter gate); a heavy job, skipped with the others.
-   **rt:** G3's runtime crates (`scripts/rt-ci.py`): it checks that no other
+   **rt, rt-gctorture, rt-feature-builds, rt-builtin-diff,
+   rt-debug-assertions, rt-release-crate-tests:** G3's runtime crates
+   (`scripts/rt-ci.py`), its steps in six parallel jobs, one shard each
+   (`--shard modes|gctorture|feature-builds|builtin-diff|debug-assertions|release-crate-tests`,
+   rt-ci.py's `SHARDS`, which says what each runs). Without `--shard` a
+   local run is every step but those two last shards', which build apart:
+   `--shard debug-assertions` (debug assertions on, in the target directory
+   plus `-debug-assertions`) and `--shard release-crate-tests` (the crates'
+   tests on the full release profile, as main's push runs do; pull requests
+   skip that job). **The crates' own tests build in the `quick` profile**
+   (release's opt-level, no LTO, 256 codegen units: about 7 times faster to
+   build, the same run time); everything that judges the binary users get
+   stays on `--release`: every conformance step and mode, the boot_db step,
+   lazyload, the scripts that run the binary, the builtin differential, perf
+   (the crate tests that spawn the binary, alloc, front_end, sigint, cli,
+   spawn the quick one). A
+   crate-test failure that only release's codegen shows is found on main,
+   within one main run of its merge. Each job builds what its steps need
+   and prints its steps' times at the end of its log, against its budget
+   (rt-ci.py's `BUDGETS`: a measured time plus 20%, with a warning at 90%);
+   its timeout is twice the budget, and `Check` needs all six. Every
+   conformance step also writes each case's wall time (the runner's
+   `ROBIGO_CONF_TIMES_REPORT`, a file per step under `RT_CI_TIMES_DIR`, kept
+   as the job's `rt-case-times-*` artifact) and lists the cases over half
+   their limit, report-only: such a case is named with an allowance and its
+   time, or made smaller. rt-ci.py stops at its start, exit 2, when cargo's
+   target directory or TMPDIR has under 8 GB free (`RT_CI_MIN_FREE_GB`
+   overrides it; 0 turns it off). **Local runs share one machine-wide
+   pool of case slots** (`ROBIGO_CONF_SLOTS_DIR`, one per CPU or
+   `ROBIGO_CONF_SLOTS`; `scripts/conf_slots.py`): every local rt-ci run of
+   the user, and every builtin-diff run, uses
+   `$XDG_RUNTIME_DIR/robigo-conf-slots` (else
+   `/tmp/robigo-conf-slots-<uid>`). The caller's own value wins, empty
+   means no pool, and CI has none. A conformance case and a builtin-diff
+   robigo-rt driver process each hold a slot from before they start until they end,
+   and their time limits count from then, so a wait for a slot is never a
+   case's time. A crate-test step takes one slot, then whatever else is
+   free, and runs with that many `--test-threads`, but never fewer than 4
+   (rt-ci.py's `CRATE_TEST_MIN_THREADS`; it does not wait for more slots). Not pooled: builtin-diff's
+   GNU R side (in its container), perf.py,
+   base-subset.sh, corpus.py, and cargo tests run by hand. Together
+   they run every step: rt-ci.py checks that no other
    workspace member depends on them (the premise of `rt` mode; it fails at
-   the flip, when the rule must go), then runs their `cargo test --release`
+   the flip, when the rule must go), then runs their `cargo test`
    and the same under `ROBIGO_GCTORTURE=1`, with robigo-rt's conformance
    (`RT` column, § Oracles) as a step of its own between them, and again
    under each observation mode (`docs/g3.md` §15.3 E5, §16):
@@ -832,7 +977,25 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    criteria (`docs/g3.md` §15.3): the conformance again under gctorture and
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there; a case whose `.requires` names `volume` is left out, for a
-   smaller one that covers its paths), `scripts/rt-stress.sh` (E3: the stress script in fresh
+   smaller one that covers its paths; under gctorture the boot heap's
+   freeze is checked with `ROBIGO_GC_FREEZE_CHECK=16,16`: the direct loop
+   at every 16th collection, a full check, I2, I3 and the comparison with
+   the independent trace, at each process's freezing collection and every
+   16th check after, the step failing if none ran; the check names a
+   marking defect only at a full check, so an E3 failure with an
+   unexplained error under the freeze is rerun with
+   `ROBIGO_GC_FREEZE_CHECK=1` before anything else: a child marked but not
+   traced, planted under the interim boot, failed 37 of 40 cases there and
+   the check named none, docs/ledger/g3/2026-11-21-h-boot-freeze-check.md's
+   note of 2026-11-24). Those steps, and the retry torture's,
+   torture each case but not its start: `ROBIGO_TORTURE_AFTER_START=1` holds
+   gctorture, `ROBIGO_GC_MOVE`'s moves and `ROBIGO_RETRY_TORTURE` until the
+   start is over. That variable is a test hook, not a GNU R setting: GNU R
+   reads `R_GCTORTURE` in InitMemory and tortures its whole start, and
+   robigo-rt refuses the variable at its start when no torture mode is set.
+   The start keeps two steps of its own, M1's loader and the rdb boot, each
+   under `ROBIGO_GC_MOVE=1` and gctorture from the heap's creation. Then
+   `scripts/rt-stress.sh` (E3: the stress script in fresh
    processes; the ledger's runs take 30 per profile),
    `scripts/rt-overshoot.py` (E4: every slice's overshoot against max(32
    MiB, 10% of the live heap)), the conformance under a small vector limit
@@ -846,9 +1009,14 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    under `ROBIGO_RETRY_TORTURE=1` (E9's refusal at every build: the first
    allocation of every `&Cx` build refused once, so each build's retry
    runs), in a build with robigo-rtcore's `retry-torture` feature made for
-   that step alone, so every step before it tests the binary users get
+   the last steps alone, so every step before them tests the binary users get
    (`docs/ledger/g3/2026-11-17-retry-torture-ci.md`; with the moving
-   collector as well it is a run by hand, `docs/g3.md` §16). Every pull
+   collector as well it is a run by hand, `docs/g3.md` §16); in the same
+   build, robigo-rt's tests and the conformance under
+   `ROBIGO_POISON_DEAD=1` (C1-PZ: a dead slot, a register after its last
+   use or a slot a scope's restore freed, holds a poison naming where it
+   died, and a read of it panics; `tests/poison.rs` plants an early clear
+   and checks that it is caught). Every pull
    request but a docs-only one runs it, and with it **base-subset**:
    `scripts/base-subset.sh --check` inside the GNU R 4.6.2 oracle image
    (robigo-rt's checked-in base subset is what this tree traces: its
@@ -872,6 +1040,96 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
 
    The artifact keeps the full diffs and the two transcripts. The modes of
    `docs/g3.md` §16 add steps here.
+
+   **Steps under M1's loader, INTERIM(L5).** Three things run under
+   `ROBIGO_RT_BOOT=m1` rather than the default rdb boot. Each must pass
+   there, and each blocks the deletion of M1's loader
+   (`docs/ledger/g3/2026-11-23-l5-flip.md`).
+
+   - **The young:16 step** (`ROBIGO_GC_MOVE=young:16` with gctorture, the
+     freeze off). H's statement:
+
+     > The young:16 step (ROBIGO_GC_MOVE=young:16 with gctorture, the freeze
+     > off) runs under M1's loader, not the default rdb boot. Under rdb the
+     > unfrozen boot heap (42k objects: base and the compiler) is marked at
+     > every collection, five cases exceed their allowances, and its cost
+     > scales with the boot heap, not with N. So per PR, boot objects are
+     > moved under M1's boot only; under rdb, boot objects are moved only
+     > during the start, by the per-PR start-torture step (the rdb boot
+     > under ROBIGO_GC_MOVE=1 and gctorture from the heap's creation);
+     > after the start nothing moves them, per PR or nightly, until the
+     > nightly gains an rdb full-move step over the cases that fit. When
+     > M1's loader is deleted, this step needs one of: young:16 with the
+     > freeze on after the heap work that lets the mover and the frozen set
+     > compose (giving up per-PR moves of boot objects), or young
+     > collections that skip old objects (the sticky-mark design, parked in
+     > the collector-cost page).
+
+     The measurements, on the flip's gate binary (a4e44f022) at load 22-45:
+     - Under rdb, five cases timed out.
+       `tests/r/memory/finalizers-self-ref-envs.R` ran its full 1,200 s.
+       `tests/r/memory/auto-cycles.R`, `tests/r/lang/tailcall-frames.R`,
+       `tests/r/lang/exec-tail-frames.R` and
+       `tests/r/jit/loop-closed-form-super.R` each ran 600 s of 600 s.
+     - `tailcall-frames.R` alone, in the step's exact environment: under
+       m1 the whole run is 882.7 G `instructions:u` (about 2 minutes, its
+       output GNU R's). Under rdb it passed 3,803.1 G in 1,215 s without
+       printing its first line, and was stopped there.
+
+   - **E4's `benchmarks/rt/mem/strings1e6.R`.** E4
+     (`scripts/rt-overshoot.py`) runs every program under the default boot,
+     but those its `BOOTS` names, each with the boot and the reason,
+     printed with the step's table. Only this program
+     (`x <- paste0("u", 1:1000000)`) is named.
+
+     Under both boots it has one collection, at paste0's return. By then
+     rdb has allocated 51,826 more objects, the boot heap. So the node
+     trigger falls about 52k CHARSXPs earlier inside paste0's loop. paste0
+     has no safepoint until it returns, so what it allocates after the
+     trigger is overshoot. GNU R collects inside the loop, because its
+     allocVector collects anywhere.
+
+     | boot | max overshoot | bound |
+     |---|---:|---:|
+     | m1 | 31,631,328 bytes | 33,554,432 |
+     | rdb, eval | 34,116,528 bytes | 33,554,432 |
+     | rdb, bc | 34,046,544 bytes | 33,554,432 |
+
+     The entry goes when paste0's string loop collects. The program must
+     then pass under rdb.
+
+   - **The nightly's two modes**, `--full-move` and `--freeze-check`, as
+     before the flip. `scripts/rt-ci.py --full-move` under rdb, on the
+     flip's branch (e7e91b767, load 28-38), ran 29.4 minutes in all.
+     765 of 794 cases passed. 18 ratcheted cases timed out, none with a
+     wrong output:
+     - `tests/r/memory/finalizers-self-ref-envs.R` at its 1,200 s
+       allowance;
+     - 17 at 600 s:
+       - `tests/r/basics/frame-self-cycles.R`
+       - `tests/r/conditions/c-stack-overflow.R`
+       - `tests/r/conditions/eval-depth-limit.R`
+       - `tests/r/jit/loop-closed-form-super.R`
+       - `tests/r/jit/loop-vectors.R`
+       - `tests/r/jit/native-closures-lists.R`
+       - `tests/r/jit/native-closures-setindex.R`
+       - `tests/r/jit/native-closures-state.R`
+       - `tests/r/jit/nested-arith-args.R`
+       - `tests/r/lang/exec-tail-frames.R`
+       - `tests/r/lang/tailcall-frames.R`
+       - `tests/r/memory/auto-cycles.R`
+       - `tests/rt/jit/serialize-write.R`
+       - `tests/rt/memory/freeze-phase1-parent.R`
+       - `tests/rt/rng/rngkind.R`
+       - `tests/rt/rng/set-seed.R`
+       - `tests/rt/stress/finalizer-depths.R`
+
+     The cause is the young:16 step's: every collection moves a live heap
+     that holds base and the compiler. `--freeze-check` under rdb was not
+     measured. A1's runner PR 3 adds an rdb `--full-move` step over the
+     cases that pass, with a named skip list and its reason, and
+     `--freeze-check` under rdb over what fits.
+
 3. **build:** release build, base-package natives, the binary the heavy
    jobs use; the ratchet markers, the parse-corpus ratchet and the builtin
    coverage baseline (`scripts/builtin-coverage.py --check`) are checked
@@ -939,6 +1197,51 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         binaries, and GNU R's side, get the same shifts. The 0.5% rule
         applies to the median, and the report gives the range over the
         shifts (`docs/ledger/g3/2026-11-17-address-rows.md`).
+      - **The rows' boot:** CI's rows and peak-RSS runs measure both
+        binaries under `--boot rdb`, the default boot, each from the trees
+        its own build wrote: `perf.py rt-bars --trees`/`--main-trees` (the
+        tarballs perf-rt-build packs), through `rt-startup.py`'s
+        `trees_home`, the one function `rt-starts` uses. Without them
+        (locally) each binary's trees are built from this checkout's
+        sources. A binary whose trees lack its boot's tree (`BOOT_TREES`)
+        is refused by name before anything is measured.
+      - **Peak RSS against its caps:** each row's margin under every cap
+        is printed, and a margin under 5% (`RSS_MARGIN_WARN`) is warned
+        of, never failed: the next change that grows it fails the bar.
+      - **The starts** (`[[startup]]` in `m1-bars.toml`, `perf.py rt-starts`, a
+        step of its own in perf-rt with its own JSON):
+        - each robigo-rt start (interim, rdb-jit, the default, and the
+          others), with its boot named for both binaries, is measured at 15
+          heap layouts: a home path 35 to 133 characters long, with glibc
+          malloc's `top_pad`, the same for both binaries;
+        - instructions are the mean over them, in a fixed environment (`scripts/rt-startup.py`,
+          `docs/ledger/g3/2026-11-23-startup-layout.md`);
+        - against main: instructions +0.5%; memory as the peak of malloc'd
+          bytes (DHAT's t-gmax, exact; robigo-heap's chunks included; one
+          run at the first shift) +max(0.5%, 16 KiB); peak RSS +5%.
+          The anonymous peak (physical pages, which glibc's placement moves
+          by tens of KiB) and robigo-heap's own peak in use are reported
+          only.
+
+        Tables built at a start are pre-sized; a start that steps by ~80k
+        instructions is realloc/memcpy until shown otherwise.
+        `scripts/rt-startup.py --robigo-rt BIN --trees --reallocs [--starts
+        interim,rdb-jit]` lists each start's top growth reallocs (callgrind
+        `--separate-callers`, realloc's inclusive cost by the function that
+        grew the buffer, as a share of the start): the functions to
+        pre-size.
+      - **No collection in a row's window:** every row runs once at N and
+        once at 2N before it is measured, and robigo-rt must collect 0
+        times in both. A row whose work collects by design is marked
+        `collects = true` (the jit rows), and `rt-bars` warns when such a
+        row's counts differ from main's. An allocating row sizes the heap
+        of both sides with `heap = { R_VSIZE = "..." }`. GNU R's counts
+        are reported beside robigo-rt's, not enforced
+        (`docs/ledger/g3/2026-11-23-row-collections.md`).
+      - **No failing row:** the same runs refuse a row whose script exits
+        non-zero or prints an R error (a line starting `Error`) on either
+        side, by name, before anything is measured, `collects = true` or
+        not.
       - **The binaries:** `rt-bars`, `idiom-vs-r.py` and `rss.py` name every
         binary they measure, in the report and the JSON: its sha256, GNU
         build ID and modification time, and the checkout's `git describe`

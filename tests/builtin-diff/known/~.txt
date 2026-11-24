@@ -1,0 +1,2 @@
+# builtin-diff known failures: ~, seed 0, key a940350140c1fd4eda9b7110
+# ~: 65 / 65 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

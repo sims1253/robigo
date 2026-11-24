@@ -4,9 +4,15 @@
 # time, so a checkout whose files are older than another checkout's build
 # would reuse that build. The crates and build scripts read this variable
 # (option_env!, rerun-if-env-changed), so cargo rebuilds them when the
-# last build came from another checkout, and only then.
+# last build came from another checkout, and only then. `force`: this
+# checkout's path even when the shell exports another value (cargo's [env]
+# does not override an exported variable otherwise): an exported value left
+# from another checkout would stay the same across both checkouts' builds,
+# and cargo would reuse the other's (docs/ledger/g3/2026-11-23-shared-target-builds.md).
+# robigo-heap's build script refuses a build where it is unset (cargo run
+# outside the checkout) or names another checkout.
 [env]
-ROBIGO_WORKTREE = { value = "", relative = true }
+ROBIGO_WORKTREE = { value = "", relative = true, force = true }
 
 # Resolve crates.io versions published at least a week ago; Cargo.lock
 # keeps what it has (registry.global-min-publish-age, Rust 1.100).

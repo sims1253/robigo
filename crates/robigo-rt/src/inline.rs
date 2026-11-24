@@ -12,7 +12,7 @@
 //! would force them, from the caller's expressions.
 //!
 //! The run keeps GNU R's counts as the real call keeps them: the entry's
-//! depth and `bcEval` poll count, each force's counts ([`early_force`]),
+//! depth and `bcEval` poll count, each force's counts ([`crate::early::early_force`]),
 //! the evaluation points, `R_Visible`. It gives up before anything
 //! observable: a count that would poll, the depth limit, a slow path (an
 //! error, a warning, a coercion), a value it cannot read without running
@@ -45,7 +45,7 @@
 #![allow(unsafe_code)]
 
 use crate::code::View;
-use crate::early::{early_force, read, symbol};
+use crate::early::{early_force_ast, read, symbol};
 use crate::ir::*;
 use crate::ops;
 use crate::vm::Act;
@@ -552,10 +552,18 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
     }
     let mut regs = [Slot::EMPTY; MAX_ARG_REGS];
     let mut pc = 0;
+    // (ROBIGO_POISON_DEAD: as in `body_loop`)
+    let mut last = None;
     while pc < v.nins {
+        if let Some((li, at)) = last.take() {
+            crate::early::poison_deaths(&mut regs, &li, at);
+        }
         // SAFETY: `pc` is below the code's instruction count.
         let i = unsafe { v.at(pc) };
         pc += 1;
+        if robigo_rtcore::poison_dead() {
+            last = Some((i, pc - 1));
+        }
         if i.fl & (F_TICK | F_DEPTH) != 0 {
             return None;
         }
@@ -563,7 +571,9 @@ unsafe fn pure<S: Scope + ?Sized>(cx: &Cx, code: Sexp, scope: &S) -> Option<Slot
             debug_assert!((x as usize) < MAX_ARG_REGS);
             // SAFETY: an operand register of the code, below its register
             // count and so below MAX_ARG_REGS (checked above).
-            Some(unsafe { *regs.get_unchecked(x as usize) })
+            let s = unsafe { *regs.get_unchecked(x as usize) };
+            s.check_live();
+            Some(s)
         };
         let w = match i.op {
             // SAFETY: constants of the live code object.
@@ -889,8 +899,10 @@ unsafe fn base_guard(cx: &Cx, log: &WriteLog, call: Sexp, rho: Sexp) -> Option<b
 
 /// `setVar(sym, x, rho)` (`<<-`, `rho` the frame's enclosure), buffered:
 /// `x` boxed as the VM's `set_var` boxes it (no collection: a box refused
-/// gives up), the binding found, the write logged ([`WriteLog`]); then
-/// R_Visible off. The box, which the register holds from then on.
+/// gives up), the binding found, the write logged ([`WriteLog`]);
+/// R_Visible as the value left it (bcEval's SETVAR2: a tail `<<-`'s
+/// invisibility is the code's `SetVis` or `Ret`). The box, which the
+/// register holds from then on.
 ///
 /// # Safety
 /// `sym` is a symbol constant of live code and `rho` a live environment.
@@ -904,7 +916,6 @@ unsafe fn super_assign(cx: &mut Cx, log: &WriteLog, sym: Sexp, x: Slot, rho: Sex
     // SAFETY: the caller's contract; the box is fresh, and nothing
     // collects.
     unsafe { log.write(cx, sym, rho, obj)? };
-    cx.set_visible(false);
     Some(obj)
 }
 
@@ -1274,10 +1285,16 @@ unsafe fn body_loop<const FUSED: bool>(
     let mut regs = [Slot::EMPTY; MAX_REGS];
     let slack = fr.limit - fr.depth;
     let mut pc = 0;
+    // (ROBIGO_POISON_DEAD: the instruction just run, whose deaths are made
+    // before the next reads; no fused steps, which make none)
+    let mut last = None;
     loop {
+        if let Some((li, at)) = last.take() {
+            crate::early::poison_deaths(&mut regs, &li, at);
+        }
         // SAFETY: the table has one byte per instruction, and the steps it
         // indexes.
-        let k = if FUSED { unsafe { *kinds.add(pc) } } else { 0 };
+        let k = if FUSED && !robigo_rtcore::poison_dead() { unsafe { *kinds.add(pc) } } else { 0 };
         if k != 0 {
             // SAFETY: as above.
             let s = unsafe { *steps.add(k as usize - 1) };
@@ -1300,6 +1317,9 @@ unsafe fn body_loop<const FUSED: bool>(
         // jump targets are instructions of the code.
         let i = unsafe { v.at(pc) };
         pc += 1;
+        if robigo_rtcore::poison_dead() {
+            last = Some((i, pc - 1));
+        }
         if i.fl & (F_TICK | F_DEPTH) != 0 {
             // (eval's count, polled past 1000: given up before the poll)
             if i.fl & F_TICK != 0 {
@@ -1319,6 +1339,7 @@ unsafe fn body_loop<const FUSED: bool>(
             // SAFETY: an operand register of the code, below its register
             // count and so below MAX_REGS (the caller's contract).
             let s = unsafe { *regs.get_unchecked(x as usize) };
+            s.check_live();
             (s != Slot::EMPTY).then_some(s)
         };
         let w = match i.op {
@@ -1363,7 +1384,11 @@ unsafe fn body_loop<const FUSED: bool>(
                             // the force, at the reading point's depth
                             cx.set_eval_depth(fr.depth + i.d as i32);
                             // SAFETY: a live expression of the caller's code.
-                            if !early_force(cx, true, unsafe { e.typ() } == LANGSXP) {
+                            let t = unsafe { e.typ() };
+                            // (never a byte-code object: CallCodes does
+                            // not reach the inliner)
+                            debug_assert_ne!(t, BCODESXP);
+                            if !early_force_ast(cx, true, t == LANGSXP) {
                                 return None;
                             }
                             let x = fr.caller.eval(cx, e)?;
@@ -1382,9 +1407,8 @@ unsafe fn body_loop<const FUSED: bool>(
             }
             Op::SetVar => {
                 // `defineVar` into the frame's slot (the VM's `set_var`: a
-                // scalar stays unboxed there), then R_Visible off
+                // scalar stays unboxed there), R_Visible as it was
                 fr.args[i.f as usize - 1] = Arg::Value(r(i.a)?);
-                cx.set_visible(false);
                 continue;
             }
             Op::Jmp => {
@@ -1568,17 +1592,14 @@ unsafe fn body_loop<const FUSED: bool>(
                     }
                     Slot::logical(x)
                 } else {
-                    let x1 = r(i.a)?.as_int()?;
-                    // R: logic.c:do_logic2
-                    Slot::logical(if x1 != ops::NA_LOGICAL {
-                        x
-                    } else if i.c == 1 {
-                        if x == ops::NA_LOGICAL || x != 0 { ops::NA_LOGICAL } else { x }
-                    } else if x == ops::NA_LOGICAL || x == 0 {
-                        ops::NA_LOGICAL
-                    } else {
-                        x
-                    })
+                    // R: eval.c:bcEval's AND2ND/OR2ND, as the VM's arm: the
+                    // second operand's value replaces the first's where it
+                    // decides (`&&`: FALSE or NA; `||`: not FALSE), and the
+                    // first's stays otherwise, unread: what AND1ST left
+                    // there, or in byte code from elsewhere whatever is
+                    // there (#976). The store below writes it back as it was.
+                    let decides = if i.c == 1 { x == 0 || x == ops::NA_LOGICAL } else { x != 0 };
+                    if decides { Slot::logical(x) } else { r(i.a)? }
                 }
             }
             Op::Return => return r(i.b),
@@ -1607,7 +1628,12 @@ unsafe fn body_loop<const FUSED: bool>(
         };
         // (the ops whose F_VIS the VM honours after their value; GetVar's
         // is set before its read)
-        if vis && matches!(i.op, Op::LdConst | Op::Arith | Op::Arith1 | Op::Relop | Op::Not | Op::Logic) {
+        if vis
+            && matches!(
+                i.op,
+                Op::LdConst | Op::Arith | Op::Arith1 | Op::Relop | Op::Not | Op::Logic | Op::AndOr1 | Op::AndOr2
+            )
+        {
             cx.set_visible(true);
         }
         debug_assert!((i.a as usize) < MAX_REGS);
@@ -2086,7 +2112,7 @@ unsafe fn fused(
 /// `GetVar` of slot `k` of an inlined frame (its symbol `sym`, read at the
 /// evaluation point of depth `d`): a value; a default forced (its entry
 /// safepoint, `eval`'s count, R_Visible); the caller's expression forced
-/// at the reading point's depth ([`early_force`]'s counts); or, for a local
+/// at the reading point's depth ([`crate::early::early_force`]'s counts); or, for a local
 /// not assigned yet, the enclosure's binding. None: the run gives up.
 ///
 /// # Safety
@@ -2118,7 +2144,10 @@ unsafe fn slot_read(cx: &mut Cx, fr: &mut Frame<'_>, k: usize, sym: Sexp, d: u16
             // the force, at the reading point's depth
             cx.set_eval_depth(fr.depth + d as i32);
             // SAFETY: a live expression of the caller's code.
-            if !early_force(cx, true, unsafe { e.typ() } == LANGSXP) {
+            let t = unsafe { e.typ() };
+            // (never a byte-code object: CallCodes does not reach the inliner)
+            debug_assert_ne!(t, BCODESXP);
+            if !early_force_ast(cx, true, t == LANGSXP) {
                 return None;
             }
             let x = fr.caller.eval(cx, e)?;
@@ -2189,7 +2218,9 @@ unsafe fn shape_of(v: &View) -> ArgShape {
     // SAFETY: the caller's contract: instructions and constants of the code.
     unsafe {
         let none = ArgShape { kind: A_NONE, ..ArgShape::default() };
-        if v.profile != Profile::Bc || v.nregs > MAX_ARG_REGS {
+        // (ROBIGO_POISON_DEAD: a shape drops the code's clears; `pure` runs
+        // it with them)
+        if v.profile != Profile::Bc || v.nregs > MAX_ARG_REGS || robigo_rtcore::poison_dead() {
             return none;
         }
         let ins: Vec<Ins> =

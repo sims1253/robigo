@@ -67,6 +67,23 @@ pub const F_NAMES: u8 = 32;
 /// inner call's expressions, unevaluated (names.c's eval column Z = 0).
 pub const SPECIAL_INTERNAL: u16 = u16::MAX - 1;
 
+/// Declare [`Op`] and [`Op::ALL`] from one list of its operations, so
+/// [`Op::from_u8`]'s decode table cannot miss one (#979's bot).
+macro_rules! operations {
+    ($(#[$m:meta])* pub enum Op { $($(#[$vm:meta])* $v:ident,)* }) => {
+        $(#[$m])*
+        pub enum Op {
+            $($(#[$vm])* $v,)*
+        }
+
+        impl Op {
+            /// Every operation, in discriminant order: [`Op::from_u8`]'s table.
+            pub const ALL: [Op; [$(Op::$v),*].len()] = [$(Op::$v),*];
+        }
+    };
+}
+
+operations! {
 /// The operations. Operand fields of [`Ins`]: `a` is the destination (or
 /// the source of a store), `b` and `c` operands, `e`, `f` constant-pool
 /// indices; a jump target is `(f, g)` as one `u32` ([`Ins::target`]).
@@ -127,14 +144,17 @@ pub enum Op {
     Logic,
     /// `&&` (`c` = 1) / `||` (2), first operand: `a <- asLogical2(b)` with
     /// do_logic2's checks for the call `consts[e]`; jump to `(f, g)` when it
-    /// decides the result (`&&` FALSE, `||` TRUE).
+    /// decides the result (`&&` FALSE, `||` TRUE). [`F_VIS`] on either
+    /// path, as bcEval's AND1ST sets R_Visible jumping or not.
     AndOr1,
     /// `&&` / `||`, second operand `b`: `a <- combine(a, b)`.
     AndOr2,
     /// `a <- function(formals = consts[e]) body = consts[f]` in `rho`
     /// (`mkCLOSXP`). With `c` (not 0) the closure is compiled code made by
     /// compiled code (`MAKECLOSURE`): its code is `consts[c]`; with `g` 1
-    /// it is base's installed byte code (compiled at its first call).
+    /// it is base's installed byte code (compiled at its first call). With
+    /// `b` (not 0) its "srcref" attribute is `consts[b]` (keep.source = TRUE:
+    /// the `function` call's 4th element, MAKECLOSURE's constant's third).
     MkClosure,
     /// `quote(consts[e])`: `a <- consts[e]`, marked not mutable.
     Quote,
@@ -270,8 +290,9 @@ pub enum Op {
     /// `consts[e]` (the `{` call at its start, else the cell of the
     /// statement just done), with the value so far in `b` ([`NO_REG`]:
     /// none, NULL), each statement evaluated by `eval` at depth `d`: `a <-`
-    /// its value, and a jump to `(f, g)`, past the `{`'s own code. Byte
-    /// code has none: GNU R's keeps running.
+    /// its value, and a jump to `(f, g)`, past the `{`'s own code; `c` 1:
+    /// the statement done was an assignment, invisible should it be the
+    /// last. Byte code has none: GNU R's keeps running.
     Resume,
     /// A loop iteration boundary in the `Eval` profile (§9.3): when a write
     /// into the code's source has made this code stale, the iteration is
@@ -305,6 +326,7 @@ pub enum Op {
     /// L5; docs/ledger/g3/2026-11-17-v4-2-promise-code.md).
     CallCodes,
 }
+}
 
 /// [`Op::Math1`]'s kinds past `math1funs`' indices.
 pub const MATH_SQRT: u16 = 100;
@@ -327,6 +349,17 @@ pub enum Effect {
     /// May run code, signal, store or collect: committed exactly once, in
     /// order.
     Any,
+}
+
+impl Op {
+    /// The operation whose discriminant is `x`, or None: how an
+    /// instruction read from outside the process (the translation cache,
+    /// `crate::tcache`) is decoded, never by reinterpreting its bytes.
+    pub const fn from_u8(x: u8) -> Option<Op> {
+        // (from ALL, so a new operation is decodable exactly when it is
+        // listed there, under its own number: the test checks the order)
+        if (x as usize) < Op::ALL.len() { Some(Op::ALL[x as usize]) } else { None }
+    }
 }
 
 impl Op {
@@ -393,6 +426,18 @@ pub enum Profile {
 }
 
 /// A code object's header, the first bytes of its instruction blob.
+/// [`Header::marks`]: the code is one variable read and its return,
+/// nothing else, `[GetVar a=R_FIRST, Ret b=R_FIRST]` of the `Bc` profile (a
+/// byte-code promise of a plain symbol). [`crate::eval`]'s single-read path
+/// runs it with no activation ([`crate::code::single_read`]).
+pub const MARK_SINGLE_READ: u8 = 1;
+/// [`Header::marks`]: every instruction is one `crate::early`'s evaluator
+/// runs without running code (constant loads, variable reads, arithmetic,
+/// `Ret`), within its registers: an argument of this code may be computed
+/// early ([`crate::code::early_pure`]); without the mark it never is, and
+/// nothing is read to find that out.
+pub const MARK_EARLY_PURE: u8 = 2;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Header {
@@ -407,7 +452,9 @@ pub struct Header {
     /// With an `inline` verdict of yes: the closure's formals (the first
     /// slots of its shape; locals follow).
     pub inline_formals: u8,
-    pub _pad: [u8; 1],
+    /// What `build` found the code to be, decided once ([`MARK_SINGLE_READ`],
+    /// [`MARK_EARLY_PURE`]).
+    pub marks: u8,
     /// Registers of an activation, the fixed ones included.
     pub nregs: u32,
     /// Instructions after the header.
@@ -431,3 +478,20 @@ const _: () = assert!(size_of::<Header>() == 32 && size_of::<Header>() <= INS_OF
 
 /// The instructions start at this byte offset of the blob (16-aligned).
 pub const INS_OFFSET: usize = 32;
+
+#[cfg(test)]
+mod op_tests {
+    use super::Op;
+
+    // Op::from_u8 decodes every discriminant, in order, and nothing past
+    // the last
+    #[test]
+    fn from_u8_round_trips() {
+        for (i, &op) in Op::ALL.iter().enumerate() {
+            assert_eq!(op as u8 as usize, i);
+            assert_eq!(Op::from_u8(i as u8), Some(op));
+        }
+        assert_eq!(Op::from_u8(Op::ALL.len() as u8), None);
+        assert_eq!(Op::from_u8(u8::MAX), None);
+    }
+}

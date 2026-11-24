@@ -1,0 +1,2 @@
+# builtin-diff known failures: assign, seed 0, key 624f43403d720eafc697cad4
+# assign: 1207 / 1207 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

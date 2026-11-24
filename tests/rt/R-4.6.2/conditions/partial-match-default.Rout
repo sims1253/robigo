@@ -1,0 +1,5 @@
+[1] 1
+[1] 2
+Error in f(a = 3) : 
+  (converted from warning) partial argument match of 'a' to 'abc'
+[1] "partialMatchWarning" "warning"             "condition"          

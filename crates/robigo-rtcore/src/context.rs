@@ -504,8 +504,9 @@ impl Rec {
 /// The isolate's context state: the chain's ends and the globals GNU R
 /// saves in a record when it is pushed and restores when an exit stops at
 /// it (`begincontext`, `R_restore_globals`). Part of the isolate's roots
-/// (its `Trace` walks the chain); every field is a `Cell`, read and written
-/// one call at a time.
+/// (its `Trace` walks the chain); every field is a `Cell` (the detached
+/// segments' list a `RefCell`, borrowed for a push or a copy, never across
+/// a call), read and written one call at a time.
 pub(crate) struct Contexts {
     /// R_GlobalContext
     pub(crate) global: Cell<*mut Context>,
@@ -513,6 +514,13 @@ pub(crate) struct Contexts {
     pub(crate) toplevel: Cell<*mut Context>,
     /// R_ExitContext (null: none)
     pub(crate) exit_context: Cell<*mut Context>,
+    /// The innermost record of each segment [`Cx::reset_to_session`] cut
+    /// off the chain, in order (a `.Last` may call `quit()` again): the
+    /// records from each down to the base are no longer walked as contexts
+    /// but are still traced, since state the reset kept (R_ExitContext, a
+    /// parked exit) can still reach their fields. The segments are
+    /// disjoint: each holds records pushed after the one before was cut.
+    detached: std::cell::RefCell<Vec<*mut Context>>,
     /// R_Toplevel, the session's base record (freed with the isolate)
     base: NonNull<Context>,
     /// Where the Rust drivers' records live (`records.rs`): not traced
@@ -599,6 +607,7 @@ impl Contexts {
             global: Cell::new(base.as_ptr()),
             toplevel: Cell::new(base.as_ptr()),
             exit_context: Cell::new(null_mut()),
+            detached: std::cell::RefCell::new(Vec::new()),
             base,
             records: Records::new(),
             nil,
@@ -641,6 +650,31 @@ impl Contexts {
         Rec(self.base)
     }
 
+    /// Every record a collection traces: the chain's, then those
+    /// [`Cx::reset_to_session`] cut off it, down to (not again) the base.
+    fn traced(&self) -> impl Iterator<Item = Rec> + use<> {
+        let base = self.base.as_ptr();
+        let heads = self.detached.borrow().clone();
+        // (each segment ends where it links to the base, as the chain
+        // does; a null link before it is a corrupted segment)
+        let segments = heads.into_iter().flat_map(move |mut c| {
+            std::iter::from_fn(move || {
+                if c == base {
+                    return None;
+                }
+                let Some(p) = NonNull::new(c) else {
+                    debug_assert!(false, "robigo: a detached context segment does not reach the base");
+                    return None;
+                };
+                let r = Rec(p);
+                debug_assert!(!r.poisoned(), "robigo: a popped context record is in a detached segment");
+                c = r.nextcontext();
+                Some(r)
+            })
+        });
+        self.chain().chain(segments)
+    }
+
     /// Every record from the innermost to the base, hidden ones included.
     pub(crate) fn chain(&self) -> impl Iterator<Item = Rec> + use<> {
         let mut c = self.global.get();
@@ -667,7 +701,7 @@ impl Contexts {
         f(self.srcref.get());
         f(self.bc_expr.get());
         f(self.early_frame.get());
-        for r in self.chain() {
+        for r in self.traced() {
             let mut v = Collect(&mut f);
             // SAFETY: nothing else touches the record during the call (the
             // collector only uses the edges it is shown, and `f` cannot pop
@@ -715,7 +749,7 @@ impl Trace for Contexts {
         let mut x = self.early_frame.get();
         v.edge(&mut x);
         self.early_frame.set(x);
-        for r in self.chain() {
+        for r in self.traced() {
             // SAFETY: a collection has the isolate's roots exclusively, and
             // records are read and written only by their owners, C code and
             // collections, never at the same time as one (no record is
@@ -923,6 +957,11 @@ impl<'g> CtxRef<'g> {
         let x = self.rec.cloenv();
         crate::env::recycle::mark_escaped(x);
         self.obj(x)
+    }
+    /// Whether the record's environment is `env`: a comparison, which reads
+    /// no frame as a value (no escape mark, unlike [`CtxRef::cloenv`]).
+    pub fn cloenv_is(self, env: Ref<'_>) -> bool {
+        self.rec.cloenv() == env.sexp()
     }
     /// The caller's environment, as a value (marked escaped, as
     /// [`RecordRef::cloenv`]).
@@ -1538,6 +1577,15 @@ impl Cx {
                         Arrival::Pass(e) => return Err(e),
                         Arrival::Landed(e) => {
                             let rec = cx.take_exit(e);
+                            if rec.info.kind == crate::ExitKind::Exec {
+                                match cx.land_exec(c, rec.value, eval, slot) {
+                                    Ok(exec) => return Err(exec),
+                                    Err(e) => {
+                                        res = Err(e);
+                                        continue;
+                                    }
+                                }
+                            }
                             c.set_return_value(rec.value);
                             res = Ok(());
                         }
@@ -1568,6 +1616,29 @@ impl Cx {
             Some(res) => self.with_record_in(res, &init, run),
             None => self.with_record(&init, run),
         }
+    }
+
+    /// An [`crate::ExitKind::Exec`] exit that landed in function record `c`
+    /// (taken: `value`, its continuation): the record ends as for a `return` of the
+    /// continuation (its
+    /// `returnValue`; `do_tailcall` jumps only when the record has no
+    /// `on.exit` code), and the exit is pending again, its continuation
+    /// rooted in `slot`, the call's out slot, with no target: the record's
+    /// caller runs it (robigo-rt's `args::apply`). `Err` is an exit out of
+    /// the record's end, which the record's loop handles as any other.
+    #[cold]
+    #[inline(never)]
+    fn land_exec(&mut self, c: Rec, value: Sexp, eval: &mut OnExitEval<'_>, slot: Root<'_>) -> RResult<RError> {
+        c.set_return_value(value);
+        self.ctxs().srcref.set(c.srcref());
+        self.end_function(c, eval)?;
+        let v = c.return_value();
+        let out = slot.reset(self);
+        // SAFETY: the record's returnValue is traced and nothing collected
+        // since it was read.
+        out.set(self, unsafe { Ref::from_sexp(v, self) });
+        let info = crate::ExitInfo { kind: crate::ExitKind::Exec, mask: 0, target: 0 };
+        Ok(self.exit(crate::Exit { info, value: Some(slot), condition: None, call: None }))
     }
 
     /// Box the unboxed scalar in slot `slot` (a double, integer or logical)
@@ -1845,6 +1916,16 @@ impl Cx {
         self.exit(crate::Exit { info, value, condition: None, call: None })
     }
 
+    /// `Exec`/`Tailcall`'s jump to the function record `target`, carrying
+    /// the continuation `value` (eval.c's `do_tailcall`: `R_jumpctxt(
+    /// R_GlobalContext, CTXT_FUNCTION, val)`): an [`crate::ExitKind::Exec`]
+    /// exit, which lands there as a `return` does and is then pending again
+    /// for the record's caller ([`Cx::function_context_raw`]).
+    pub fn exec_to(&mut self, target: ContextId, value: Root<'_>) -> RError {
+        let info = crate::ExitInfo { kind: crate::ExitKind::Exec, mask: ctxt::FUNCTION, target: target.addr() };
+        self.exit(crate::Exit { info, value: Some(value), condition: None, call: None })
+    }
+
     /// GNU R's `findcontext(mask, env, val)`: `break`/`next` (a `LOOP`
     /// mask) to the innermost loop record of `env`, or `return` (a
     /// `FUNCTION` or `BROWSER` mask) to the innermost record of that type
@@ -1963,6 +2044,38 @@ impl Cx {
         // SAFETY: R_ToplevelContext is always a live record of the chain.
         let rec = Rec(unsafe { NonNull::new_unchecked(self.ctxs().toplevel.get()) });
         CtxRef { rec, cx: self }
+    }
+
+    /// `R_GlobalContext = R_ToplevelContext = R_SessionContext =
+    /// &R_Toplevel` (R_dot_Last's first line, main.c, as `quit()` runs it):
+    /// the chain cut back to the session's base record. The records above
+    /// it leave the chain but stay in their owners' slots, still traced (a
+    /// collection keeps their objects and rewrites their fields): no
+    /// context walk sees them (`sys.calls`, an exit's search for its
+    /// target: an exiting handler whose function is among them finds "no
+    /// function to return from"), but what GNU R keeps pointing at them
+    /// still reads them (`R_ExitContext`: `returnValue()` in a `.Last` that
+    /// `on.exit(quit())` runs). The condition stacks are kept, as in GNU R.
+    ///
+    /// # Safety
+    /// The caller never lets an owner of a record that was above the base
+    /// run again (pop it, return to it) on any path out of what it does
+    /// after the reset, unwinding included: it ends the process first
+    /// (`repl::clean_up` runs everything after the reset under a guard
+    /// whose normal end is `exit` and which turns a panic into `abort`; a
+    /// nested quit() resets again inside it and ends the process itself).
+    /// Records pushed after the reset are pushed and popped as usual.
+    // R: main.c:R_dot_Last
+    pub unsafe fn reset_to_session(&self) {
+        let st = self.ctxs();
+        let base = st.base().0.as_ptr();
+        // (a second reset, quit() from a .Last that quit() runs, cuts the
+        // records pushed since the first: a new segment, the first kept)
+        if st.global.get() != base {
+            st.detached.borrow_mut().push(st.global.get());
+        }
+        st.global.set(base);
+        st.toplevel.set(base);
     }
 
     /// The session's base record (`R_Toplevel`, `R_SessionContext`).

@@ -13,8 +13,6 @@ use robigo_rtcore::types::*;
 use robigo_rtcore::{Cx, Encoding, NeedGc, RResult, RSym, Ref, Root, Safepoint, Scope, Sexp};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
-/// GNU R's `MAXIDSIZE` (Defn.h).
-const MAXIDSIZE: usize = 10000;
 /// `R_XLEN_T_MAX` (Rinternals.h).
 const R_XLEN_T_MAX: isize = 4503599627370496;
 
@@ -84,9 +82,9 @@ fn alloc_vector(cx: &mut Cx, s: Scope<'_>, t: c_uint, n: isize) -> RResult<Sexp>
         CPLXSXP => 16,
         STRSXP | EXPRSXP | VECSXP => 8,
         _ => {
-            let msg =
-                format!("invalid type/length ({}/{n}) in vector allocation", robigo_rtbuiltins::util::type2char(t8));
-            return Err(cx.error(&msg));
+            // (the caller's code, not t8: a code over 255 is named as given)
+            let name = robigo_rtbuiltins::util::type2char_warn(cx, t)?;
+            return Err(cx.error(&format!("invalid type/length ({name}/{n}) in vector allocation")));
         }
     };
     let n = n as usize;
@@ -162,12 +160,7 @@ fn install(cx: &mut Cx, s: Scope<'_>, name: &[u8]) -> RResult<Sexp> {
     if let Some(y) = cx.find_symbol(name) {
         return Ok(y.as_ref().sexp());
     }
-    if name.is_empty() {
-        return Err(cx.error("attempt to use zero-length variable name"));
-    }
-    if name.len() > MAXIDSIZE {
-        return Err(cx.error(&format!("variable names are limited to {MAXIDSIZE} bytes")));
-    }
+    robigo_rtbuiltins::text::check_install_name(name).map_err(|m| cx.error(&m))?;
     alloc(cx, s, |cx| Ok(cx.install(name)?.as_ref()))
 }
 

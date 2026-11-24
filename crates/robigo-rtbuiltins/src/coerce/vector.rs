@@ -31,20 +31,34 @@ pub const WARN_INT_NA: u8 = 2;
 pub const WARN_IMAG: u8 = 4;
 pub const WARN_RAW: u8 = 8;
 
-/// The warnings a coercion gives, in GNU R's order: each entry is one
-/// `CoercionWarning(warn)` call's bits.
+/// The warnings a coercion gives, in GNU R's order.
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
-pub struct Warns(Vec<u8>);
+pub struct Warns(Vec<Warn>);
+
+/// One warning of a coercion's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Warn {
+    /// One `CoercionWarning(warn)` call's bits.
+    Bits(u8),
+    /// A `warning(msg)` of its own (`installTrChar`'s "unable to translate
+    /// '%s' to native encoding").
+    Message(String),
+}
 
 impl Warns {
     pub fn new() -> Warns {
         Warns(Vec::new())
     }
 
+    /// A `warning(msg)` of its own at this point.
+    pub fn push_message(&mut self, msg: String) {
+        self.0.push(Warn::Message(msg));
+    }
+
     /// `CoercionWarning(warn)` at this point (nothing for 0).
     pub fn push(&mut self, warn: u8) {
         if warn != 0 {
-            self.0.push(warn);
+            self.0.push(Warn::Bits(warn));
         }
     }
 
@@ -59,8 +73,11 @@ impl Warns {
 
     /// Give the warnings, as `warning()` (the context's call).
     pub fn signal(&self, cx: &mut Cx) -> RResult<()> {
-        for &w in &self.0 {
-            coercion_warning(cx, w)?;
+        for w in &self.0 {
+            match w {
+                &Warn::Bits(b) => coercion_warning(cx, b)?,
+                Warn::Message(m) => cx.warning(m)?,
+            }
         }
         Ok(())
     }
@@ -399,6 +416,66 @@ fn coerce_error(v: Ref<'_>, ty: u8) -> String {
 /// false skips the `SHALLOW_DUPLICATE_ATTRIB` of the atomic conversions,
 /// for a caller that clears them after (`CLEAR_ATTRIB`).
 // R: coerce.c:coerceVector
+/// allocVector's `intCHARSXP` (memory.c), a type it allocates although no
+/// object has it.
+const INTCHARSXP: u8 = 73;
+
+/// The error of `coercePairList`'s and `coerceVectorList`'s vectorizable
+/// branch (`fun`) for a target other than the atomic types it fills, or None
+/// for those. GNU R allocates `allocVector(type, n)` first, so:
+/// - a type it cannot allocate gets its "invalid type/length" error (an
+///   unnamed code's name is type2char's "unknown type #N");
+/// - CHARSXP gets its defunct error;
+/// - a type it allocates but the switch does not fill (a call, NULL,
+///   intCHARSXP) gets UNIMPLEMENTED_TYPE.
+// R: coerce.c:coercePairList, coerce.c:coerceVectorList, memory.c:allocVector3
+fn vectorizable_refusal(ty: u8, n: usize, fun: &str, v: Ref<'_>) -> Option<String> {
+    Some(match ty {
+        LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP => return None,
+        CHARSXP => "use of allocVector(CHARSXP ...) is defunct\n".into(),
+        LANGSXP | NILSXP | INTCHARSXP => unimplemented_type(fun, v),
+        _ => format!("invalid type/length ({}/{n}) in vector allocation", type2char(ty)),
+    })
+}
+
+/// Whether [`coerce`]`(v, ty)` ends in an error that names `ty` through
+/// `type2char`, as GNU R's does for a target no type names: the C API's
+/// `coerceVector` then gives type2char's warning before it. It follows
+/// [`coerce`]'s dispatch, and is false where that returns or errors before
+/// naming the target:
+/// - a source of that type;
+/// - a package ALTREP vector or an S4 object, which robigo-rt does not
+///   coerce yet;
+/// - an environment ("environments cannot be coerced to other types");
+/// - a vectorizable pairlist or list to a type allocVector accepts but
+///   coercePairList/coerceVectorList does not fill: UNIMPLEMENTED_TYPE.
+///
+/// (compact ALTREP coerces only to types with a name.)
+// R: coerce.c:coerceVector, coerce.c:coercePairList, memory.c:allocVector3
+pub fn error_names_target(v: Ref<'_>, ty: u8) -> bool {
+    let t = v.sexptype();
+    if t == ty || v.is_package_altrep() || (v.is_s4() && t == OBJSXP) || t == ENVSXP {
+        return false;
+    }
+    if matches!(ty, LANGSXP | NILSXP | INTCHARSXP) {
+        let mut items = Vec::new();
+        if matches!(t, NILSXP | LISTSXP) {
+            let mut c = v.as_cons();
+            while let Some(cell) = c {
+                items.push(cell.car());
+                c = cell.cdr().as_cons();
+            }
+        } else if t == VECSXP {
+            let l = v.as_vector::<Ref<'_>>().unwrap();
+            items.extend((0..l.len()).map(|i| l.get(i)));
+        } else {
+            return true;
+        }
+        return !vectorizable(&items);
+    }
+    true
+}
+
 pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Coerced<'g>, NeedGc> {
     let t = v.sexptype();
     if t == ty {
@@ -706,10 +783,18 @@ fn coerce_to_symbol<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
     if v.len().unwrap_or(0) == 0 {
         return fail(format!("invalid data of mode '{}' (too short)", type_to_char(v)));
     }
+    let mut w = Warns::new();
     let s = string_elt(cx, v, 0, &mut Vec::new())?;
-    // installTrChar(NA_STRING) is the symbol `NA`
-    let sym = cx.install(s.bytes())?;
-    done(sym, Warns::new())
+    // installTrChar(ans) (of NA_STRING: the symbol `NA`)
+    let (name, untranslated) = match crate::text::install_tr_name(crate::coerce::text(s), cx.locale()) {
+        Ok(r) => r,
+        Err(d) => return Ok(Built::fail(d)),
+    };
+    if let Some(m) = untranslated {
+        w.push_message(m);
+    }
+    let sym = cx.install_tr(s, &name)?;
+    done(sym, w)
 }
 
 /// GNU R's `isVectorizable(s)`: NULL, or a list or pairlist whose elements
@@ -825,8 +910,8 @@ fn coerce_pairlist<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>, Ne
             Err(m) => return fail(m),
         }
     } else if pairs && vectorizable(&items) {
-        if !matches!(ty, LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
-            return fail(unimplemented_type("coercePairList", v));
+        if let Some(m) = vectorizable_refusal(ty, items.len(), "coercePairList", v) {
+            return fail(m);
         }
         from_scalars(cx, &items, ty, &a, &mut w)?
     } else {
@@ -877,8 +962,8 @@ fn coerce_vector_list<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>,
             Err(m) => return fail(m),
         }
     } else if v.sexptype() == VECSXP && vectorizable(&items) {
-        if !matches!(ty, LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) {
-            return fail(unimplemented_type("coerceVectorList", v));
+        if let Some(m) = vectorizable_refusal(ty, items.len(), "coerceVectorList", v) {
+            return fail(m);
         }
         from_scalars(cx, &items, ty, &a, &mut w)?
     } else {

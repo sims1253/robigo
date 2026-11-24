@@ -130,6 +130,86 @@ pub(crate) struct EnvState {
     /// the binding locks (never adding one)
     #[trace(skip = "a counter")]
     building_base: Cell<u32>,
+    /// The environments `makeLazy` gave base's promises before the boot
+    /// boundary ([`EnvState::note_lazy_frame`]): roots until the boundary
+    /// hands them to the heap as its pinned frames.
+    lazy_frames: UnsafeCell<Vec<Sexp>>,
+    /// Base's own file (`library/base/R/base`) is being read
+    /// ([`Cx::while_reading_base_file`]): only its `makeLazy` records a frame.
+    #[trace(skip = "a flag")]
+    reading_base_file: Cell<bool>,
+}
+
+impl EnvState {
+    /// The global environment, raw: the freeze leaves it out.
+    pub(crate) fn global_raw(&self) -> Sexp {
+        self.global
+    }
+
+    /// The base environment, raw.
+    pub(crate) fn base_raw(&self) -> Sexp {
+        self.base
+    }
+
+    /// The empty environment, raw.
+    pub(crate) fn empty_raw(&self) -> Sexp {
+        self.empty
+    }
+
+    /// The freeze roots this state holds (robigo-heap's `freeze.rs`): the
+    /// fixed environments, the namespace registry, and each symbol's base
+    /// value and `.Internal`. Not a symbol's global cache, which can point
+    /// at a binding cell of the global environment (Sol S2), and not the
+    /// session's state: the global environment, the pending forces, the
+    /// call residues, the frame pool.
+    pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        for x in [&mut self.base, &mut self.empty, &mut self.base_ns, &mut self.ns_registry] {
+            v.edge(x);
+        }
+        self.cells.get_mut().trace_freeze_values(v);
+    }
+
+    /// The base namespace (immortal, never frozen).
+    pub(crate) fn base_ns_raw(&self) -> Sexp {
+        self.base_ns
+    }
+
+    /// Whether base's own file is being read.
+    pub(crate) fn reading_base_file(&self) -> bool {
+        self.reading_base_file.get()
+    }
+
+    /// Base's own file starts or stops being read.
+    pub(crate) fn set_reading_base_file(&self, on: bool) {
+        self.reading_base_file.set(on);
+    }
+
+    /// Record `env`, the environment `makeLazy` gave base's promises (the
+    /// rdb boot's `..lazyLoad` frame, baseloader.R:78), until the boot
+    /// boundary hands it to the heap as a pinned frame
+    /// ([`EnvState::lazy_frames`]): a counted exemption that roots nothing
+    /// (a forced promise's PRENV clear over it takes no note while another
+    /// of base's promises still uses it; robigo-heap's
+    /// `Core::freeze_boundary`, step 2's (b)).
+    pub(crate) fn note_lazy_frame(&self, env: Sexp) {
+        // SAFETY: between R calls; nothing else borrows the list.
+        let frames = unsafe { &mut *self.lazy_frames.get() };
+        if !frames.contains(&env) {
+            frames.push(env);
+        }
+    }
+
+    /// The recorded lazy-load frames, for the boot boundary.
+    pub(crate) fn lazy_frames(&self) -> Vec<Sexp> {
+        // SAFETY: as in `note_lazy_frame`.
+        unsafe { (*self.lazy_frames.get()).clone() }
+    }
+
+    /// The boundary took the frames: the heap keeps them from now on.
+    pub(crate) fn clear_lazy_frames(&self) {
+        // SAFETY: as in `note_lazy_frame`.
+        unsafe { (*self.lazy_frames.get()).clear() }
+    }
 }
 
 const INIT: &str = "robigo: the isolate's environments";
@@ -186,6 +266,8 @@ impl EnvState {
                 pool: recycle::FramePool::default(),
                 search_epoch: Cell::new(0),
                 building_base: Cell::new(0),
+                lazy_frames: UnsafeCell::new(Vec::new()),
+                reading_base_file: Cell::new(false),
                 dirty_image: Cell::new(false),
             }
         }
@@ -258,6 +340,12 @@ impl EnvState {
     unsafe fn set_internal(&self, s: Sexp, x: Sexp) {
         // SAFETY: as in `cell_mut`.
         unsafe { (*self.cells.get()).set_internal(sym::id_of(s), x) }
+    }
+
+    /// Drop the frame pool's frames (the boot heap's lazy freeze's
+    /// boundary: [`super::recycle::FramePool::clear_pool`]).
+    pub(crate) fn clear_frame_pool(&self) {
+        self.pool.clear_pool();
     }
 
     /// Every object this state roots directly ([`Cx::for_each_root`]): the
@@ -805,6 +893,11 @@ impl Loc {
                         }
                         (old, pending)
                     });
+                    // a base binding is a freeze root: a frozen value
+                    // rebound away leaves the frozen graph (the
+                    // frozen-reachability pass, robigo-heap's freeze.rs)
+                    // (the old value is null or live)
+                    robigo_heap::note_overwritten(old);
                     if tracks && old != new {
                         if !old.is_null() && !pending {
                             old.decref();
@@ -1419,6 +1512,28 @@ impl Cx {
             let ignored = s.out(cx);
             cx.eval(expr, base, ignored)
         })
+    }
+
+    /// GNU R's `R_GetVarLocValue(cell) == v` when reading `cell` runs no
+    /// code: Some for a binding cell holding a plain object, None for
+    /// anything else (an active binding, a frame slot), which the caller
+    /// reads with [`Cx::var_loc_value`]. No value is read as one.
+    // R: envir.c:R_GetVarLocValue
+    pub fn var_loc_holds(&self, cell: Root<'_>, v: Ref<'_>) -> Option<bool> {
+        let c = cell.bind(self);
+        if c.sexptype() != LISTSXP {
+            return None;
+        }
+        self.iso().check_owns(c.sexp());
+        let l = Loc::cell(c.sexp());
+        let iso = self.iso();
+        // SAFETY: a rooted binding cell of this isolate; its fields read.
+        unsafe {
+            if matches!(l.at(), At::FrameSlot(_)) || l.bits(iso) & ACTIVE_BINDING != 0 {
+                return None;
+            }
+            Some(l.raw(iso) == v.sexp())
+        }
     }
 
     /// The value of a binding found under `&Cx`, written to `out`: an
@@ -2479,6 +2594,36 @@ impl Cx {
         })
     }
 
+    /// GNU R's `BuiltinNames(1, intern, ...)`: the installed symbols, in the
+    /// symbol table's walk order ([`sym::for_each_installed`]), that have a
+    /// base binding (`intern` false) or an `.Internal` (`intern` true), as a
+    /// list of the symbols.
+    // R: envir.c:BuiltinNames, BuiltinSize
+    pub fn builtin_symbols(&mut self, intern: bool, out: Out<'_>) -> RResult<()> {
+        self.build(out, |cx| {
+            let iso = cx.iso();
+            let mut syms = Vec::new();
+            // SAFETY: the core is reached for this walk only (the closure
+            // reads the isolate's symbol cells, not the core); each `s` is
+            // an installed (immortal, live) symbol of this heap.
+            unsafe {
+                sym::for_each_installed(iso.core(), |s| {
+                    let keep =
+                        if intern { !iso.envs().internal(s).is_null() } else { !iso.envs().cell(s).value.is_null() };
+                    if keep {
+                        syms.push(s);
+                    }
+                });
+            }
+            let mut ans = cx.alloc_vector::<Ref<'_>>(syms.len())?;
+            for (i, &s) in syms.iter().enumerate() {
+                // SAFETY: as above.
+                ans.set(i, unsafe { Ref::from_sexp(s, cx) });
+            }
+            Ok(ans.finish().into())
+        })
+    }
+
     /// `env.profile()`'s numbers for a hashed environment (`R_HashProfile`):
     /// the table's size, `HASHPRI`, and each chain's length. None for an
     /// environment without a table.
@@ -3054,6 +3199,30 @@ impl Cx {
         }
     }
 
+    /// The frame shape slot frame `rho` was made with (the symbols of a
+    /// closure code object's frame, [`Cx::frame_slot_raw`]'s `shape`): Some
+    /// only for a live shape vector, None for any other frame (one with no
+    /// shape, R_NilValue, among them).
+    ///
+    /// The result is unrooted: valid only until the next safepoint (a
+    /// collection may move it, like any object), so a caller that may
+    /// collect re-reads it from the rooted frame after every safepoint,
+    /// as each attempt of a retried build does.
+    ///
+    /// # Safety
+    /// `rho` is a live environment of this isolate.
+    #[inline]
+    pub unsafe fn frame_shape_raw(&self, rho: Sexp) -> Option<Sexp> {
+        // SAFETY: the caller's contract; a slot frame's shape word.
+        unsafe {
+            if !layout::is_slots(rho) || rho.is_object() {
+                return None;
+            }
+            let shape = layout::get(rho, layout::OFF_SHAPE);
+            (shape.typ() == robigo_heap::types::VECSXP).then_some(shape)
+        }
+    }
+
     /// The binding of slot `index` of `rho`'s own frame, read directly
     /// when `rho` is a slot frame of shape `shape` (the frame of the
     /// closure whose code was compiled for that shape), or of another
@@ -3191,6 +3360,82 @@ impl Cx {
             }
             let (kind, bits) = value.kind_bits();
             frame::store_scalar(sl, kind, bits);
+            sl.set_missing(0);
+            true
+        }
+    }
+
+    /// [`Cx::define_var`] of the object `value` into slot `index` of `rho`'s
+    /// own frame, done directly when the slot takes it, by
+    /// [`Cx::frame_store_scalar_raw`]'s rule (a slot frame of shape `shape`
+    /// or keying that slot by the same symbol; a value, boxed or not,
+    /// neither locked, assignment-pending nor aliased; or unbound in an
+    /// unlocked frame). The steps are `defineVar`'s for such a slot: the
+    /// global cache and special-symbol bits, the frame's version bumped when
+    /// the old value or the new one is function-like, a new binding's stamp
+    /// (`ls()` order), then the counted, barriered store (the old object's
+    /// count dropped) and `SET_MISSING(binding, 0)`. False (nothing stored)
+    /// otherwise: the caller defines the value the long way.
+    ///
+    /// # Safety
+    /// As for [`Cx::frame_slot_raw`]; `sym` is the symbol of slot `index`;
+    /// `value` a live object of this isolate (R_UnboundValue: false).
+    // R: envir.c:defineVar (a frame's existing or free binding)
+    #[inline]
+    pub unsafe fn frame_store_object_raw(&self, rho: Sexp, shape: Sexp, index: usize, sym: Sexp, value: Sexp) -> bool {
+        // SAFETY: the caller's contract: `rho` is a live environment.
+        unsafe { self.note_write(rho) };
+        let iso = self.iso();
+        // (R_UnboundValue, which a native routine can return: define_var's
+        // error, envir.c:defineVar)
+        if value == iso.unbound {
+            return false;
+        }
+        // SAFETY: the caller's contract; the store goes through the frame's
+        // barrier and counts, as `define_var`'s does.
+        unsafe {
+            if !layout::is_slots(rho) || rho.is_object() {
+                return false;
+            }
+            if layout::get(rho, layout::OFF_SHAPE) != shape {
+                std::hint::cold_path();
+                if !keyed_as(rho, shape, index) {
+                    return false;
+                }
+            }
+            debug_assert!(index < shape.std_len() as usize, "robigo: a slot index past its shape");
+            let sl = SlotRef { owner: rho, index };
+            debug_assert_eq!(sl.sym(), sym, "robigo: a slot store's symbol is not its slot's");
+            let k = sl.kind();
+            let fast = match k {
+                VALUE | REAL | INT | LGL => sl.meta() & (META_LOCKED | META_PENDING | META_ALIASED) == 0,
+                UNBOUND => rho.gp() & FRAME_LOCK == 0,
+                _ => false,
+            };
+            if !fast {
+                return false;
+            }
+            if rho.gp() & GLOBAL_FRAME != 0 {
+                flush_global_cache(iso, sym);
+            }
+            if sym::is_special(sym) {
+                rho.set_gp(rho.gp() & !NO_SPECIAL_SYMBOLS);
+            }
+            if fn_like(iso, value) || (k == VALUE && fn_like(iso, sl.val())) {
+                bump(iso, rho);
+            }
+            // (`frame::store_value`'s two cases here, written out: a second
+            // caller would stop its inlining into `Loc::store`, `<<-`'s
+            // path, +13 instructions per superassign)
+            match k {
+                UNBOUND => frame::bind(rho, sl, sym, value, iso.nil),
+                VALUE => sl.store_val(value),
+                _ => {
+                    sl.clear_raw_val();
+                    sl.set_key(sym, VALUE);
+                    sl.store_val(value);
+                }
+            }
             sl.set_missing(0);
             true
         }

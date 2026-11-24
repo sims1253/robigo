@@ -1051,6 +1051,9 @@ dependencies = [
 [[package]]
 name = "robigo-conformance"
 version = "0.0.1"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "robigo-core"
@@ -1086,6 +1089,7 @@ version = "0.0.1"
 name = "robigo-rt"
 version = "0.0.1"
 dependencies = [
+ "cc",
  "flate2",
  "robigo-heap",
  "robigo-numerics",

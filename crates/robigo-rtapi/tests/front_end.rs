@@ -4,6 +4,17 @@
 use std::path::Path;
 use std::process::Command;
 
+#[path = "common/db_tree.rs"]
+mod db_tree;
+
+/// cargo's robigo-rt by its resolved path: the binary names itself by
+/// `current_exe()`, which on some systems keeps the spelling it was started
+/// by, on others resolves it (Linux), so the cases that read its own path
+/// back start it by the one spelling both give.
+fn rt_bin() -> std::path::PathBuf {
+    std::fs::canonicalize(env!("CARGO_BIN_EXE_robigo-rt")).expect("resolving robigo-rt's path")
+}
+
 /// `robigo-rt` with the environment `env` adds to one without `R_HOME`, the
 /// three directories, or the runtime's own controls that change what it
 /// writes or how it starts: rt-ci runs the tests under those, and they are
@@ -11,7 +22,7 @@ use std::process::Command;
 /// `ROBIGO_GC_STATS` and `ROBIGO_RT_BOOT`, filtering the `robigo gc: `
 /// report lines, so that its cases hold under the inherited modes.)
 fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::command_for(&rt_bin());
     for v in [
         "R_HOME",
         "R_SHARE_DIR",
@@ -21,10 +32,13 @@ fn front_end<V: AsRef<std::ffi::OsStr>>(env: &[(&str, V)]) -> Command {
         "ROBIGO_GC_STATS",
         "ROBIGO_BOOT_VERBOSE",
         "ROBIGO_RT_BOOT",
-        "ROBIGO_RT_CHECKOUT",
     ] {
         cmd.env_remove(v);
     }
+    // M1's loader (INTERIM(L5)): these cases test the front end's
+    // environment, which every boot sets the same, and M1's reads no tree
+    // (the default boot needs base's database tree)
+    cmd.env("ROBIGO_RT_BOOT", "m1");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
     // (cli.rs's `run`)
     if std::env::var_os("ROBIGO_GC_PIN_REPORT").is_some_and(|v| v == "1") {
@@ -66,7 +80,11 @@ fn normalized(p: &Path) -> std::path::PathBuf {
 #[test]
 fn r_home_defaults_to_the_checkout_s_tree() {
     let tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home");
-    let got = homes(&[]);
+    // the default itself: no checkout named (empty is unset), where every
+    // other spawn names its test tree's (db_tree.rs); under M1's loader the
+    // default is the build checkout's source tree, and no database tree is
+    // read
+    let got = homes(&[("ROBIGO_RT_CHECKOUT", "")]);
     assert!(Path::new(&got[0]).is_absolute(), "{got:?}");
     // compared lexically: the tree need not exist (a clean checkout)
     assert_eq!(normalized(Path::new(&got[0])), normalized(&std::path::absolute(tree).unwrap()), "{got:?}");
@@ -96,6 +114,22 @@ fn the_directories_are_the_tree_s() {
     assert_eq!(homes(&[("R_DOC_DIR", "/d"), ("R_SHARE_DIR", ""), ("R_INCLUDE_DIR", "/i")]), own);
 }
 
+/// `ROBIGO_RT_BOOT=m1` boots M1's loader (INTERIM(L5)), which reads no
+/// tree and loads no compiler at the start: GNU R's boot, the default,
+/// loads the compiler when the JIT is on (R_init_jit_enabled), so
+/// `loadedNamespaces()` tells the two apart.
+#[test]
+fn m1_boots_m1s_loader() {
+    let o = front_end(&[("ROBIGO_RT_BOOT", "m1"), ("R_ENABLE_JIT", "3")])
+        .args(["-e", "cat(loadedNamespaces(), '\\n')"])
+        .output()
+        .expect("running robigo-rt");
+    assert_eq!(
+        (String::from_utf8_lossy(&o.stdout).as_ref(), String::from_utf8_lossy(&o.stderr).as_ref(), o.status.code()),
+        ("base \n", "", Some(0))
+    );
+}
+
 /// Stage 0 reads base's source under robigo-rt's own tree: with none in
 /// the default place (no install's, and a checkout, `ROBIGO_RT_CHECKOUT`,
 /// whose tree is not made), it fails at start-up with GNU R's script's
@@ -120,4 +154,158 @@ fn stage0_says_a_missing_tree_is_missing() {
             dir.join(".robigo/rt-home").display()
         )
     );
+}
+
+/// `--help` answers without a tree, under every boot, as R's script
+/// answers it in its argument loop before it checks R_HOME: the usage on
+/// stdout, nothing on stderr, status 0.
+#[test]
+fn help_needs_no_tree() {
+    let dir = std::env::temp_dir().join(format!("robigo-rt-no-tree-help-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for boot in ["", "stage0", "m1"] {
+        let out = front_end(&[("ROBIGO_RT_CHECKOUT", dir.as_os_str()), ("ROBIGO_RT_BOOT", boot.as_ref())])
+            .arg("--help")
+            .output()
+            .expect("running robigo-rt");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.starts_with("Usage: robigo-rt "), "{boot:?}: {stdout:?}");
+        assert_eq!((String::from_utf8_lossy(&out.stderr).as_ref(), out.status.code()), ("", Some(0)), "{boot:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The default boot (ROBIGO_RT_BOOT unset or empty: base from its
+/// database) without a tree says so at start-up as stage 0 does, naming
+/// the database tree's script.
+#[test]
+fn the_default_boot_says_a_missing_tree_is_missing() {
+    let dir = std::env::temp_dir().join(format!("robigo-rt-no-db-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cmd = front_end(&[("ROBIGO_RT_CHECKOUT", dir.as_os_str())]);
+    cmd.env_remove("ROBIGO_RT_BOOT");
+    let out = cmd.args(["-e", "1"]).output().expect("running robigo-rt");
+    let _ = std::fs::remove_dir_all(&dir);
+    // (that error alone: nothing reads the tree's Renviron first, and the
+    // command that makes the tree names this binary)
+    assert_eq!(
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            out.status.code()
+        ),
+        (
+            String::new(),
+            format!(
+                "robigo-rt: R_HOME ('{}') not found: no installed tree (<prefix>/lib/robigo) has library/base/R/base, \
+                 and the checkout's is not made (scripts/rt-home-db.sh --robigo-rt {})\n",
+                dir.join(".robigo/rt-home-db").display(),
+                // (the path it was started by, rt_bin's; BIN for one that is
+                // not text, as the binary prints it)
+                rt_bin().to_str().map_or_else(|| "BIN".into(), db_tree::shell_word)
+            ),
+            Some(2)
+        )
+    );
+}
+
+#[test]
+fn a_panic_after_quit_s_context_reset_aborts_without_returning() {
+    use std::os::unix::process::ExitStatusExt;
+    // quit()'s R_CleanUp after R_dot_Last's context reset runs under a
+    // guard: a panic there (ROBIGO_PANIC_AFTER_RESET=1 makes one) ends the
+    // process with abort, never unwinding into the frames the reset
+    // abandoned: f()'s on.exit does not run
+    let mut cmd = front_end(&[("ROBIGO_PANIC_AFTER_RESET", "1")]);
+    cmd.args(["-e", "f <- function() { on.exit(cat('on.exit\\n')); quit('no', 3) }; f()"]);
+    let out = cmd.output().expect("running robigo-rt");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?} {err}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert!(err.contains("robigo: a panic after quit()'s context reset: aborting"), "{err}");
+}
+
+// (/dev/full is Linux's: the workspace's macOS runs, platforms.yml, would
+// not have it; robigo-heap's tests gate their Linux-only checks the same way)
+#[cfg(target_os = "linux")]
+#[test]
+fn a_panic_after_quit_s_context_reset_aborts_with_stderr_unwritable() {
+    use std::os::unix::process::ExitStatusExt;
+    // the same with stderr on /dev/full: the guard's own report cannot be
+    // written, and still nothing unwinds (f()'s on.exit writes to stdout)
+    let mut cmd = front_end(&[("ROBIGO_PANIC_AFTER_RESET", "1")]);
+    cmd.args(["-e", "f <- function() { on.exit(cat('on.exit\\n')); quit('no', 3) }; f()"]);
+    cmd.stderr(std::fs::File::options().write(true).open("/dev/full").expect("opening /dev/full"));
+    let out = cmd.output().expect("running robigo-rt");
+    assert_eq!(out.status.signal(), Some(libc::SIGABRT), "{:?}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
+/// `ROBIGO_TORTURE_AFTER_START=1`, the test hook that holds torture until
+/// the start is over: refused (exit 2) with no torture mode to hold, and
+/// gctorture read as the heap reads it (atoi: `1suffix` is a gap of 1), so
+/// the check agrees with what the heap will do.
+#[test]
+fn the_torture_hold_needs_a_mode_and_reads_gctorture_as_the_heap_does() {
+    let modes = ["R_GCTORTURE", "R_GCTORTURE_WAIT", "ROBIGO_GCTORTURE", "ROBIGO_GC_MOVE", "ROBIGO_RETRY_TORTURE"];
+    let run = |env: &[(&str, &str)]| {
+        let mut cmd = front_end(env);
+        for m in modes {
+            if !env.iter().any(|(k, _)| *k == m) {
+                cmd.env_remove(m);
+            }
+        }
+        cmd.args(["--vanilla", "-e", "cat(gctorture(), \"\\n\")"]).output().unwrap()
+    };
+    let refused = run(&[("ROBIGO_TORTURE_AFTER_START", "1")]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("no torture mode is set"));
+    // held through the start, armed for the script: gctorture is on there
+    let held = run(&[("ROBIGO_TORTURE_AFTER_START", "1"), ("R_GCTORTURE", "1suffix")]);
+    assert!(held.status.success(), "{}", String::from_utf8_lossy(&held.stderr));
+    assert_eq!(String::from_utf8_lossy(&held.stdout).trim(), "TRUE");
+    // and a value the heap reads as off is no mode
+    let off = run(&[("ROBIGO_TORTURE_AFTER_START", "1"), ("R_GCTORTURE", "0x5")]);
+    assert_eq!(off.status.code(), Some(2));
+}
+
+/// The spawns' private `HOME` is one per test process, so two runs of one
+/// test binary at once (two checkouts, one cargo target directory) never
+/// share or empty each other's: a new directory skips a name another
+/// process has, and the process's own is one path, made once, for every
+/// spawn.
+#[test]
+fn a_private_home_is_one_per_process_and_never_anothers() {
+    let parent = db_tree::unique_dir(Path::new(env!("CARGO_TARGET_TMPDIR")), "unique-dir-test");
+    let pid = std::process::id();
+    // (another process's, the same pid in another container)
+    std::fs::create_dir(parent.join(format!("home-{pid}-0"))).unwrap();
+    std::fs::write(parent.join(format!("home-{pid}-0")).join("theirs"), "").unwrap();
+    let a = db_tree::unique_dir(&parent, "home");
+    let b = db_tree::unique_dir(&parent, "home");
+    assert_eq!(
+        (a.file_name().unwrap(), b.file_name().unwrap()),
+        (std::ffi::OsStr::new(&format!("home-{pid}-1")), std::ffi::OsStr::new(&format!("home-{pid}-2")))
+    );
+    assert_eq!(std::fs::read_dir(&a).unwrap().count(), 0, "a new directory is empty");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o700, "the owner's alone");
+    }
+    // a parent that takes no directory: an error, and a HOME falls back to
+    // cargo's temporary directory
+    assert!(db_tree::try_unique_dir(Path::new("/proc"), "home").is_err());
+    let fallback = db_tree::home_in(Path::new("/proc"), "unique-dir-test-fallback");
+    assert_eq!(fallback.parent(), Some(std::path::absolute(env!("CARGO_TARGET_TMPDIR")).unwrap().as_path()));
+    std::fs::remove_dir(&fallback).unwrap();
+    assert!(parent.join(format!("home-{pid}-0")).join("theirs").exists(), "another's is untouched");
+    std::fs::remove_dir_all(&parent).unwrap();
+    // the process's own: the same path at every call, not made again
+    let home = db_tree::private_home();
+    std::fs::write(home.join("sentinel"), "").unwrap();
+    assert_eq!(db_tree::private_home(), home);
+    assert!(home.join("sentinel").exists(), "a later spawn keeps the process's HOME");
+    std::fs::remove_file(home.join("sentinel")).unwrap();
 }

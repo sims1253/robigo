@@ -1,3 +1,28 @@
+error[E0277]: `*const ()` cannot be shared between threads safely
+ --> tests/ui/env_writer_not_sync.rs:9:19
+  |
+9 |         need_sync(&w);
+  |         --------- ^^ `*const ()` cannot be shared between threads safely
+  |         |
+  |         required by a bound introduced by this call
+  |
+  = help: within `EnvWriter<'_>`, the trait `Sync` is not implemented for `*const ()`
+note: required because it appears within the type `clib::TzSessionLock`
+ --> src/clib.rs
+  |
+  | struct TzSessionLock {
+  |        ^^^^^^^^^^^^^
+note: required because it appears within the type `EnvWriter<'_>`
+ --> src/clib.rs
+  |
+  | pub struct EnvWriter<'a> {
+  |            ^^^^^^^^^
+note: required by a bound in `need_sync`
+ --> tests/ui/env_writer_not_sync.rs:4:17
+  |
+4 | fn need_sync<T: Sync>(_: &T) {}
+  |                 ^^^^ required by this bound in `need_sync`
+
 error[E0277]: `NonNull<Isolate>` cannot be shared between threads safely
  --> tests/ui/env_writer_not_sync.rs:9:19
   |

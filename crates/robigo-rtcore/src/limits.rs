@@ -48,6 +48,20 @@ pub const EXPR_SO: crate::ErrorCond<'static> = crate::ErrorCond {
     exit_only: false,
 };
 
+/// GNU R's message for its protect stack (errors.c, `PROT_SO_MSG`).
+pub const PROT_SO_MSG: &str = "protect(): protection stack overflow";
+
+/// `R_protectStackOverflowError` (errors.c:R_InitConditions): what a
+/// `PROTECT` past `R_PPStackSize` signals (`R_signal_protect_error`), with
+/// a NULL call.
+pub const PROT_SO: crate::ErrorCond<'static> = crate::ErrorCond {
+    class: "stackOverflowError",
+    subclass: Some("protectStackOverflowError"),
+    msg: PROT_SO_MSG.as_bytes(),
+    fields: &[],
+    exit_only: false,
+};
+
 /// `R_nodeStackOverflowError` (errors.c:R_InitConditions): what an R entry
 /// signals when robigo's value stack, GNU R's node stack, is full.
 pub const NODE_SO: crate::ErrorCond<'static> = crate::ErrorCond {
@@ -152,6 +166,19 @@ impl Cx {
         self.check_c_stack_extra(0)
     }
 
+    /// Whether `bytes` more of the C stack stay within `R_CStackLimit`: a
+    /// probe that signals nothing (a caller choosing a path that uses less
+    /// stack than one that checks).
+    pub fn c_stack_headroom(&self, bytes: usize) -> bool {
+        let st = self.ctxs();
+        let limit = st.cstack_limit.get();
+        if limit == usize::MAX {
+            return true;
+        }
+        let usage = c_stack_usage(st.cstack_start, st.cstack_dir);
+        isize::try_from(bytes).ok().and_then(|b| usage.checked_add(b)).is_some_and(|u| u <= limit as isize)
+    }
+
     /// `R_CheckStack2(extra)`: [`Cx::check_c_stack`] for a caller about to
     /// use `extra` more bytes.
     pub fn check_c_stack_extra(&mut self, extra: usize) -> RResult<()> {
@@ -250,18 +277,30 @@ impl Cx {
     /// `Ok` when a handler invoked the `resume` restart.
     pub fn check_user_interrupt(&mut self) -> RResult<()> {
         self.check_c_stack()?;
+        // R: errors.c:R_CheckUserInterrupt, onintrEx
+        if !self.take_user_interrupt() {
+            return Ok(());
+        }
+        let hook = self.iso().hooks.get().interrupt;
+        hook(self)
+    }
+
+    /// Take a pending user interrupt (a SIGINT [`note_sigint`] noted, or
+    /// [`Cx::set_interrupt_pending`]) unless interrupts are suspended,
+    /// without running the hook: true when there was one. The console's
+    /// read takes it so (sys-std.c's `handleInterrupt`, `onintrNoResume`).
+    #[inline]
+    pub fn take_user_interrupt(&mut self) -> bool {
         let st = self.ctxs();
         // handleInterrupt's R_interrupts_pending = 1, from the signal
         if SIGINT.load(Ordering::Relaxed) && SIGINT.swap(false, Ordering::Relaxed) {
             st.intr_pending.set(true);
         }
-        // R: errors.c:R_CheckUserInterrupt, onintrEx
         if st.intr_suspended.get() || !st.intr_pending.get() {
-            return Ok(());
+            return false;
         }
         st.intr_pending.set(false);
-        let hook = self.iso().hooks.get().interrupt;
-        hook(self)
+        true
     }
 
     /// The interrupt hook's default ([`crate::Hooks::interrupt`]): an exit

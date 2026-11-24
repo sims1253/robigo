@@ -31,8 +31,11 @@
 //! namespace on first use: it reads that form's bytes from the tree,
 //! parses and evaluates its right-hand side there (for a function literal,
 //! the closure GNU R stored, its environment the base namespace), and runs
-//! the forms that follow the definition. Loading reads no R file and runs
-//! no R code: the cost of a binding is paid by the process that uses it.
+//! the forms that follow the definition. Loading runs only the profile's
+//! forms whose effect depends on when they run (`boot`: the Autoloads
+//! environment GNU R's profile attaches, and `.AutoloadEnv`, at the point
+//! R_LoadProfile runs them); the cost of every binding is paid by the
+//! process that uses it.
 //!
 //! Every primitive and `.Internal` of GNU R 4.6.2 that robigo-rt does not
 //! implement is bound to a builtin that raises "robigo: ... is not
@@ -112,6 +115,13 @@ impl Bound {
 /// INTERIM(L5): the wide base, as generated.
 const WIDE: &str = include_str!("../proto/base-wide.txt");
 
+/// `Wide::parse`'s table sizes for [`WIDE`], by its lines' first words:
+/// [names (`def`, `block`, `unrun`: an upper bound, since a `seq` line
+/// extends the name before it), `skip`, `boot`, `c`, `subst`, `primitive`,
+/// `internal`, `after`]. A test checks them against the text: regenerating
+/// it updates them.
+const WIDE_SIZES: [usize; 8] = [1193, 4, 3, 7, 1, 210, 556, 109];
+
 /// A top-level form of a file under the tarball's `src/library`
 /// (`base/R/zzz.R`, `profile/Common.R`): its bytes `[start, end)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,13 +164,31 @@ pub struct Wide {
     pub names: Vec<WideName>,
     /// The forms that are not run, and why (the skip record).
     pub skips: Vec<(Form, &'static str)>,
+    /// The forms run at startup, in order, in the base namespace before
+    /// its locks (the profile's Autoloads environment and `.AutoloadEnv`).
+    pub boot: Vec<Form>,
     /// The names GNU R's C binds at startup.
     pub from_c: Vec<&'static str>,
     /// configure's substitutions in base's sources (mkRbase's sed).
     pub substs: Vec<(&'static str, &'static str)>,
     pub primitives: Vec<&'static str>,
     pub internals: Vec<&'static str>,
-    by_name: std::collections::HashMap<&'static str, usize>,
+    /// `names`' index by name (fixed-seed hashing: the keys are this
+    /// binary's own, and a start's instructions do not vary run to run).
+    by_name: std::collections::HashMap<&'static str, usize, robigo_heap::BuildFx>,
+}
+
+/// `line.splitn(N, ' ')` into a fixed array, with how many fields there
+/// are: the last takes the rest of the line. No allocation (a Vec per line
+/// cost the start ~220k instructions in reallocs).
+fn fields<const N: usize>(line: &'static str) -> ([&'static str; N], usize) {
+    let mut f = [""; N];
+    let mut k = 0;
+    for (j, p) in line.splitn(N, ' ').enumerate() {
+        f[j] = p;
+        k = j + 1;
+    }
+    (f, k)
 }
 
 impl Wide {
@@ -172,58 +200,67 @@ impl Wide {
     }
 
     fn parse(text: &'static str) -> Result<Wide, String> {
+        // Each table is allocated once at its final size (WIDE_SIZES: the
+        // one text parsed is WIDE).
+        // Grown by doubling instead, `names` (about 85 KB) is copied by
+        // whichever of its reallocs cannot extend in place, and which those
+        // are follows the heap's layout at start: the environment's and the
+        // R_HOME path's lengths moved a start by ~80k instructions (#984).
+        let [names, skips, boot, from_c, substs, primitives, internals, after] = WIDE_SIZES;
         let mut w = Wide {
-            names: Vec::new(),
-            skips: Vec::new(),
-            from_c: Vec::new(),
-            substs: Vec::new(),
-            primitives: Vec::new(),
-            internals: Vec::new(),
-            by_name: std::collections::HashMap::new(),
+            names: Vec::with_capacity(names),
+            skips: Vec::with_capacity(skips),
+            boot: Vec::with_capacity(boot),
+            from_c: Vec::with_capacity(from_c),
+            substs: Vec::with_capacity(substs),
+            primitives: Vec::with_capacity(primitives),
+            internals: Vec::with_capacity(internals),
+            by_name: std::collections::HashMap::with_capacity_and_hasher(names, Default::default()),
         };
+        let mut after: Vec<(&'static str, Form)> = Vec::with_capacity(after);
         let num = |s: &str, i: usize| s.parse::<usize>().map_err(|_| format!("line {}: not a number: {s:?}", i + 1));
-        let mut after: Vec<(&'static str, Form)> = Vec::new();
         for (i, line) in text.lines().enumerate() {
             if line.starts_with('#') || line.is_empty() {
                 continue;
             }
-            let f: Vec<&'static str> = line.splitn(5, ' ').collect();
+            let (f, flen) = fields::<5>(line);
             let bad = || format!("line {}: {line:?}", i + 1);
             let form = |src: &'static str, a: &str, b: &str| -> Result<Form, String> {
                 Ok(Form { src, start: num(a, i)?, end: num(b, i)? })
             };
             match f[0] {
-                "def" if f.len() == 5 => {
-                    // NAME SRC START END DEPTH [seq]
-                    let g: Vec<&'static str> = line.split(' ').collect();
-                    let (name, fm, depth) = match g.len() {
+                "def" if flen == 5 => {
+                    // NAME SRC START END DEPTH [seq] (an eighth field: too many)
+                    let (g, glen) = fields::<8>(line);
+                    let (name, fm, depth) = match glen {
                         6 | 7 => (g[1], form(g[2], g[3], g[4])?, num(g[5], i)?),
                         _ => return Err(bad()),
                     };
-                    let seq = g.len() == 7 && g[6] == "seq";
+                    let seq = glen == 7 && g[6] == "seq";
                     match w.names.last_mut() {
                         Some(WideName { name: n, def: Def::Assign(v), .. }) if seq && *n == name => v.push((fm, depth)),
                         _ => w.names.push(WideName { name, def: Def::Assign(vec![(fm, depth)]), after: Vec::new() }),
                     }
                 }
-                "block" if f.len() == 5 => {
-                    let g: Vec<&'static str> = line.split(' ').collect();
+                "block" if flen == 5 => {
+                    let (g, _) = fields::<8>(line);
                     w.names.push(WideName { name: g[1], def: Def::Block(form(g[2], g[3], g[4])?), after: Vec::new() })
                 }
-                "unrun" if f.len() == 5 => {
-                    let g: Vec<&'static str> = line.split(' ').collect();
+                "unrun" if flen == 5 => {
+                    let (g, _) = fields::<8>(line);
                     w.names.push(WideName { name: g[1], def: Def::Unrun(form(g[2], g[3], g[4])?), after: Vec::new() })
                 }
-                "after" if f.len() == 5 => {
-                    let g: Vec<&'static str> = line.split(' ').collect();
+                "after" if flen == 5 => {
+                    let (g, _) = fields::<8>(line);
                     after.push((g[1], form(g[2], g[3], g[4])?))
                 }
                 // SRC START END WHY (the rest of the line)
-                "skip" if f.len() == 5 => w.skips.push((form(f[1], f[2], f[3])?, f[4])),
-                "c" if f.len() == 2 => w.from_c.push(f[1]),
-                "subst" if f.len() == 3 => w.substs.push((f[1], f[2])),
-                "primitive" if f.len() == 2 => w.primitives.push(f[1]),
-                "internal" if f.len() == 2 => w.internals.push(f[1]),
+                "skip" if flen == 5 => w.skips.push((form(f[1], f[2], f[3])?, f[4])),
+                "boot" if flen == 4 => w.boot.push(form(f[1], f[2], f[3])?),
+                "c" if flen == 2 => w.from_c.push(f[1]),
+                "subst" if flen == 3 => w.substs.push((f[1], f[2])),
+                "primitive" if flen == 2 => w.primitives.push(f[1]),
+                "internal" if flen == 2 => w.internals.push(f[1]),
                 _ => return Err(bad()),
             }
         }
@@ -246,16 +283,25 @@ impl Wide {
         self.by_name.get(name).map(|&i| &self.names[i])
     }
 
-    /// The files the definitions are read from, each once.
+    /// The files the definitions are read from (lazily, on a name's first
+    /// use) and the profile's `boot` forms (read and run at load), each
+    /// once.
     pub fn files(&self) -> Vec<&'static str> {
-        let mut v: Vec<&'static str> = Vec::new();
+        // (one allocation: every form's file, then sorted and deduplicated)
+        let forms = |n: &WideName| match &n.def {
+            Def::Assign(d) => d.len(),
+            Def::Block(_) | Def::Unrun(_) => 1,
+        } + n.after.len();
+        let mut v: Vec<&'static str> =
+            Vec::with_capacity(self.names.iter().map(forms).sum::<usize>() + self.boot.len());
         for n in &self.names {
-            let forms: Vec<Form> = match &n.def {
-                Def::Assign(d) => d.iter().map(|&(f, _)| f).collect(),
-                Def::Block(f) | Def::Unrun(f) => vec![*f],
-            };
-            v.extend(forms.iter().chain(n.after.iter()).map(|f| f.src));
+            match &n.def {
+                Def::Assign(d) => v.extend(d.iter().map(|(f, _)| f.src)),
+                Def::Block(f) | Def::Unrun(f) => v.push(f.src),
+            }
+            v.extend(n.after.iter().map(|f| f.src));
         }
+        v.extend(self.boot.iter().map(|f| f.src));
         v.sort_unstable();
         v.dedup();
         v
@@ -299,7 +345,8 @@ pub fn source_dir() -> Result<PathBuf, String> {
 /// What [`load`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Loaded {
-    /// The files the lazy bindings read their definitions from.
+    /// The files the lazy bindings read their definitions from, and the
+    /// boot forms' (read at load).
     pub files: usize,
     /// The names bound lazily.
     pub closures: usize,
@@ -314,27 +361,51 @@ const FETCH: &str = "..robigo_base_fetch";
 /// INTERIM(L5): bind the wide base into `cx`'s base environment from the
 /// tree `dir` ([`source_dir`]), each name lazily ([`Wide`]). Run after
 /// [`crate::install`]: the stubs go only where no primitive or internal of
-/// that name is defined. Reads no R file: an error names a file the tree
-/// lacks. `ROBIGO_BOOT_VERBOSE=1` prints the forms that are not run.
+/// that name is defined. Reads only the `boot` forms' file: an error names
+/// a file the tree lacks. `ROBIGO_BOOT_VERBOSE=1` prints the forms that are not run.
 pub fn load(cx: &mut Cx, dir: &Path) -> Result<Loaded, String> {
     let wide = Wide::get();
     let lib = dir.join("src/library");
     let files = wide.files();
-    for f in &files {
-        let p = lib.join(f);
-        if !p.is_file() {
-            return Err(format!("{} is missing", p.display()));
+    // each file's path built in one buffer, sized once (a PathBuf per file
+    // grew by reallocs whose layout moved with the checkout path's length)
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let root = lib.as_os_str().as_bytes();
+        let longest = files.iter().map(|f| f.len()).max().unwrap_or(0);
+        let mut buf: Vec<u8> = Vec::with_capacity(root.len() + 1 + longest);
+        for f in &files {
+            buf.clear();
+            buf.extend_from_slice(root);
+            buf.push(b'/');
+            buf.extend_from_slice(f.as_bytes());
+            let p = Path::new(std::ffi::OsStr::from_bytes(&buf));
+            if !p.is_file() {
+                return Err(format!("{} is missing", p.display()));
+            }
         }
     }
-    *crate::prims::state(cx).base_src.borrow_mut() = Some(lib.clone());
+    // (set once, by the boot's load)
+    let first = crate::prims::state(cx).base_src.set(lib.clone()).is_ok();
+    debug_assert!(first, "robigo: base's sources set twice in one isolate");
     let fetch = fetch_internal(cx);
     for n in &wide.names {
         bind_wide(cx, n.name, &fetch).map_err(|e| format!("binding '{}': {e}", n.name))?;
     }
     init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
     let stubs = bind_stubs_wide(cx, wide);
-    // the profile's bindings are among the lazy ones: this is the point
-    // after R_LoadProfile
+    // the profile's forms that cannot wait (R_LoadProfile runs them all at
+    // this point; the rest are among the lazy bindings)
+    for &form in &wide.boot {
+        cx.building_base(|cx| {
+            cx.scope(|cx, s| {
+                let o = s.out(cx);
+                eval_form(cx, form, o, |e| Some(e))
+            })
+        })
+        .map_err(|e| format!("{}: {}", where_is(&lib, form), failed(cx, e)))?;
+    }
+    // this is the point after R_LoadProfile
     lock_base(cx).map_err(|e| failed(cx, e))?;
     if std::env::var_os("ROBIGO_BOOT_VERBOSE").is_some_and(|v| !v.is_empty() && v != "0") {
         for (f, why) in &wide.skips {
@@ -408,8 +479,14 @@ fn where_is(lib: &Path, form: Form) -> String {
 /// The bytes of `form`, read from the tree, with configure's substitutions
 /// made.
 fn form_bytes(cx: &Cx, form: Form) -> Result<Vec<u8>, String> {
+    let lib = crate::prims::state(cx).base_src.get().cloned().ok_or("the base sources are not loaded")?;
+    form_text(&lib, form)
+}
+
+/// The bytes of `form` in the tree `lib` (its `src/library`), with
+/// configure's substitutions made: what the loader evaluates.
+pub fn form_text(lib: &Path, form: Form) -> Result<Vec<u8>, String> {
     use std::io::{Read, Seek, SeekFrom};
-    let lib = crate::prims::state(cx).base_src.borrow().clone().ok_or("the base sources are not loaded")?;
     let path = lib.join(form.src);
     let mut f = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut b = vec![0u8; form.end - form.start];
@@ -477,7 +554,7 @@ fn eval_form(
 /// base namespace ([`Def`]), then the forms that follow it; the value into
 /// `out`, which the promise keeps. GNU R's lazy-load promise fetches a
 /// value its build computed; this computes it on first use.
-fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn base_fetch(cx: &mut Cx, call: Root<'_>, _: Root<'_>, _: Option<Root<'_>>, _: Root<'_>, out: Out<'_>) -> RResult<()> {
     let name = call
         .bind(cx)
         .as_cons()
@@ -549,7 +626,7 @@ fn fetch_steps(cx: &mut Cx, w: &WideName, sym: Root<'_>, base: Root<'_>, res: Ro
                 false
             }
             Def::Unrun(form) => {
-                let lib = crate::prims::state(cx).base_src.borrow().clone().unwrap_or_default();
+                let lib = crate::prims::state(cx).base_src.get().cloned().unwrap_or_default();
                 let why = wide.skipped(*form).unwrap_or("not run");
                 let m = format!(
                     "robigo: '{}' needs base's {}, which robigo-rt does not run: {why} (INTERIM(L5))",
@@ -682,7 +759,13 @@ fn failed(cx: &mut Cx, e: robigo_rtcore::RError) -> String {
 fn stubs_for(cx: &mut Cx, primitives: &[&'static str], internals: &[&'static str]) -> usize {
     use robigo_rtbuiltins::names::{internal_eval, primitive_eval};
     let st = crate::prims::state(cx);
-    let have = |name: &str, internal: bool| st.defs.iter().any(|d| d.name == name && d.internal() == internal);
+    // (the defined names once, not a scan of the definitions per name:
+    // names.c has some 1,500 entries; a NameSet, not SipHash: the keys are
+    // compiled-in names, never R's; sized at once, so it does not rehash
+    // while it fills)
+    let mut defined = crate::compile::NameSet::with_capacity_and_hasher(st.defs.len(), Default::default());
+    defined.extend(st.defs.iter().map(|d| (crate::compile::Name(d.name), d.internal())));
+    let have = |name: &'static str, internal: bool| defined.contains(&(crate::compile::Name(name), internal));
     let stub = |name: &'static str, eval: i32, internal: bool| {
         let kind = match (eval % 10 == 1, internal) {
             (true, false) => Kind::Builtin(not_yet_primitive, crate::prims::Inline::None),
@@ -723,17 +806,43 @@ fn not_yet_primitive(cx: &mut Cx, call: Root<'_>, _: Args<'_>, _: Root<'_>, _: O
 }
 
 /// A special primitive of the bound that robigo-rt does not implement yet.
-fn not_yet_primitive_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_primitive_special(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: the primitive '{}' is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
 
 /// A special `.Internal` of the bound that robigo-rt does not implement yet.
-fn not_yet_internal_special(cx: &mut Cx, call: Root<'_>, _: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+fn not_yet_internal_special(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     let _ = out;
-    eval_stub_args(cx, call, rho)?;
+    cx.scope(|cx, s| {
+        let ac = match crate::specials::arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        eval_stub_args(cx, ac, rho)
+    })?;
     let msg = format!("robigo: .Internal({}()) is not implemented yet", called_name(cx, call));
     Err(cx.error_call(Some(call), &msg))
 }
@@ -792,6 +901,40 @@ mod tests {
         );
     }
 
+    /// The wide base's tables are allocated once and never reallocated: a
+    /// realloc chain made a start's count follow the heap's layout (#984).
+    #[test]
+    fn the_wide_base_tables_fit_their_compile_time_sizes() {
+        let w = Wide::get();
+        let tables = [
+            (w.names.len(), w.names.capacity()),
+            (w.skips.len(), w.skips.capacity()),
+            (w.boot.len(), w.boot.capacity()),
+            (w.from_c.len(), w.from_c.capacity()),
+            (w.substs.len(), w.substs.capacity()),
+            (w.primitives.len(), w.primitives.capacity()),
+            (w.internals.len(), w.internals.capacity()),
+        ];
+        for (i, (len, cap)) in tables.into_iter().enumerate() {
+            assert!(len <= WIDE_SIZES[i] && cap == WIDE_SIZES[i].max(len), "table {i}: {len} of {cap}");
+        }
+        let count =
+            |kinds: &[&str]| WIDE.lines().filter(|l| kinds.contains(&l.split(' ').next().unwrap_or(""))).count();
+        let counted = [
+            count(&["def", "block", "unrun"]),
+            count(&["skip"]),
+            count(&["boot"]),
+            count(&["c"]),
+            count(&["subst"]),
+            count(&["primitive"]),
+            count(&["internal"]),
+            count(&["after"]),
+        ];
+        assert_eq!(WIDE_SIZES, counted, "proto/base-wide.txt changed: set WIDE_SIZES to its counts");
+        // the upper bound is tight but for the `seq` lines
+        assert!(WIDE_SIZES[0] - w.names.len() <= 8, "{} names, {} reserved", w.names.len(), WIDE_SIZES[0]);
+    }
+
     #[test]
     fn the_bound_parses_and_names_files_in_collation_order() {
         let b = Bound::get();
@@ -822,22 +965,42 @@ mod tests {
 pub struct Stage0 {
     pub exprs: usize,
     pub failed: Vec<(usize, String)>,
+    /// names.c's primitives and internals bound to the not-implemented
+    /// builtins (as [`Loaded::stubs`]).
+    pub stubs: usize,
 }
 
-/// L2's stage 0 (m2m3-plan §B L2): base evaluated from source, as GNU R's
-/// `setup_Rmainloop` does with the source `library/base/R/base` of a build
-/// that has no databases yet: `R_ReplFile(fp, R_BaseNamespace)`, each
-/// top-level expression evaluated in the base namespace at the top level,
-/// its value printed if visible. Eager, unlike [`load`]'s lazy bindings,
-/// and every name of base's files is bound, so it is the path L5's boot
-/// keeps. The file is `home/library/base/R/base` (`scripts/rt-home.sh`).
+/// GNU R's boot of base (m2m3-plan §B L2's stage 0, L5's boot):
+/// `setup_Rmainloop`'s `R_ReplFile(fp, R_BaseNamespace)` of
+/// `home/library/base/R/base`, each top-level expression evaluated in the
+/// base namespace at the top level, its value printed if visible. What the
+/// file is decides the boot, as in GNU R: a build that has no databases yet
+/// has base's whole source there (`scripts/rt-home.sh`: eager, every name
+/// of base's files bound); after base's database rule it is
+/// `baseloader.R`, whose `..lazyLoad` binds base from `base.rdb`
+/// (`scripts/rt-home-db.sh`). Before it, as `InitNames` and `InitGraphics`
+/// do: names.c's primitives and internals robigo-rt lacks bound to the
+/// not-implemented builtins, and `.Device`/`.Devices`.
 ///
-/// GNU R stops at an error (its base has none); robigo-rt records it and
-/// goes on, so one run lists every expression a missing builtin stops.
+/// INTERIM(L5): GNU R stops at an error in either file (R_ReplFile has no
+/// jump of its own: `setup_Rmainloop`'s and `R_LoadProfile`'s SETJMP take
+/// it to `check_session_exit`, which halts a script); robigo-rt records it
+/// and goes on, so one run lists every expression a missing builtin stops
+/// (today the system profile's Sys.info and Sys.glob). The site and user
+/// profiles are GNU R's ([`after_profile`]).
 // R: main.c:R_ReplFile, setup_Rmainloop
 pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     let mut st = Stage0::default();
-    repl_file(cx, &home.join("library/base/R/base"), &mut st)?;
+    // the JIT off while R starts (R_init_jit_enabled, at the end, sets it)
+    crate::jit::at_startup(cx);
+    // InitNames: every primitive and internal of names.c's table bound
+    let prims: Vec<&'static str> = robigo_rtbuiltins::names::PRIMITIVES.iter().map(|p| p.0).collect();
+    let internals: Vec<&'static str> = robigo_rtbuiltins::names::INTERNALS.iter().map(|p| p.0).collect();
+    st.stubs = stubs_for(cx, &prims, &internals);
+    init_graphics(cx).map_err(|e| format!("binding .Device: {e}"))?;
+    // (base's lazy-load frame is recorded while this file runs, and only
+    // then: robigo-rtcore's Cx::note_lazy_load_frame)
+    cx.while_reading_base_file(|cx| repl_file(cx, &home.join("library/base/R/base"), &mut st))?;
     // R_LoadProfile(R_OpenSysInitFile(), baseNSenv): the system profile,
     // in the base namespace, the same way (setup_Rmainloop's next steps,
     // the locks, .OptRequireMethods, the site and user profiles, .First.sys
@@ -845,6 +1008,284 @@ pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     repl_file(cx, &home.join("library/base/R/Rprofile"), &mut st)?;
     lock_base(cx).map_err(|e| failed(cx, e))?;
     Ok(st)
+}
+
+/// `PrintGreeting`: a blank line, `PrintVersion_part_1`, and the notices on
+/// the licence, the contributors and help, to stdout (`Rprintf`). robigo
+/// translates no message, so these are GNU R's in English.
+// R: version.c:PrintGreeting
+pub fn print_greeting(cx: &mut Cx) {
+    let Some(v) = robigo_rtbuiltins::version::print_version_part_1() else {
+        return;
+    };
+    let text = format!(
+        "\n{v}\n\
+R is free software and comes with ABSOLUTELY NO WARRANTY.\n\
+You are welcome to redistribute it under certain conditions.\n\
+Type 'license()' or 'licence()' for distribution details.\n\n\
+R is a collaborative project with many contributors.\n\
+Type 'contributors()' for more information and\n\
+'citation()' on how to cite R or R packages in publications.\n\n\
+Type 'demo()' for some demos, 'help()' for on-line help, or\n\
+'help.start()' for an HTML browser interface to help.\n\
+Type 'q()' to quit R.\n\n"
+    );
+    cx.rprintf(text.as_bytes());
+}
+
+/// What `setup_Rmainloop` does after the system profile and the locks,
+/// as R_common_command_line's options leave it: whether to read the site
+/// profile (`LoadSiteFile`) and the user's (`LoadInitFile`), to restore
+/// `.RData` (`RestoreAction`), and `R_Quiet`.
+#[derive(Clone, Copy, Debug)]
+pub struct AfterProfile {
+    pub site_file: bool,
+    pub init_file: bool,
+    pub restore: bool,
+    pub quiet: bool,
+}
+
+/// `setup_Rmainloop` after the system profile and the locks: the call of
+/// `.OptRequireMethods()`, the site profile (`R_PROFILE`, else
+/// `R_HOME/etc/Rprofile.site`) in the global environment, `.Library.site`
+/// removed from it, the user's profile (`R_PROFILE_USER`, else
+/// `./.Rprofile`, else `$HOME/.Rprofile`), `R_InitialData` (`.RData`
+/// restored), then `.First()` and `.First.sys()`. Each runs inside its
+/// own `SETJMP`: an error (in a profile, its parse too: R_ReplFile has no
+/// jump of its own) is `check_session_exit`'s, false when R halts; with
+/// `options(error)` or `options(catch.script.errors)` R goes on to the next
+/// step, the rest of that profile not read. The greeting (unless
+/// `R_Quiet`) comes before the site profile; the JIT's start is
+/// [`init_jit`], after the deferred warnings.
+// R: main.c:setup_Rmainloop, startup.c:R_OpenSiteFile, sys-unix.c:R_OpenInitFile,
+// startup.c:R_RestoreGlobalEnv, saveload.c:R_RestoreGlobalEnvFromFile
+pub fn after_profile(cx: &mut Cx, home: &Path, a: AfterProfile) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    // .OptRequireMethods: found from the global environment, called in base
+    if !call_startup(cx, b".OptRequireMethods", |cx| cx.global_env(), |cx| cx.base_env()) {
+        return false;
+    }
+    // R: main.c:setup_Rmainloop, `if(!R_Quiet) PrintGreeting();`
+    if !a.quiet {
+        print_greeting(cx);
+    }
+    // the file a set R_PROFILE or R_PROFILE_USER names (None: unset; an
+    // empty value is no file): R_ExpandFileName's, whose warning, an error
+    // under options(warn = 2), lands outside R_LoadProfile's SETJMP on the
+    // one before it, check_session_exit's (Err(halts) when it does; going
+    // on, that profile is not read)
+    enum Named {
+        Unset,
+        File(Option<std::path::PathBuf>),
+        Halt,
+    }
+    let named = |cx: &mut Cx, var: &str| -> Named {
+        let Some(v) = std::env::var_os(var) else { return Named::Unset };
+        if v.is_empty() {
+            return Named::File(None);
+        }
+        match crate::connections::r_expand_file_name(cx, v.as_bytes()) {
+            Ok(e) => Named::File(Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&e)))),
+            Err(e) => {
+                cx.resolve_exit(e, None);
+                if crate::repl::check_session_exit(cx) { Named::File(None) } else { Named::Halt }
+            }
+        }
+    };
+    // R_LoadProfile(fp, R_GlobalEnv) of a file that opens (R_fopen's NULL
+    // is no profile, startup.c:115, sys-unix.c:77, main.c:723)
+    let run = |cx: &mut Cx, f: Option<std::path::PathBuf>| -> bool {
+        match f.and_then(|f| std::fs::read(&f).ok()) {
+            Some(bytes) => load_profile(cx, &bytes),
+            None => true,
+        }
+    };
+    if a.site_file {
+        let f = match named(cx, "R_PROFILE") {
+            Named::Unset => Some(home.join("etc/Rprofile.site")),
+            Named::File(f) => f,
+            Named::Halt => return false,
+        };
+        if !run(cx, f) {
+            return false;
+        }
+    }
+    // the system profile's active binding for .Library.site in the global
+    // environment goes (its writes in the site profile reached base's)
+    let removed = cx.scope(|cx, s| {
+        let sym = cx.install_rooted(s, b".Library.site")?;
+        let g = s.root(cx, cx.global_env());
+        cx.remove_var_from_frame(sym, g)
+    });
+    if let Err(e) = removed {
+        cx.resolve_exit(e, None);
+        if !crate::repl::check_session_exit(cx) {
+            return false;
+        }
+    }
+    if a.init_file {
+        let f = match named(cx, "R_PROFILE_USER") {
+            Named::Unset => Some(std::path::PathBuf::from(".Rprofile"))
+                .filter(|f| f.is_file())
+                .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".Rprofile"))),
+            Named::File(f) => f,
+            Named::Halt => return false,
+        };
+        if !run(cx, f) {
+            return false;
+        }
+    }
+    // R_InitialData: R_RestoreGlobalEnvFromFile(".RData", R_Quiet)
+    if a.restore && !restore_global_env(cx, a.quiet) {
+        return false;
+    }
+    // .First: found from and called in the global environment; .First.sys:
+    // found in base's namespace, called in base
+    call_startup(cx, b".First", |cx| cx.global_env(), |cx| cx.global_env())
+        && call_startup(cx, b".First.sys", |cx| cx.base_namespace(), |cx| cx.base_env())
+}
+
+/// How `setup_Rmainloop`'s last step ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JitStart {
+    /// The JIT is set up.
+    Done,
+    /// An error, and `check_session_exit` halted R.
+    Halt,
+    /// An error that `check_session_exit` let pass: `R_Suicide("unable
+    /// to initialize the JIT\n")`, its message printed here (the caller
+    /// exits with status 2, R_CleanUp(SA_SUICIDE, 2, 0): no warnings).
+    Suicide,
+}
+
+/// The last step of `setup_Rmainloop`: `R_init_jit_enabled()` inside its
+/// own top-level `SETJMP` ([`crate::jit::init_jit_enabled`]).
+// R: main.c:setup_Rmainloop
+pub fn init_jit(cx: &mut Cx) -> JitStart {
+    let ok = cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        cx.repl_toplevel(g, base, crate::jit::init_jit_enabled).expect("robigo: an exit that passed the top level")
+    });
+    if ok {
+        JitStart::Done
+    } else if !crate::repl::check_session_exit(cx) {
+        JitStart::Halt
+    } else {
+        // R: unix/sys-std.c:Rstd_Suicide
+        cx.reprintf(b"Fatal error: unable to initialize the JIT\n\n");
+        JitStart::Suicide
+    }
+}
+
+/// `R_findVar(name, from)`, and when it is a closure `eval(lang1(name),
+/// rho)`, both inside one top-level `SETJMP` (repl.rs's `call_if_closure`,
+/// `R_dot_Last`'s step): false when an error ended it and
+/// `check_session_exit` says R halts.
+fn call_startup(
+    cx: &mut Cx,
+    name: &[u8],
+    from: for<'g> fn(&'g Cx) -> Ref<'g>,
+    rho: for<'g> fn(&'g Cx) -> Ref<'g>,
+) -> bool {
+    let ok = cx.scope(|cx, s| {
+        let f = s.root(cx, from(cx));
+        let r = s.root(cx, rho(cx));
+        crate::repl::call_if_closure(cx, name, f, r)
+    });
+    ok || crate::repl::check_session_exit(cx)
+}
+
+/// `R_RestoreGlobalEnvFromFile(".RData", quiet)` inside its top-level
+/// `SETJMP`: `sys.load.image(".RData", quiet)` evaluated in the global
+/// environment, the call built as saveload.c builds it (base binds
+/// `sys.load.image`, so GNU R's `R_LoadSavedData` branch is not taken
+/// here; without it robigo-rt says so). False when an error ended it and
+/// `check_session_exit` says R halts.
+// R: saveload.c:R_RestoreGlobalEnvFromFile
+fn restore_global_env(cx: &mut Cx, quiet: bool) -> bool {
+    let ok = cx.scope(|cx, s| {
+        let g = s.root(cx, cx.global_env());
+        let base = s.root(cx, cx.base_env());
+        let call = s.out(cx);
+        let callr = call.root();
+        let f = s.out(cx);
+        let fr = f.root();
+        let o = s.out(cx);
+        cx.repl_toplevel(g, base, |cx| {
+            cx.scope(|cx, t| {
+                let sym = cx.install_rooted(t, b"sys.load.image")?;
+                cx.find_var(sym, g, f)?;
+                if fr.bind(cx).sexp() == cx.unbound().sexp() {
+                    return Err(cx.error("robigo: restoring .RData without base's sys.load.image (R_LoadSavedData) is not implemented yet"));
+                }
+                cx.build(call, |cx| {
+                    let q = cx.alloc_copy(&[robigo_rtcore::Lgl(quiet as i32)])?.finish().into();
+                    let nil = cx.nil();
+                    let args = cx.lcons(q, nil)?;
+                    let name = cx.mk_string(b".RData", robigo_rtcore::Encoding::Native)?;
+                    let args = cx.lcons(name, args)?;
+                    cx.lcons(sym.bind(cx), args)
+                })
+            })?;
+            crate::eval(cx, callr, g, o)
+        })
+        .expect("robigo: an exit that passed the top level")
+    });
+    ok || crate::repl::check_session_exit(cx)
+}
+
+/// `R_LoadProfile(fp, R_GlobalEnv)`: `R_ReplFile` of the profile's bytes,
+/// statement after statement as `R_Parse1File` reads them (those before a
+/// syntax error run), each evaluated in the global environment at the top
+/// level and printed if visible. An error, the parse's included, lands on
+/// `R_LoadProfile`'s `SETJMP`: the rest of the file is not read, and the
+/// result is `check_session_exit`'s (false: R halts).
+// R: main.c:R_LoadProfile, R_ReplFile
+fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
+    let text = robigo_syntax::lexable(bytes);
+    let source = robigo_syntax::Source::new(&text, bytes);
+    let arena = robigo_syntax::Arena::new();
+    // parseError(R_NilValue, R_ParseError) of a grammar error, with the
+    // failing statement's context; raiseLexError's condition (its
+    // `(<input>:line:col)` suffix) and an R error as they are
+    let message = |e: &robigo_syntax::ParseError, start: usize| match e.style {
+        robigo_syntax::ErrorStyle::Grammar => robigo_syntax::format_parse_error_since(source, "", e, start),
+        _ => crate::repl::parse_error_message(source, e),
+    };
+    let mut p = match robigo_syntax::parser::Parser::new(&arena, source) {
+        Ok(p) => p,
+        Err(e) => {
+            crate::repl::parse_error_at_top_after(cx, &[], source, &e, &message(&e, 0));
+            return crate::repl::check_session_exit(cx);
+        }
+    };
+    // the lexer's warnings (R_Parse1File generates code: all of them), each
+    // raised with the statement whose tokens it came from
+    let lexed: Vec<(usize, String)> = p.warnings.iter().map(|w| (w.at as usize, w.message.clone())).collect();
+    let between = |from: usize, to: usize| -> Vec<String> {
+        lexed.iter().filter(|(at, _)| *at >= from && *at < to).map(|(_, m)| m.clone()).collect()
+    };
+    let savestack = cx.pp_top();
+    loop {
+        // the statement's context starts where the last one ended
+        let start = p.consumed_end();
+        let e = match p.program_n(1) {
+            Ok(mut v) if !v.is_empty() => v.remove(0),
+            Ok(_) => return true,
+            Err(e) => {
+                // the warnings of the tokens lexed by then (the raise
+                // site's frontier, as the console's parse counts them)
+                let frontier = p.error_frontier(&e) + 1;
+                crate::repl::parse_error_at_top_after(cx, &between(start, frontier), source, &e, &message(&e, start));
+                return crate::repl::check_session_exit(cx);
+            }
+        };
+        let ws = between(start, p.consumed_end());
+        if repl_eval_toplevel(cx, &e, None, &ws, |cx| cx.global_env(), savestack, (1, 0)).is_err() {
+            return crate::repl::check_session_exit(cx);
+        }
+    }
 }
 
 /// `setup_Rmainloop`'s locks right after the system profile: base's
@@ -872,6 +1313,7 @@ pub fn lock_base(cx: &mut Cx) -> RResult<()> {
 /// ([`repl_eval_toplevel`], `Rf_ReplIteration`'s too).
 // R: main.c:R_ReplFile
 pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String> {
+    let rho: for<'g> fn(&'g Cx) -> Ref<'g> = |cx| cx.base_namespace();
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     // R_Parse1File, expression after expression: robigo-syntax parses the
@@ -886,7 +1328,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
     for e in &exprs {
         st.exprs += 1;
         // under PROTECT(R_CurrentExpr), unprotected before the print
-        let r = repl_eval_toplevel(cx, e, &[], |cx| cx.base_namespace(), savestack, (1, 0));
+        let r = repl_eval_toplevel(cx, e, None, &[], rho, savestack, (1, 0));
         if let Err(m) = r {
             let line = robigo_syntax::line_col(&text, e.span().start as usize).0;
             let m = m.unwrap_or_else(|| "lowering failed".into());
@@ -909,6 +1351,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
 pub(crate) fn repl_eval_toplevel(
     cx: &mut Cx,
     expr: &robigo_syntax::Expr<'_>,
+    src: Option<&[u8]>,
     warnings: &[String],
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
     savestack: i32,
@@ -939,7 +1382,11 @@ pub(crate) fn repl_eval_toplevel(
                     msg = Some(crate::repl::error_text(cx, &err));
                     return Err(err);
                 }
-                if let Err(err) = crate::reader::lower_one(cx, expr, e) {
+                let low = match src {
+                    Some(b) => crate::reader::lower_console(cx, b, expr, e),
+                    None => crate::reader::lower_one(cx, expr, e),
+                };
+                if let Err(err) = low {
                     lowered = false;
                     return Err(err);
                 }

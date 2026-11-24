@@ -1,0 +1,36 @@
+[1] 0 1 2
+[1] 0 1 2 0 1
+ [1] 0 1 2 0 1 0 0 0 0 0
+[1] 1 2 1
+[1] 1 2
+[1] 0
+integer(0)
+ [1] 1 1 1 1 1 1 1 1 1 1
+[1] 0 0 1 1 1
+[1] "'bin' must be numeric or a factor"
+[1] 1 2
+[1] 1 1
+[1] 1 1
+[1] "integer"
+[1] 1 1
+[1] 1 0 1 0 0
+[1] 1
+[1] 1 0 1
+[1] 1 0
+integer(0)
+[1] "NAs introduced by coercion"
+[1] "invalid 'nbin' argument"
+[1] "invalid 'nbin' argument"
+[1] "invalid 'nbin' argument"
+[1] "invalid input"
+[1] "1 argument passed to .Internal(tabulate) which requires 2"
+[1] "'bin' must be numeric or a factor"
+[1] "missing value where TRUE/FALSE needed"
+[1] "attempt to make a table with >= 2^31 elements"
+doTryCatch(return(expr), name, parentenv, handler)
+ [1] 0 0 0 0 1 1 1 1 1 1
+[1] 99996
+[1] -2
+[1] 1 1 1 1 0 0
+[1] 10000 10000 10000 10000 10000 10000 10000
+[1] 1 1 1

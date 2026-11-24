@@ -294,6 +294,11 @@ impl Sexp {
         debug_assert!(matches!(t, REALSXP | INTSXP | LGLSXP));
         // SAFETY: the caller's contract.
         unsafe {
+            // a boxed value replaced in a frozen promise leaves the frozen
+            // graph (Sol r1 S4): PRVALUE untagged is an object or unbound
+            if self.flags() & flags::FROZEN != 0 && self.promise_tag() == 0 {
+                crate::gc::note_overwritten(self.sexp_at(promise::OFF_VALUE));
+            }
             self.set_promise_bits(bits);
             self.set_promise_tag(t);
         }
@@ -420,7 +425,14 @@ impl Sexp {
     #[inline(always)]
     pub unsafe fn set_std_len(self, n: isize) {
         // SAFETY: the caller's contract puts a length at `vector::OFF_LEN`.
-        unsafe { *(self.word(vector::OFF_LEN) as *mut isize) = n }
+        unsafe {
+            // a frozen vector shortened drops its tail from tracing: a
+            // possible frozen edge gone (Sol r1 S4)
+            if self.flags() & flags::FROZEN != 0 && n < self.std_len() {
+                (*crate::heap::remembered_of(self.0)).note(crate::heap::Remembered::DIRTY);
+            }
+            *(self.word(vector::OFF_LEN) as *mut isize) = n
+        }
     }
     /// GNU R's TRUELENGTH.
     ///
@@ -571,6 +583,18 @@ impl Sexp {
         // arena's name, or the shared "").
         unsafe { self.sexp_at(sym::OFF_PRINTNAME).char_bytes() }
     }
+    /// The hash of a symbol's name, [`crate::hash_bytes`] of its bytes, as
+    /// the arena wrote it in its name record before publishing the symbol:
+    /// the symbol tables' key (`symtab.rs`).
+    ///
+    /// # Safety
+    /// `self` must be a live SYMSXP.
+    #[inline(always)]
+    pub unsafe fn sym_name_hash(self) -> u32 {
+        // SAFETY: as for `sym_name_bytes`: a symbol's CAR is a CHARSXP-shaped
+        // record whose header has the hash word.
+        unsafe { self.sexp_at(sym::OFF_PRINTNAME).char_hash() }
+    }
     /// Whether a symbol's name is ASCII: the ASCII bit of its PRINTNAME in
     /// every isolate (each makes it from the same bytes), read from the
     /// arena's name (one load less than the isolate's PRINTNAME).
@@ -582,8 +606,8 @@ impl Sexp {
         // SAFETY: as for `sym_name_bytes`.
         unsafe { self.sexp_at(sym::OFF_PRINTNAME).gp() & crate::gp::charsxp::ASCII != 0 }
     }
-    /// A symbol's id ([`sym::OFF_ID`]): dense, in the order this heap made
-    /// its symbols.
+    /// A symbol's id ([`sym::OFF_ID`]): the process's, dense, in the order
+    /// the symbol arena made its symbols (`arena.rs`; H5).
     ///
     /// # Safety
     /// `self` must be a live SYMSXP.
@@ -708,7 +732,9 @@ impl Sexp {
     #[inline(always)]
     pub unsafe fn char_hash(self) -> u32 {
         // SAFETY: the hash word is in the header of every object, and 8-byte aligned.
-        unsafe { *(self.0.add(charsxp::OFF_HASH) as *const u32) }
+        // (written as a u64 word: read as one, so the low half is the hash
+        // whatever the byte order; Sol S1)
+        unsafe { *(self.0.add(charsxp::OFF_HASH) as *const u64) as u32 }
     }
     /// The bytes of a CHARSXP (without the terminating NUL).
     ///

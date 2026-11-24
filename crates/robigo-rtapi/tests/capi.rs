@@ -315,6 +315,85 @@ fn the_attribute_setters_read_a_package_altrep_length() {
     }
 }
 
+/// datetime.c's builtins read a package ALTREP input (`x`, `tz`, `format`,
+/// a component, the names, the `tzone` attribute) where GNU R runs its
+/// class's methods: robigo says it cannot, at that point in GNU R's order
+/// of checks; a numeric one GNU R's type check refuses first.
+#[test]
+fn the_datetime_builtins_refuse_a_package_altrep_input() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        s.cx().set_no_inplace(false);
+        s.val("zi <- .Call(\"rt_altrep_int\", 5:6); zr <- .Call(\"rt_altrep_real\", c(1, 2, 1))");
+        s.val("lt0 <- .Internal(as.POSIXlt(0, \"UTC\"))");
+        for (src, want) in [
+            // datetime.c's XLENGTH(x) after the time zone's checks
+            (".Internal(as.POSIXlt(zr, \"UTC\"))", "as.POSIXlt() of a package ALTREP vector is not implemented yet"),
+            (
+                ".Internal(Date2POSIXlt(zr, \"UTC\"))",
+                "Date2POSIXlt() of a package ALTREP vector is not implemented yet",
+            ),
+            (
+                "lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$min <- zi; .Internal(POSIXlt2Date(lt))",
+                "POSIXlt2Date() of a \"POSIXlt\" list with a package ALTREP component is not implemented yet",
+            ),
+            (
+                "lt <- .Internal(as.POSIXlt(0, \"UTC\")); lt$isdst <- zi; .Internal(as.POSIXct(lt, \"UTC\"))",
+                "as.POSIXct() of a \"POSIXlt\" list with a package ALTREP component is not implemented yet",
+            ),
+            (
+                ".Internal(Date2POSIXlt(0, .Call(\"rt_altrep_str\", \"UTC\")))",
+                "Date2POSIXlt() of a package ALTREP 'tz' is not implemented yet",
+            ),
+            (
+                ".Internal(as.POSIXlt(0, .Call(\"rt_altrep_str\", \"UTC\")))",
+                "a package ALTREP 'tz' is not implemented yet",
+            ),
+            // isString first: a numeric one is invalid, its methods not run
+            (".Internal(as.POSIXlt(0, zi))", "invalid 'tz' value"),
+            (".Internal(Date2POSIXlt(0, zi))", "invalid 'tz' value"),
+            (
+                ".Internal(strptime(.Call(\"rt_altrep_str\", \"2000-01-01\"), \"%Y-%m-%d\", \"UTC\"))",
+                "strptime() of a package ALTREP 'x' is not implemented yet",
+            ),
+            (
+                ".Internal(strptime(\"2000-01-01\", .Call(\"rt_altrep_str\", \"%Y-%m-%d\"), \"UTC\"))",
+                "strptime() of a package ALTREP 'format' is not implemented yet",
+            ),
+            (
+                "lt <- .Internal(as.POSIXlt(0, \"UTC\")); attr(lt, \"tzone\") <- .Call(\"rt_altrep_str\", \"UTC\"); \
+                 .Internal(as.POSIXct(lt, \"UTC\"))",
+                "a \"POSIXlt\" list whose 'tzone' is a package ALTREP vector is not implemented yet",
+            ),
+            (
+                ".Internal(as.POSIXct(.Call(\"rt_altrep_list\", unclass(lt0)), \"UTC\"))",
+                "a package ALTREP \"POSIXlt\" list is not implemented yet",
+            ),
+            (
+                "lt <- unclass(lt0); names(lt) <- .Call(\"rt_altrep_str\", names(lt)); .Internal(as.POSIXct(lt, \"UTC\"))",
+                "a \"POSIXlt\" list whose names are a package ALTREP vector is not implemented yet",
+            ),
+            (
+                "x <- \"2000-01-01\"; names(x) <- .Call(\"rt_altrep_str\", \"a\"); \
+                 .Internal(strptime(x, c(\"%Y-%m-%d\", \"%Y\"), \"UTC\"))",
+                "recycling package ALTREP names is not implemented yet",
+            ),
+            (
+                ".Internal(format.POSIXlt(lt0, .Call(\"rt_altrep_str\", \"%Y\"), FALSE, 0L))",
+                "format.POSIXlt() of a package ALTREP 'format' is not implemented yet",
+            ),
+            (
+                "lt <- lt0; y <- lt$year; names(y) <- .Call(\"rt_altrep_str\", \"a\"); lt$year <- y; \
+                 .Internal(format.POSIXlt(lt, \"%Y\", FALSE, 0L))",
+                "format.POSIXlt() of year names that are a package ALTREP vector is not implemented yet",
+            ),
+        ] {
+            let m = s.err(src);
+            assert!(m.contains(want), "{p:?} {src}: {m}");
+        }
+    }
+}
+
 /// The setters run a package class's Length method as many times as GNU R
 /// 4.6.2 does (counts from the oracle with the same class compiled as a
 /// package: `R CMD SHLIB`, a counter in the Length method).
@@ -533,6 +612,95 @@ fn accessor_errors_are_gnu_rs() {
     assert_eq!(s.val(&format!(".Call(\"rt_noop3\", {})", vec!["1"; 65].join(", "))), Val::Null);
 }
 
+/// `coerceVector` to a code no type names, below 256 too (30 is NEWSXP):
+/// type2char's warning first wherever the error names the target, not for
+/// an environment, whose error does not; and a pairlist that GNU R
+/// allocates the target for first (allocVector's error, a named target's
+/// too).
+// R: coerce.c:coerceVector, coerce.c:coercePairList, memory.c:allocVector3
+#[test]
+fn coerce_vector_to_an_unnamed_type_warns_as_type2char_does() {
+    let mut s = Session::new(Profile::Eval);
+    s.stderr();
+    let run = |s: &mut Session, x: &str, t: u32| {
+        s.val(&format!(
+            "w <- character(); tryCatch(withCallingHandlers(.Call(\"rt_coerce_to\", {x}, {t}), \
+             warning = function(c) {{ w <<- c(w, conditionMessage(c)); invokeRestart(\"muffleWarning\") }}), \
+             error = function(e) c(w, conditionMessage(e)))"
+        ))
+    };
+    assert_eq!(
+        run(&mut s, "1:2", 30),
+        Val::Str(vec![
+            "type 30 is unimplemented in 'type2char'".into(),
+            "cannot coerce type 'integer' to vector of type 'unknown type #30'".into(),
+        ])
+    );
+    assert_eq!(run(&mut s, "new.env()", 30), Val::Str(vec!["environments cannot be coerced to other types".into()]));
+    assert_eq!(
+        run(&mut s, "pairlist(1, 2)", 30),
+        Val::Str(vec![
+            "type 30 is unimplemented in 'type2char'".into(),
+            "invalid type/length (unknown type #30/2) in vector allocation".into(),
+        ])
+    );
+    // intCHARSXP (73): allocVector allocates it, so coercePairList's own
+    // error, without a warning; an atomic source still names it
+    assert_eq!(
+        run(&mut s, "pairlist(1)", 73),
+        Val::Str(vec!["unimplemented type 'pairlist' in 'coercePairList'\n".into()])
+    );
+    assert_eq!(
+        run(&mut s, "1:2", 73),
+        Val::Str(vec![
+            "type 73 is unimplemented in 'type2char'".into(),
+            "cannot coerce type 'integer' to vector of type 'unknown type #73'".into(),
+        ])
+    );
+    // a vectorizable list, as a pairlist: allocVector first
+    assert_eq!(run(&mut s, "list(1)", 73), Val::Str(vec!["unimplemented type 'list' in 'coerceVectorList'\n".into()]));
+    assert_eq!(
+        run(&mut s, "list(1)", 30),
+        Val::Str(vec![
+            "type 30 is unimplemented in 'type2char'".into(),
+            "invalid type/length (unknown type #30/1) in vector allocation".into(),
+        ])
+    );
+    // a named type GNU R cannot allocate: allocVector's error, no warning
+    assert_eq!(
+        run(&mut s, "pairlist(1)", 3),
+        Val::Str(vec!["invalid type/length (closure/1) in vector allocation".into()])
+    );
+}
+
+/// `allocVector` of a code no type names: type2char's warning, then GNU
+/// R's "invalid type/length" naming the caller's code (30 is NEWSXP, in the
+/// table without a name; 999 is past it, named as given).
+// R: memory.c:allocVector3, util.c:type2char
+#[test]
+fn alloc_vector_of_an_unknown_type_names_the_callers_code() {
+    let mut s = Session::new(Profile::Eval);
+    s.stderr();
+    for t in [30, 999] {
+        assert_eq!(
+            s.val(&format!(
+                "w <- NULL; tryCatch(withCallingHandlers(.Call(\"rt_alloc_type\", {t}, 1), \
+                 warning = function(c) {{ w <<- conditionMessage(c); invokeRestart(\"muffleWarning\") }}), \
+                 error = function(e) c(w, conditionMessage(e)))"
+            )),
+            Val::Str(vec![
+                format!("type {t} is unimplemented in 'type2char'"),
+                format!("invalid type/length (unknown type #{t}/1) in vector allocation"),
+            ])
+        );
+    }
+    // a type that has a name keeps it, without a warning
+    assert_eq!(
+        s.val("tryCatch(.Call(\"rt_alloc_type\", 8, 1), error = function(e) conditionMessage(e))"),
+        Val::Str(vec!["invalid type/length (builtin/1) in vector allocation".into()])
+    );
+}
+
 /// `coerceVector` to a type code no SEXPTYPE has, past robigo's `u8`
 /// codes: COERCE_ERROR names the code the caller gave, after type2char's
 /// warning (GNU R reads past its type table for such a code, so no oracle
@@ -635,5 +803,24 @@ fn a_package_altrep_index_matrix_is_not_implemented_yet() {
                 );
             }
         }
+    }
+}
+
+/// Byte code whose constants are a package ALTREP list translates without
+/// reading them where its instructions do not (`LDNULL; RETURN`): the
+/// translator reads a constant only where an instruction names it, never the
+/// list's length from its header (an ALTREP list's is its class's Length
+/// method). A guard against a constants-pool capacity hint, which a review
+/// found unsafe for NULL, ALTREP and long lists, and which was dropped.
+#[test]
+fn byte_code_with_altrep_constants_translates() {
+    for p in PROFILES {
+        let mut s = Session::new(p);
+        s.val("k <- .Call(\"rt_altrep_list\", list(NULL))");
+        assert_eq!(
+            s.val("f <- .Internal(bcClose(NULL, .Internal(mkCode(c(12L, 17L, 1L), k)), globalenv())); f()"),
+            Val::Null,
+            "{p:?}"
+        );
     }
 }

@@ -1,0 +1,2 @@
+# builtin-diff known failures: delayedBindingExpression, seed 0, key e662516c132c73f05d693a45
+# delayedBindingExpression: 141 / 141 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

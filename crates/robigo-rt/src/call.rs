@@ -34,8 +34,8 @@ pub unsafe fn find_fun(cx: &mut Cx, act: &Act, a: Reg, sym: Sexp, call: Sexp) ->
     // code, or the context's call).
     let (s, c) = unsafe { (act.scratch(R_SCRATCH, sym), act.scratch(R_SCRATCH2, ecall)) };
     let r = cx.find_fun3(s, act.root(R_ENV), Some(c), act.out(a));
-    act.clear(R_SCRATCH);
-    act.clear(R_SCRATCH2);
+    act.kill(R_SCRATCH, u32::MAX);
+    act.kill(R_SCRATCH2, u32::MAX);
     r
 }
 
@@ -406,7 +406,7 @@ pub unsafe fn call_builtin_regs(
     // R: eval.c:BUILTIN_CALL_FRAME_ARGS, eval.c:evalList
     let r = invoke_builtin(cx, act, dst, args, (base, if names { 2 * n } else { n }));
     for r in base..base + if names { 2 * n } else { n } as Reg {
-        act.clear(r);
+        act.kill(r, u32::MAX);
     }
     r
 }
@@ -451,9 +451,9 @@ pub unsafe fn call_fn_regs(
     });
     // SAFETY: as above.
     unsafe { crate::links::unskip_args(act.base()) };
-    act.clear(R_SCRATCH);
+    act.kill(R_SCRATCH, u32::MAX);
     for r in base..base + n as Reg {
-        act.clear(r);
+        act.kill(r, u32::MAX);
     }
     r
 }
@@ -481,8 +481,8 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
     let r = run_builtin_unchecked(cx, &def, act.root(R_SCRATCH), args, act.root(R_ENV), act.out(dst));
     // SAFETY: as above.
     unsafe { crate::links::unskip_args(act.base()) };
-    act.clear(R_SCRATCH);
-    act.clear(R_SCRATCH2);
+    act.kill(R_SCRATCH, u32::MAX);
+    act.kill(R_SCRATCH2, u32::MAX);
     r
 }
 
@@ -497,6 +497,11 @@ fn invoke_builtin(cx: &mut Cx, act: &Act, dst: Reg, args: Args<'_>, regs: (Reg, 
 /// (constants of `act`'s code, or rooted).
 // R: names.c:do_internal
 pub unsafe fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    // SAFETY: a live primitive (the caller's contract).
+    if unsafe { fun.typ() } == BUILTINSXP {
+        // SAFETY: the caller's contract.
+        return unsafe { internal_builtin_list(cx, act, dst, fun, call) };
+    }
     // SAFETY: a live primitive of this isolate.
     let name = unsafe { prims::def(cx, fun) }.name;
     let save = cx.pp_save(0);
@@ -504,6 +509,31 @@ pub unsafe fn call_special_internal(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp,
     cx.with_pp_excess(1, |cx| call_special_args(cx, act, dst, fun, call, true))?;
     cx.check_stack_balance(name.as_bytes(), save);
     Ok(())
+}
+
+/// `.Internal(f(...))` of a builtin internal whose arguments are evaluated
+/// at run time (`...` or an empty argument: the compiler sends it here, as
+/// [`SPECIAL_INTERNAL`](crate::ir::SPECIAL_INTERNAL) with the builtin as
+/// `fun` and the `.Internal` call as `call`): [`builtin_evallist`] of the
+/// inner call, the builtin called for it, and an empty argument reported
+/// against the `.Internal` call (do_internal's `evalList(args, env, call,
+/// 0)`).
+///
+/// # Safety
+/// `fun` is a live BUILTINSXP and `call` a live `.Internal` call whose
+/// argument is a call or a pairlist (the compiler's check), of `cx`'s
+/// isolate (constants of `act`'s code).
+// R: names.c:do_internal
+#[cold]
+#[inline(never)]
+unsafe fn internal_builtin_list(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, call: Sexp) -> RResult<()> {
+    // SAFETY: the running activation's code object.
+    let bc = unsafe { crate::code::View::of(act.obj(crate::ir::R_CODE)) }.profile == Profile::Bc;
+    cx.scope(|cx, s| {
+        // SAFETY: constants of the rooted code.
+        let (w, funr) = unsafe { (s.root(cx, Ref::from_sexp(call, cx)), s.root(cx, Ref::from_sexp(fun, cx))) };
+        evallist_for::<true>(cx, w, funr, act.root(R_ENV), act.out(dst), bc, None)
+    })
 }
 
 /// A special of the builtin registry, primitive or `.Internal`
@@ -585,7 +615,8 @@ unsafe fn call_builtin_list_codes(cx: &mut Cx, act: &Act, dst: Reg, fun: Sexp, c
 /// an argument call by its compiled code (`bcEval(code, rho)`: a
 /// translated call's own promise code from `codes`), an empty argument
 /// R_MissingArg, reported ("argument %d is empty") only once all are
-/// evaluated.
+/// evaluated. `codes` is read only with `bc` (the AST's evaluation has no
+/// promise codes), so a caller passes it only with `bc`.
 // R: eval.c:evalList, eval.c:eval (BUILTINSXP), eval.c:bcEval MAKEPROM, checkForMissings, signalMissingArgError
 pub fn builtin_evallist(
     cx: &mut Cx,
@@ -596,6 +627,23 @@ pub fn builtin_evallist(
     bc: bool,
     codes: Option<Root<'_>>,
 ) -> RResult<()> {
+    evallist_for::<false>(cx, callr, funr, rho, out, bc, codes)
+}
+
+/// [`builtin_evallist`] of the call `callr`; with `WRAPPED`, `callr` is an
+/// `.Internal` call: of its inner call (its argument), an empty argument
+/// reported against `callr`.
+#[inline(always)]
+fn evallist_for<const WRAPPED: bool>(
+    cx: &mut Cx,
+    callr: Root<'_>,
+    funr: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    bc: bool,
+    codes: Option<Root<'_>>,
+) -> RResult<()> {
+    debug_assert!(codes.is_none() || bc, "robigo: promise codes without the Bc profile's evaluation");
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     cx.scope(|cx, s| {
@@ -606,8 +654,15 @@ pub fn builtin_evallist(
         // the values' links, dropped before the call, or on an early exit
         // SAFETY: `head` is a slot of this scope, which outlives the guard.
         let linked = unsafe { crate::links::Linked::list(head) };
+        // (the evaluated call: `callr`, or the `.Internal` call's argument)
+        let call = if WRAPPED {
+            // SAFETY: the rooted `.Internal` call's argument (the compiler's check).
+            s.root(cx, unsafe { Ref::from_sexp(callr.bind(cx).sexp().cdr().car(), cx) })
+        } else {
+            callr
+        };
         // SAFETY: the rest of the rooted call.
-        let el = s.root(cx, unsafe { Ref::from_sexp(callr.bind(cx).sexp().cdr(), cx) });
+        let el = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().cdr(), cx) });
         let mut n = 0;
         let mut count = 0usize;
         loop {
@@ -655,7 +710,7 @@ pub fn builtin_evallist(
                 })?;
             } else if a == missing && !bc {
                 let msg = format!("argument {n} is empty");
-                return Err(cx.error_call(Some(callr), &msg));
+                return Err(cx.error_call(Some(if WRAPPED { callr } else { call }), &msg));
             } else {
                 let t = cell.tag().sexp();
                 cx.scope(|cx, s2| {
@@ -726,12 +781,12 @@ pub fn builtin_evallist(
             }
             if found {
                 let mut k = 0;
-                let mut c = callr.bind(cx).as_cons().unwrap().cdr();
+                let mut c = call.bind(cx).as_cons().unwrap().cdr();
                 while let Some(cell) = c.as_cons() {
                     k += 1;
                     if cell.car().sexp() == missing {
                         let msg = format!("argument {k} is empty");
-                        return Err(cx.error_call(Some(callr), &msg));
+                        return Err(cx.error_call(Some(if WRAPPED { callr } else { call }), &msg));
                     }
                     c = cell.cdr();
                 }
@@ -739,12 +794,15 @@ pub fn builtin_evallist(
         }
         // SAFETY: `count` object slots and `count` name slots of this scope.
         let args = unsafe { Args::from_raw(values, Some(names), count as u32, any_alt) };
-        invoke_builtin_root(cx, funr, callr, args, rho, out)
+        invoke_builtin_root(cx, funr, call, args, rho, out)
     })
 }
 
 /// Call the builtin `fun` with `args` (rooted) for `call`, the value into
 /// `out`, `R_Visible` as `PRIMPRINT` says; a safepoint on return.
+// (inlined into both instantiations of `evallist_for`, as into its one
+// caller on main: an outlined copy costs every list-path builtin call)
+#[inline(always)]
 fn invoke_builtin_root(
     cx: &mut Cx,
     fun: Root<'_>,
@@ -942,7 +1000,7 @@ pub fn loop_region(cx: &mut Cx, act: &mut Act, start: usize, regs: Reg, nregs: R
             Err(Left::Landed(info)) => info,
         };
         for r in regs..nregs {
-            act.clear(r);
+            act.kill(r, u32::MAX);
         }
         if landed.mask != ctxt::NEXT {
             return Ok(Flow::RegionEnd);

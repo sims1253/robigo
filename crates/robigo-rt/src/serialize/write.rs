@@ -81,6 +81,15 @@ pub(super) struct Writer<'h> {
     hook: Option<Root<'h>>,
     /// The effect points' results so far, by their position in the walk.
     effects: Vec<Global>,
+    /// This pass's closures robigo-rt's JIT compiled, by address, and the
+    /// position in `effects` of the R_cmpfun1 result written for each: a
+    /// closure the graph reaches again is written from it, not compiled
+    /// again (reset with each pass, as `refs` is: a restart may move them).
+    /// Only compiles that gave byte code are kept. The position is valid
+    /// because [`Writer::cmpfun1`] is exactly one [`Writer::effect`], whose
+    /// result `effects` keeps at the walk's position (`seq`) for the whole
+    /// call, across restarts (a debug assertion checks the one).
+    jit: HashMap<usize, usize>,
     seq: usize,
     depth: usize,
 }
@@ -88,7 +97,16 @@ pub(super) struct Writer<'h> {
 /// `R_Serialize(s, stream)`: the header and the object, into `out`.
 // R: serialize.c:R_Serialize
 pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<Root<'_>>) -> RResult<Vec<u8>> {
-    let mut w = Writer { out, refs: HashMap::new(), count: 0, hook, effects: Vec::new(), seq: 0, depth: 0 };
+    let mut w = Writer {
+        out,
+        refs: HashMap::new(),
+        count: 0,
+        hook,
+        effects: Vec::new(),
+        jit: HashMap::new(),
+        seq: 0,
+        depth: 0,
+    };
     // (a walk that starts over starts with `R_compile_pkgs` as the first
     // did: it is off while a closure compiled on write is written)
     let compile_pkgs = crate::prims::state(cx).compile_pkgs.get();
@@ -96,6 +114,7 @@ pub(super) fn serialize(cx: &mut Cx, s: Root<'_>, out: OutStream, hook: Option<R
         crate::prims::state(cx).compile_pkgs.set(compile_pkgs);
         w.out.buf.clear();
         w.refs.clear();
+        w.jit.clear();
         w.count = 0;
         w.seq = 0;
         w.depth = 0;
@@ -331,7 +350,7 @@ impl Writer<'_> {
     /// `s` is live, reachable from the rooted object, and nothing has
     /// collected since it was read.
     // R: serialize.c:WriteItem
-    unsafe fn compile_on_write(&self, cx: &Cx, s: Sexp) -> bool {
+    unsafe fn compile_on_write(cx: &Cx, s: Sexp) -> bool {
         let st = crate::prims::state(cx);
         // SAFETY: the caller's contract; a closure's body is its CDR.
         unsafe {
@@ -346,6 +365,26 @@ impl Writer<'_> {
             !x.is_s4()
                 || !(robigo_rtbuiltins::attrib::inherits(x, b"refMethodDef")
                     || robigo_rtbuiltins::attrib::inherits(x, b"defaultBindingFunction"))
+        }
+    }
+
+    /// Whether `s` is a closure robigo-rt's JIT has compiled (its own
+    /// code, no BCODESXP for its body): GNU R's JIT has installed
+    /// `R_cmpfun1`'s byte code as its BODY by now (eval.c:R_cmpfun), and
+    /// serialize writes that, `R_disable_bytecode` or not: that setting
+    /// stops byte code running, not an installed body being written. Not
+    /// one marked NOJIT: the compiler declined it (R_cmpfun), and GNU R
+    /// never offers a NOJIT closure to the JIT's compile again.
+    ///
+    /// # Safety
+    /// As for [`Self::compile_on_write`].
+    unsafe fn jit_compiled(s: Sexp) -> bool {
+        // SAFETY: the caller's contract; a closure's body is its CDR.
+        unsafe {
+            s.typ() == CLOSXP
+                && crate::jit::compiled(s)
+                && s.gp() & crate::jit::NOJIT_MASK == 0
+                && s.cdr().typ() != BCODESXP
         }
     }
 
@@ -410,7 +449,40 @@ impl Writer<'_> {
             // collected restarts the walk).
             unsafe {
                 loop {
-                    if self.compile_on_write(cx, s) {
+                    // a closure robigo-rt's JIT compiled: GNU R's JIT has made
+                    // its BODY R_cmpfun1's byte code (so WriteItem's compile
+                    // on write passes it over), and the same compile now
+                    // writes what GNU R writes (the closure cmpfun makes: the
+                    // formals, the code, the environment and attributes; no
+                    // JIT bits, as R_CheckJIT cleared MAYBEJIT)
+                    if Self::jit_compiled(s) {
+                        let new_s = match self.jit.get(&s.addr()) {
+                            Some(&k) => self.effects[k].bind(cx).sexp(),
+                            None => {
+                                // (cmpfun1 is one effect point: its result is
+                                // kept at the position the walk is at now)
+                                let k = self.seq;
+                                let new_s = self.cmpfun1(cx, s)?;
+                                debug_assert_eq!(self.seq, k + 1, "robigo: R_cmpfun1 is not one effect point");
+                                // (a decline is not kept: the closure is NOJIT
+                                // from here, so the walk never asks again)
+                                if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
+                                    self.jit.insert(s.addr(), k);
+                                }
+                                new_s
+                            }
+                        };
+                        if new_s.typ() == CLOSXP && new_s.cdr().typ() == BCODESXP {
+                            return self.item(cx, new_s);
+                        }
+                        // R_cmpfun: the compiler declined, so GNU R's JIT left
+                        // the source and set NOJIT, which no later write
+                        // offers to the compiler again (below, the source
+                        // as GNU R writes it: compiled on write under
+                        // R_compile_pkgs, as it is otherwise)
+                        s.set_gp(s.gp() | crate::jit::NOJIT_MASK);
+                    }
+                    if Self::compile_on_write(cx, s) {
                         // R_compile_pkgs off while the compiled closure is
                         // written (its environment's closures are written
                         // as they are), then TRUE; an error leaves it off
@@ -478,15 +550,6 @@ impl Writer<'_> {
                         _ => false,
                     };
                     let hasattr = t != CHARSXP && s.attrib_raw() != nil;
-                    // a closure robigo-rt compiles itself where GNU R holds
-                    // its body as byte code: no BCODESXP of GNU R's to write
-                    // (one whose body is a BCODESXP, from bcClose or
-                    // unserialize, is written as it is)
-                    if t == CLOSXP && crate::jit::compiled(s) && s.cdr().typ() != BCODESXP {
-                        return Err(cx
-                            .error("robigo: serializing a byte-compiled closure is not implemented yet")
-                            .into());
-                    }
                     if t == PROMSXP
                         && s.extra() & robigo_heap::extra::promise::BYTECODE != 0
                         && s.cdr().typ() != BCODESXP

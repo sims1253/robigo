@@ -1,0 +1,3 @@
+Error in X[[i]] : subscript out of bounds
+Calls: lapply
+Execution halted

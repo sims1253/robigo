@@ -117,12 +117,20 @@ pub struct Isolate {
     /// The evaluator, dispatcher and condition system (`hooks.rs`).
     pub(crate) hooks: Cell<Hooks>,
     pub(crate) locale: Cell<Locale>,
+    /// The locale's names per category (`Sys.getlocale`).
+    pub(crate) locale_names: std::cell::RefCell<crate::clib::LocaleNames>,
+    /// GNU R's `R_TempDir` (and `Sys_TempDir`): the session's temporary
+    /// directory, made at startup (`InitTempDir`), removed at the end
+    /// (`R_CleanTempDir`, [`Cx::clean_temp_dir`]).
+    pub(crate) temp_dir: std::cell::RefCell<Option<(u32, Vec<u8>)>>,
     /// The embedder's grant of the process environment's writes
     /// (`clib::EnvWrites`, [`OwnedIsolate::grant_env_writes`]): without
     /// it `Sys.setenv`/`Sys.unsetenv` refuse.
     pub(crate) env_writes: std::cell::OnceCell<crate::clib::EnvWrites>,
     /// GNU R's `R_warn_partial_match_args` (`options(warnPartialMatchArgs)`).
     pub(crate) warn_partial_match_args: Cell<bool>,
+    /// GNU R's `R_warn_partial_match_attr` (`options(warnPartialMatchAttr)`).
+    pub(crate) warn_partial_match_attr: Cell<bool>,
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every in-place write copies.
     pub(crate) no_inplace: Cell<bool>,
     /// `ROBIGO_RETRY_TORTURE=1` ([`Cx::retry_torture`]).
@@ -147,7 +155,11 @@ pub struct Isolate {
 /// environments, base bindings and the global cache) and the deferred
 /// warnings. Only [`Cx::need_gc`] takes `&mut` of it, for the collection it
 /// hands it to; everything else reads it through the accessors below.
+// (the freeze roots, [`Roots::trace_freeze_roots`], are a part of these: the
+// boot heap's lazy freeze walks them inside the first collection after the
+// boot boundary, robigo-heap's `freeze.rs`)
 #[derive(Trace)]
+#[trace(freeze = "trace_freeze_roots", search_path = "trace_search_path")]
 pub(crate) struct Roots {
     stack: ValueStack,
     globals: Globals,
@@ -160,22 +172,82 @@ pub(crate) struct Roots {
     capi: crate::capi::CApi,
 }
 
+impl Roots {
+    /// The freeze roots (`Cx::freeze_boot_heap`): the environments' state,
+    /// the C API's constants and the search path; not the `Globals` (roots
+    /// only: what only they hold is never frozen, so releasing one takes no
+    /// note, step 2), the value stack, the contexts, the pending exits or
+    /// the warnings, which are the session's.
+    /// The search path's environments reach the visitor as copies: an
+    /// edge it writes back is not stored (a debug assertion refuses one),
+    /// so the visitor must only read, as the freeze's does.
+    pub(crate) fn trace_freeze_roots<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        self.envs.trace_freeze_roots(v);
+        self.capi.trace_freeze_constants(v);
+        self.trace_search_path(v);
+    }
+
+    /// The search path's environments after the global one (amendment 4:
+    /// the attached packages a start with default packages loaded): a part
+    /// of the freeze roots, and the walk the frozen-reachability pass's
+    /// deferred search-path test compares (`Trace::trace_search_path`).
+    /// The one walk of it, so the two cannot differ.
+    pub(crate) fn trace_search_path<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        let base = self.envs.base_raw();
+        let mut e = self.envs.global_raw();
+        // (a rewired chain may cycle: each environment once, Sol r3 S9; the
+        // global environment itself is seen from the start, so a chain led
+        // back to it, `parent.env(globalenv()) <- e` with e's parent the
+        // global one in a profile, never offers it as a root)
+        let mut seen = std::collections::HashSet::from([e.addr()]);
+        loop {
+            // SAFETY: the global environment and its enclosures are live
+            // environments of this isolate (the search path's chain ends at
+            // base, then the empty environment).
+            e = unsafe { robigo_heap::env::enclos(e) };
+            if e.is_null() || e == base || e == self.envs.empty_raw() || !seen.insert(e.addr()) {
+                break;
+            }
+            // the visitor gets a copy: the chain is walked, never rewritten
+            // (the freeze's visitor reads; a moving one would be refused,
+            // the freeze being off under ROBIGO_GC_MOVE)
+            let mut x = e;
+            v.edge(&mut x);
+            debug_assert_eq!(x, e, "robigo: the freeze roots' search-path walk does not take a moved edge");
+        }
+    }
+}
+
 /// What a frame (a scope, a native call, a callback) restores when it ends,
 /// on every path: the value-stack top and the innermost scope.
 #[derive(Clone, Copy)]
 pub(crate) struct Frame {
     pub(crate) top: NonNull<Slot>,
     pub(crate) innermost: u64,
+    /// Where the frame was opened (`poison-dead` feature): the line its
+    /// restore's poisons name (`Cx::scope`'s, `call_out`'s and
+    /// `enter_raw`'s callers), not the line of the guard that ends it.
+    #[cfg(feature = "poison-dead")]
+    pub(crate) at: &'static std::panic::Location<'static>,
 }
 
 impl Isolate {
     #[inline(always)]
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub(crate) fn frame(&self) -> Frame {
-        Frame { top: self.stack().top(), innermost: self.innermost.get() }
+        Frame {
+            top: self.stack().top(),
+            innermost: self.innermost.get(),
+            #[cfg(feature = "poison-dead")]
+            at: std::panic::Location::caller(),
+        }
     }
 
     #[inline(always)]
     pub(crate) fn restore(&self, f: Frame) {
+        #[cfg(feature = "poison-dead")]
+        self.stack().restore_at(f.top, f.at);
+        #[cfg(not(feature = "poison-dead"))]
         self.stack().restore(f.top);
         self.innermost.set(f.innermost);
     }
@@ -207,7 +279,8 @@ impl Isolate {
     }
 
     /// The context chain and its globals. Every field is a `Cell` (as the
-    /// value stack's), so shared references may coexist.
+    /// value stack's), the detached segments' list a `RefCell` borrowed only
+    /// for a push or a copy, so shared references may coexist.
     #[inline(always)]
     pub(crate) fn contexts(&self) -> &Contexts {
         // SAFETY: as in `stack`.
@@ -482,6 +555,7 @@ impl Cx {
     /// [`Reentry`] it is given. Like every native dispatch, the value-stack
     /// top and the innermost scope are restored when `f` returns or
     /// unwinds, so a callback's roots die with it.
+    #[cfg_attr(feature = "poison-dead", track_caller)]
     pub fn call_out<R>(&mut self, f: impl FnOnce(Reentry<'_>) -> R) -> R {
         let iso = self.iso();
         debug_assert!(iso.active.get(), "robigo: a suspended capability in use");
@@ -578,6 +652,53 @@ impl Cx {
         self.cglobals().set_locale(l);
     }
 
+    /// The locale's names per category, as `setlocale(category, NULL)`
+    /// gives them (`Sys.getlocale`).
+    pub fn locale_names(&self) -> crate::clib::LocaleNames {
+        self.iso().locale_names.borrow().clone()
+    }
+
+    /// One category's locale name, `setlocale(cat, NULL)`
+    /// ([`crate::clib::LocaleNames::get`]).
+    pub fn locale_name(&self, cat: crate::clib::category::c_int) -> Vec<u8> {
+        self.iso().locale_names.borrow().get(cat)
+    }
+
+    /// Set the locale's names (startup's, `Sys.setlocale`'s).
+    pub fn set_locale_names(&mut self, n: crate::clib::LocaleNames) {
+        *self.iso().locale_names.borrow_mut() = n;
+    }
+
+    /// GNU R's `R_TempDir`: the session's temporary directory, if made.
+    pub fn temp_dir(&self) -> Option<Vec<u8>> {
+        self.iso().temp_dir.borrow().as_ref().map(|(_, d)| d.clone())
+    }
+
+    /// Set `R_TempDir` (and `Sys_TempDir`) to the directory `dir` this
+    /// process made, or forget it (`R_TempDir = NULL`, for
+    /// `tempdir(check = TRUE)`'s remaking: the old one is then left as it is,
+    /// as GNU R leaves it). The current one is removed at the end
+    /// ([`Cx::clean_temp_dir`]: robigo-rt's R_CleanUp, which every orderly
+    /// end goes through, or the isolate's drop; a panic past the session's
+    /// reset or an abort removes nothing, as a crash of GNU R's does not).
+    pub fn set_temp_dir(&self, dir: Option<Vec<u8>>) {
+        *self.iso().temp_dir.borrow_mut() = dir.map(|d| (std::process::id(), d));
+    }
+
+    /// `R_CleanTempDir()`: the session's temporary directory removed, once
+    /// (a second call does nothing), and only by the process that made it:
+    /// a forked child shares its parent's session directory
+    /// (sysutils.c's note on `R_tmpnam2`) and leaves it.
+    // R: platform.c:R_CleanTempDir
+    pub fn clean_temp_dir(&self) {
+        let d = self.iso().temp_dir.borrow_mut().take();
+        if let Some((pid, d)) = d
+            && pid == std::process::id()
+        {
+            crate::clib::remove_temp_dir(&d);
+        }
+    }
+
     /// GNU R's `R_warn_partial_match_args`: argument matching warns of
     /// partial matches (`options(warnPartialMatchArgs = TRUE)`).
     #[inline(always)]
@@ -588,6 +709,18 @@ impl Cx {
     /// Set `R_warn_partial_match_args` (`options()` does).
     pub fn set_warn_partial_match_args(&mut self, on: bool) {
         self.iso().warn_partial_match_args.set(on);
+    }
+
+    /// GNU R's `R_warn_partial_match_attr`: `attr()` warns of a partial
+    /// match of the attribute's name (`options(warnPartialMatchAttr = TRUE)`).
+    #[inline(always)]
+    pub fn warn_partial_match_attr(&self) -> bool {
+        self.iso().warn_partial_match_attr.get()
+    }
+
+    /// Set `R_warn_partial_match_attr` (`options()` does).
+    pub fn set_warn_partial_match_attr(&mut self, on: bool) {
+        self.iso().warn_partial_match_attr.set(on);
     }
 
     /// `ROBIGO_NO_INPLACE=1` (docs/g3.md §16): every write that would
@@ -952,6 +1085,7 @@ impl Reentry<'_> {
 /// # Safety
 /// `iso` comes from [`Reentry::as_ptr`] of a capability that stays
 /// suspended for this whole call (so the isolate is live), on this thread.
+#[cfg_attr(feature = "poison-dead", track_caller)]
 pub unsafe fn enter_raw<R>(iso: *mut Isolate, f: impl FnOnce(&mut Cx) -> R) -> R {
     // SAFETY: the caller's contract: `iso` is a live isolate.
     let iso = unsafe { NonNull::new_unchecked(iso) };
@@ -996,15 +1130,90 @@ impl Drop for EndCallback {
 /// clib's environment lock, for a whole `Sys.setenv`/`Sys.unsetenv` call,
 /// so on a glibc older than `clib::MIN_GLIBC` no second isolate starts (and
 /// so no other robigo thread can be inside `getenv`) while the environment
-/// changes. Lock order: this, then clib's `ENV`, then std's environment
-/// lock.
+/// changes. It is first in the process's lock order, and the fork handlers
+/// hold it across a `fork` (robigo-heap's `fork.rs`). In a forked child
+/// the count still includes the other threads' isolates, which the child
+/// does not have; on an older glibc that only refuses environment writes
+/// there.
 static LIVE_ISOLATES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 /// [`LIVE_ISOLATES`] locked (a panic while it was held left a count that
 /// is still right: nothing panics between its reads and writes).
+/// [`LIVE_ISOLATES`]' address, for a fork test's report of a hung child.
+#[cfg(test)]
+pub(crate) fn live_isolates_addr() -> *const () {
+    (&raw const LIVE_ISOLATES).cast()
+}
+
 pub(crate) fn live_isolates() -> std::sync::MutexGuard<'static, usize> {
     LIVE_ISOLATES.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// The guards `fork_take` holds across a fork, released by `fork_release`
+/// on both sides: only the forking thread touches them, between the two
+/// handlers.
+type ForkHeld = (
+    std::sync::MutexGuard<'static, usize>,
+    std::sync::RwLockWriteGuard<'static, ()>,
+    (std::sync::MutexGuard<'static, ()>, libc::pid_t),
+);
+
+struct ForkGuards(std::cell::UnsafeCell<Option<ForkHeld>>);
+
+// SAFETY: written by a fork's `prepare` handler and read by the same fork's
+// `parent` or `child` handler, on the forking thread (the C library runs
+// them around `fork`). Two forks on two threads never overlap here:
+// robigo-heap's `FORK` lock, taken first in `prepare` and released last
+// after `parent`/`child`, serializes whole forks, so one fork's handlers
+// alone reach the slot at a time.
+unsafe impl Sync for ForkGuards {}
+
+static FORK_GUARDS: ForkGuards = ForkGuards(std::cell::UnsafeCell::new(None));
+
+/// The fork handlers' `prepare` for this crate's locks, in the process's
+/// order (robigo-heap's `fork.rs`): the live isolates, the environment's
+/// lock exclusive, then the time zone session's (a leaf).
+fn fork_take() {
+    let live = live_isolates();
+    let env = crate::clib::env_write_lock();
+    let tz = crate::clib::tz_session_fork_take();
+    // SAFETY: as for `ForkGuards`: this fork alone, under `FORK`; the slot
+    // is empty (the previous fork's `fork_release` took it). That relies on
+    // the C library running `parent` after every `prepare`, a fork that
+    // fails included: glibc does (verified on 2.44: a fork refused with
+    // EAGAIN runs prepare, then parent; `fork_tests`'
+    // `a_failed_fork_releases_the_locks`).
+    unsafe { *FORK_GUARDS.0.get() = Some((live, env, tz)) };
+}
+
+/// The fork handlers' `parent` and `child` for this crate's locks: the
+/// reverse order (the time zone session's, `ENV`, then the live isolates).
+/// In the child the forking thread is the guards' owner, so unlocking is
+/// its own.
+fn fork_release() {
+    // SAFETY: as for `ForkGuards`.
+    if let Some((live, env, (tz, pid))) = unsafe { (*FORK_GUARDS.0.get()).take() } {
+        crate::clib::tz_session_fork_release(tz, pid);
+        drop(env);
+        drop(live);
+    }
+}
+
+/// The constructor: this crate's locks given to the fork handlers before
+/// `main`, while the process has one thread, so no fork can see one held
+/// before the handlers know it.
+#[cfg(all(target_os = "linux", not(miri)))]
+extern "C" fn set_fork_locks_at_load() {
+    robigo_heap::set_fork_locks(fork_take, fork_release);
+}
+
+// SAFETY: an `.init_array` entry is a function of no arguments that the
+// loader calls once, before `main`; `set_fork_locks_at_load` stores two
+// atomics and needs nothing of std's runtime.
+#[cfg(all(target_os = "linux", not(miri)))]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static SET_FORK_LOCKS_AT_LOAD: extern "C" fn() = set_fork_locks_at_load;
 
 /// [`LIVE_ISOLATES`] if no one holds it (a test's probe).
 #[cfg(test)]
@@ -1051,6 +1260,12 @@ impl OwnedIsolate {
     }
 
     pub fn with_options(opts: Options) -> OwnedIsolate {
+        // the fork handlers know this crate's locks before this isolate
+        // takes one. The constructor did it before `main`; this repeats it
+        // in case a linker dropped the constructor. That fallback is
+        // best-effort: another thread that already held one of these locks
+        // before this first call could still be caught by a fork.
+        robigo_heap::set_fork_locks(fork_take, fork_release);
         // counted before it can run anything (an environment write waits);
         // a panic below takes the count back
         let registration = Registration::new();
@@ -1094,8 +1309,11 @@ impl OwnedIsolate {
             ext_index: UnsafeCell::new(Vec::new()),
             hooks: Cell::new(Hooks::default()),
             locale: Cell::new(opts.locale),
+            locale_names: Default::default(),
+            temp_dir: Default::default(),
             env_writes: std::cell::OnceCell::new(),
             warn_partial_match_args: Cell::new(false),
+            warn_partial_match_attr: Cell::new(false),
             no_inplace: Cell::new(false),
             retry_torture: Cell::new(false),
             code: CodeStamps::default(),
@@ -1157,6 +1375,8 @@ impl Default for OwnedIsolate {
 
 impl Drop for OwnedIsolate {
     fn drop(&mut self) {
+        // Rf_endEmbeddedR's R_CleanTempDir
+        self.cx().clean_temp_dir();
         // SAFETY: made by `Box::leak` in `with_options` and freed once, here.
         // A capability cannot be moved out of its storage (`Cx` is
         // unsized), so this owner's still names its isolate, and every

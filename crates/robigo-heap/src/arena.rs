@@ -18,21 +18,21 @@
 //!   is published.
 //! - **The lock.** One `pthread_mutex_t` guards the name table and the
 //!   segments. A heap takes it only when a name is new to it: its own
-//!   table caches every symbol it has installed. `pthread_atfork` takes it
-//!   before a fork and releases it on both sides, so a child forked while
-//!   another thread interns can intern too.
+//!   table caches every symbol it has installed. The process's fork
+//!   handlers (`fork.rs`) take it before a fork and release it on both
+//!   sides, so a child forked while another thread interns can intern too.
 
 use crate::heap::{BLOCK, DATA_OFF, REMEMBERED_OFF};
 use crate::layout::{GRANULE, charsxp, charsxp_bytes, flags, gp, header, node, sym};
+use crate::symtab::SymTable;
 use crate::types::*;
-use crate::{BuildFx, Sexp, hash_bytes, sym_hash};
+use crate::{Sexp, hash_bytes, sym_hash};
 use std::cell::UnsafeCell;
-use std::collections::HashMap;
 
 /// The arena's state, behind [`LOCK`].
 struct Inner {
-    /// name → symbol
-    names: HashMap<Box<[u8]>, Sexp, BuildFx>,
+    /// name → symbol (made at the first install: [`crate::symtab::SLOTS`])
+    names: Option<SymTable>,
     /// the current segment's free space
     next: *mut u8,
     end: *mut u8,
@@ -47,7 +47,7 @@ struct Arena(UnsafeCell<Inner>);
 unsafe impl Sync for Arena {}
 
 static ARENA: Arena = Arena(UnsafeCell::new(Inner {
-    names: HashMap::with_hasher(BuildFx::new()),
+    names: None,
     next: std::ptr::null_mut(),
     end: std::ptr::null_mut(),
     next_id: crate::shared::FIRST_SYMBOL_ID,
@@ -61,34 +61,48 @@ unsafe impl Sync for Lock {}
 
 static LOCK: Lock = Lock(UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER));
 
-static AT_FORK: std::sync::Once = std::sync::Once::new();
-
-extern "C" fn lock_before_fork() {
+/// The lock taken outside `locked`: by the fork handlers' `prepare`, after
+/// every other lock of the process (`fork.rs`), and by
+/// [`hold_lock_for_test`].
+pub(crate) fn lock_for_fork() {
     // SAFETY: the static mutex, initialized.
     unsafe { libc::pthread_mutex_lock(LOCK.0.get()) };
 }
 
-extern "C" fn unlock_after_fork() {
-    // SAFETY: the mutex `lock_before_fork` took, in this process (the parent)
+/// The release of [`lock_for_fork`]'s lock: by the fork handlers' `parent`
+/// and `child`, and by [`hold_lock_for_test`]'s guard.
+pub(crate) fn unlock_after_fork() {
+    // SAFETY: the mutex `lock_for_fork` took, in this process (the parent)
     // or its copy (the child, where the forking thread owns it).
     unsafe { libc::pthread_mutex_unlock(LOCK.0.get()) };
 }
 
-/// Run `f` with the arena's state, under the lock.
+/// The arena's lock, held by the caller until the guard drops: a fork
+/// test's stand-in for a thread inside `install` (not for other uses). The
+/// guard is neither `Send` nor `Sync`, so it unlocks on the thread that
+/// locked.
+///
+/// # Safety
+/// The caller interns nothing (no `install`, no new heap) while it holds the
+/// guard, and drops it on this thread.
+#[cfg(feature = "test-support")]
+pub unsafe fn hold_lock_for_test() -> impl Drop {
+    struct Held(std::marker::PhantomData<*const ()>);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            unlock_after_fork();
+        }
+    }
+    lock_for_fork();
+    Held(std::marker::PhantomData)
+}
+
+/// Run `f` with the arena's state, under the lock (`fork.rs` registers
+/// the fork handlers that keep a forked child's copy of it free).
 fn locked<R>(f: impl FnOnce(&mut Inner) -> R) -> R {
-    // (Miri runs no fork)
-    #[cfg(not(miri))]
-    AT_FORK.call_once(|| {
-        // SAFETY: three `extern "C"` functions of no arguments, as
-        // pthread_atfork takes them.
-        let r =
-            unsafe { libc::pthread_atfork(Some(lock_before_fork), Some(unlock_after_fork), Some(unlock_after_fork)) };
-        assert_eq!(r, 0, "robigo: pthread_atfork for the symbol arena");
-    });
-    #[cfg(miri)]
-    let _ = &AT_FORK;
-    // SAFETY: the static mutex, initialized; taken and released here only,
-    // so `Inner` has one user at a time.
+    // SAFETY: the static mutex, initialized. Whoever holds it is the one
+    // user of `Inner`: here, and the fork handlers and the test guard, which
+    // hold it without touching `Inner`.
     unsafe {
         let r = libc::pthread_mutex_lock(LOCK.0.get());
         assert_eq!(r, 0, "robigo: the symbol arena's lock");
@@ -118,14 +132,37 @@ impl Inner {
         if (self.end as usize).saturating_sub(self.next as usize) < size {
             let bytes = segment_bytes(size);
             let layout = std::alloc::Layout::from_size_align(bytes, BLOCK).expect("robigo: an arena segment's layout");
-            // SAFETY: a non-zero size; zeroed, so the pseudo header's magic
-            // is not a block's.
-            let base = unsafe { std::alloc::alloc_zeroed(layout) };
+            // SAFETY: a non-zero size.
+            let base = unsafe { std::alloc::alloc(layout) };
             if base.is_null() {
                 std::alloc::handle_alloc_error(layout);
             }
-            // SAFETY: inside the fresh segment.
+            // SAFETY: inside the fresh segment. Only the pseudo header is
+            // zeroed, so its magic is not a block's. The rest stays
+            // unwritten until `take` hands it out, which is sound because:
+            // - every byte a reader can reach is written before the object
+            //   is published: all six words of a symbol (`new_symbol`), and
+            //   a name record's header, hash, lengths, bytes and NUL
+            //   (`new_name`). Readers skip the record's alignment padding
+            //   and the segment's unused space. Every object starts in the
+            //   segment's first 64 KiB (an oversized name's own segment
+            //   too), so `heap_id` and `is_shared` read the zeroed pseudo
+            //   header;
+            // - only `install` and `new_marker` write a segment, under the
+            //   arena's lock, and they publish an object (into the arena's
+            //   table, and to the caller) only once it is complete;
+            // - no pointer into the unwritten tail exists: `take` hands out
+            //   memory below `next` only. Another thread or isolate reaches
+            //   an arena object through the table (under the lock) or as a
+            //   symbol it was handed, which was complete when published;
+            // - a forked child copies the segment while the fork handlers
+            //   hold the arena's lock (`fork.rs`), so no object is half
+            //   written there. Its unwritten tail is unreachable, as in the
+            //   parent.
+            // Zeroing the whole 64 KiB only cost the time: 65k instructions
+            // a segment, 1.1% of a base boot.
             unsafe {
+                std::ptr::write_bytes(base, 0, DATA_OFF);
                 *(base.add(REMEMBERED_OFF) as *mut *const u8) = crate::shared::id_word();
                 self.next = base.add(DATA_OFF);
                 self.end = base.add(bytes);
@@ -165,14 +202,18 @@ impl Inner {
         }
     }
 
-    /// The arena's copy of a name: a CHARSXP-shaped record, immortal.
-    fn new_name(&mut self, bytes: &[u8]) -> Sexp {
+    /// The arena's copy of a name, whose [`hash_bytes`] is `h`: a
+    /// CHARSXP-shaped record, immortal, complete before the symbol that
+    /// names it is published, and never written after (the symbol tables
+    /// read it: `symtab.rs`).
+    fn new_name(&mut self, bytes: &[u8], h: u32) -> Sexp {
+        debug_assert_eq!(h, hash_bytes(bytes));
         let p = self.take(charsxp_bytes(bytes.len()));
         // SAFETY: a fresh object with room for the bytes and their NUL.
         unsafe {
             *(p as *mut u64) = header::first_word(CHARSXP);
             let x = Sexp(p);
-            *(p.add(charsxp::OFF_HASH) as *mut u64) = hash_bytes(bytes) as u64;
+            *(p.add(charsxp::OFF_HASH) as *mut u64) = h as u64;
             x.set_std_len(bytes.len() as isize);
             x.set_truelen(0);
             let d = p.add(charsxp::OFF_DATA);
@@ -187,23 +228,30 @@ impl Inner {
     }
 }
 
-/// The symbol named `name`, made if no heap of the process has made it;
-/// `bits` gives a new one its name's bits. Never collects.
-pub(crate) fn install(name: &[u8], bits: impl FnOnce() -> (u8, u16)) -> Sexp {
+/// The symbol named `name`, whose [`hash_bytes`] is `h`, made if no heap of
+/// the process has made it; `bits` gives a new one its name's bits. Never
+/// collects.
+pub(crate) fn install(name: &[u8], h: u32, bits: impl FnOnce() -> (u8, u16)) -> Sexp {
+    // the shared objects (`new_symbol` reads them) made before the arena's
+    // lock: their first making takes `FORK`, which comes first in the
+    // process's lock order (`fork.rs`)
+    let _ = crate::shared::shared();
     locked(|a| {
-        if let Some(&s) = a.names.get(name) {
+        if let Some(s) = a.names.as_ref().and_then(|t| t.find(h, name)) {
             return s;
         }
-        let n = a.new_name(name);
+        let n = a.new_name(name, h);
         let s = a.new_symbol(n, bits());
-        a.names.insert(name.into(), s);
+        // SAFETY: published now, complete: its record is.
+        unsafe { a.names.get_or_insert_with(|| SymTable::with_slots(crate::symtab::SLOTS)).insert(s) };
         s
     })
 }
 
 /// The symbol named `name` if a heap of the process has made it.
 pub(crate) fn lookup(name: &[u8]) -> Option<Sexp> {
-    locked(|a| a.names.get(name).copied())
+    let h = hash_bytes(name);
+    locked(|a| a.names.as_ref().and_then(|t| t.find(h, name)))
 }
 
 /// GNU R's `mkSymMarker(mkChar(""))`: a new symbol named "" that is in no
@@ -234,7 +282,7 @@ mod tests {
                         .map(|i| {
                             let k = (i + t * 7) % NAMES;
                             let name = format!("arena_test_{k}");
-                            let s = install(name.as_bytes(), || (0, 0));
+                            let s = install(name.as_bytes(), hash_bytes(name.as_bytes()), || (0, 0));
                             // SAFETY: a published symbol: complete and immortal.
                             unsafe {
                                 assert_eq!(s.typ(), SYMSXP);
@@ -263,16 +311,68 @@ mod tests {
         assert!(ids.iter().all(|&id| id >= crate::shared::FIRST_SYMBOL_ID));
     }
 
+    /// A table of one thread probes name records another thread made
+    /// (Miri checks the reads against the writes): thread A makes the
+    /// symbols, thread B takes them from the arena as a heap's install
+    /// would, puts them in its own table, and finds each by name. The two
+    /// run at once, and B learns that A is done from a relaxed flag, so only
+    /// the arena's lock orders A's writes of the records before B's reads
+    /// (Sol S2).
+    #[test]
+    fn a_table_probes_records_another_thread_made() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        const NAMES: usize = 40;
+        let name = |k: usize| format!("symtab_test_{k}");
+        let made = std::sync::Arc::new(AtomicBool::new(false));
+        let a = {
+            let made = std::sync::Arc::clone(&made);
+            std::thread::spawn(move || {
+                let ids: Vec<usize> = (0..NAMES)
+                    .map(|k| install(name(k).as_bytes(), hash_bytes(name(k).as_bytes()), || (0, 0)).addr())
+                    .collect();
+                made.store(true, Relaxed);
+                ids
+            })
+        };
+        let b = std::thread::spawn(move || {
+            while !made.load(Relaxed) {
+                std::thread::yield_now();
+            }
+            // (a small table, so that it grows and re-places the symbols)
+            let mut t = SymTable::with_slots(8);
+            let mut got = Vec::new();
+            for k in 0..NAMES {
+                let n = name(k);
+                let h = hash_bytes(n.as_bytes());
+                assert!(t.find(h, n.as_bytes()).is_none());
+                let s = install(n.as_bytes(), h, || unreachable!("made by the other thread"));
+                // SAFETY: published by the arena's install.
+                unsafe { t.insert(s) };
+                got.push(s.addr());
+            }
+            assert_eq!(t.len(), NAMES);
+            for k in 0..NAMES {
+                let n = name(k);
+                assert_eq!(t.find(hash_bytes(n.as_bytes()), n.as_bytes()).map(|s| s.addr()), Some(got[k]));
+            }
+            assert!(t.find(hash_bytes(b"symtab_test_none"), b"symtab_test_none").is_none());
+            assert_eq!(t.iter().count(), NAMES);
+            got
+        });
+        let (made_ids, got) = (a.join().unwrap(), b.join().unwrap());
+        assert_eq!(made_ids, got, "one symbol per name");
+    }
+
     /// A name longer than a segment's room gets a segment of its own.
     #[test]
     fn a_long_name_fits() {
         let long = vec![b'x'; BLOCK];
-        let s = install(&long, || (0, 0));
+        let s = install(&long, hash_bytes(&long), || (0, 0));
         // SAFETY: a published symbol.
         unsafe {
             assert_eq!(s.sym_name_bytes().len(), BLOCK);
             assert!(s.heap_id().is_shared());
         }
-        assert_eq!(install(&long, || unreachable!()), s);
+        assert_eq!(install(&long, hash_bytes(&long), || unreachable!()), s);
     }
 }

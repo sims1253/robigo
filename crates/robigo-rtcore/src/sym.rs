@@ -172,7 +172,7 @@ pub(crate) fn install_rsyms(core: &mut Core) -> [Sexp; RSym::ALL.len()] {
 // R: names.c:InitNames, names.c:mkSYMSXP, names.c:R_initAssignSymbols
 pub(crate) fn symbol_bits(name: &[u8]) -> (u8, u16) {
     let mut gp = 0;
-    if SPEC_NAME.iter().any(|n| n.as_bytes() == name) {
+    if is_spec_name(name) {
         gp |= SPECIAL_SYMBOL;
     }
     if crate::fresh::is_dd_name(name) {
@@ -181,6 +181,44 @@ pub(crate) fn symbol_bits(name: &[u8]) -> (u8, u16) {
     let flags = if name == b".Last.value" { robigo_heap::flags::NO_TRACKREFS } else { 0 };
     (flags, gp)
 }
+
+/// Whether `name` is one of [`SPEC_NAME`]. The arena calls the symbol-bits
+/// rule under its lock for every new symbol, so the common answer, no, is
+/// one table load: [`SPEC_SHAPES`] has, per first byte, the lengths of the
+/// special names that start with it. Only a name of such a shape is
+/// compared with the list. Exact by construction (both come from
+/// `SPEC_NAME`).
+#[inline]
+pub(crate) fn is_spec_name(name: &[u8]) -> bool {
+    let (Some(&b), n @ 1..16) = (name.first(), name.len()) else {
+        return false;
+    };
+    SPEC_SHAPES[b as usize] & (1 << n) != 0 && SPEC_NAME.iter().any(|s| s.as_bytes() == name)
+}
+
+/// Per first byte, a bit per length (below 16) of the [`SPEC_NAME`]s that
+/// start with it.
+const SPEC_SHAPES: [u16; 256] = {
+    let mut t = [0u16; 256];
+    let mut i = 0;
+    while i < SPEC_NAME.len() {
+        let n = SPEC_NAME[i].as_bytes();
+        assert!(!n.is_empty() && n.len() < 16, "a special name's length is a bit of SPEC_SHAPES");
+        t[n[0] as usize] |= 1 << n.len();
+        i += 1;
+    }
+    t
+};
+
+/// The cells a heap's first symbol cell makes: one per symbol id, made at
+/// once instead of growing through the boot.
+/// - Measured: a base boot (`--vanilla -e 1`, `ROBIGO_RT_BOOT=rdb`, #922's
+///   head 2ca695862) makes 1,970 symbols, whose ids stay below 2,048. From
+///   1,024 cells it grew twice, for 74,583 instructions.
+/// - Cost: 2,048 × 24 bytes = 48 KiB per isolate, which a boot reached
+///   anyway. Ids are the process's (the arena's), so a later isolate's
+///   are as large as the first's.
+const CELLS: usize = 2048;
 
 /// GNU R's symbol table size (`Defn.h:HSIZE`): the base environment lists
 /// its bindings in the order of a walk over that many chains.
@@ -284,6 +322,8 @@ impl SymCell {
 
 /// The isolate's symbol cells, indexed by [`SymId`]. A symbol without a
 /// cell yet is unbound in base, uncached and has no bits.
+///
+/// The first growth makes [`CELLS`] cells at once.
 #[derive(Default, Trace)]
 pub(crate) struct SymCells {
     cells: Vec<SymCell>,
@@ -294,6 +334,17 @@ pub(crate) struct SymCells {
 }
 
 impl SymCells {
+    /// The base values and `.Internal`s, for the freeze's roots: not the
+    /// global caches (`EnvState::trace_freeze_roots`).
+    pub(crate) fn trace_freeze_values<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        for c in &mut self.cells {
+            v.edge(&mut c.value);
+        }
+        for x in &mut self.internals {
+            v.edge(x);
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn get(&self, id: SymId) -> SymCell {
         self.cells.get(id.0 as usize).copied().unwrap_or(SymCell::EMPTY)
@@ -311,7 +362,7 @@ impl SymCells {
     #[cold]
     #[inline(never)]
     fn grow(&mut self, i: usize) {
-        let n = (i + 1).max(self.cells.len() * 2).max(1024);
+        let n = (i + 1).max(self.cells.len() * 2).max(CELLS);
         self.cells.resize(n, SymCell::EMPTY);
     }
 
@@ -326,6 +377,10 @@ impl SymCells {
         if i >= self.internals.len() {
             self.internals.resize(i + 1, Sexp::NULL);
         }
+        // a freeze root (the boot heap's freeze): a frozen value replaced
+        // leaves the frozen graph
+        // SAFETY: the table's values are null or live.
+        unsafe { robigo_heap::note_overwritten(self.internals[i]) };
         self.internals[i] = x;
     }
 
@@ -342,5 +397,43 @@ impl SymCells {
     /// Cell `i < len()`.
     pub(crate) fn at(&self, i: usize) -> SymCell {
         self.cells[i]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SPEC_NAME, is_spec_name};
+
+    /// The filter answers as the linear compare it replaced, over every
+    /// special name and its near misses: the same first byte and length
+    /// with another byte changed (each position, each byte value), and one
+    /// byte longer or shorter.
+    #[test]
+    fn the_special_name_filter_is_the_linear_compare() {
+        let linear = |name: &[u8]| SPEC_NAME.iter().any(|n| n.as_bytes() == name);
+        let mut checked = 0;
+        let mut check = |name: &[u8]| {
+            assert_eq!(is_spec_name(name), linear(name), "{:?}", String::from_utf8_lossy(name));
+            checked += 1;
+        };
+        for n in SPEC_NAME {
+            let n = n.as_bytes();
+            check(n);
+            for i in 0..n.len() {
+                for b in 0..=255u8 {
+                    let mut m = n.to_vec();
+                    m[i] = b;
+                    check(&m);
+                }
+            }
+            check(&n[..n.len() - 1]);
+            check(&[n, b"x"].concat());
+        }
+        for other in
+            [&b""[..], b"is.na", b"iff", b"function2", b"repeat_", b"[[<-.data.frame", &[b'i'; 15], &[b'i'; 16]]
+        {
+            check(other);
+        }
+        assert!(checked > SPEC_NAME.len() * 256);
     }
 }

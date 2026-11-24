@@ -1,0 +1,2 @@
+# builtin-diff known failures: bindingIsLocked, seed 0, key a0efde06c3f30cbde81d6949
+# bindingIsLocked: 151 / 151 (not-implemented 0, crash 0, timeout 0, resource 0 excluded, oracle-crash 0 excluded)

@@ -42,10 +42,36 @@ pub fn sexptype2char(t: u8) -> &'static str {
     }
 }
 
-/// GNU R's `type2char`: the first name `TypeTable` gives a type.
+/// GNU R's `type2char` without its warning: the first name `TypeTable`
+/// gives a type, and "unknown type #N" for a code it has no name for. Every
+/// object's type has a name; a code from outside (the C API's
+/// `allocVector`, `coerceVector`) is warned about where it comes in
+/// ([`type2char_warn`]).
 // R: util.c:TypeTable, util.c:type2char
 pub fn type2char(t: u8) -> &'static str {
-    match t {
+    static UNKNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    type_name(t).unwrap_or_else(|| {
+        &UNKNOWN.get_or_init(|| (0..=255).map(|t| format!("unknown type #{t}")).collect())[t as usize]
+    })
+}
+
+/// GNU R's `type2char` of a type code from outside, of any width: the
+/// type's name, or, for a code `Type2Table` has no name for, the warning
+/// "type N is unimplemented in 'type2char'" and "unknown type #N".
+// R: util.c:type2char
+pub fn type2char_warn(cx: &mut Cx, t: u32) -> robigo_rtcore::RResult<std::borrow::Cow<'static, str>> {
+    if let Some(n) = u8::try_from(t).ok().and_then(type_name) {
+        return Ok(n.into());
+    }
+    cx.warning(&format!("type {t} is unimplemented in 'type2char'"))?;
+    Ok(format!("unknown type #{t}").into())
+}
+
+/// `TypeTable`'s first name for a type, or None (util.c's `Type2Table`
+/// entry with no `cstrName`: 11, 12 and 26 to 31, and any code past it).
+// R: util.c:TypeTable
+pub fn type_name(t: u8) -> Option<&'static str> {
+    Some(match t {
         NILSXP => "NULL",
         SYMSXP => "symbol",
         LISTSXP => "pairlist",
@@ -70,8 +96,8 @@ pub fn type2char(t: u8) -> &'static str {
         WEAKREFSXP => "weakref",
         RAWSXP => "raw",
         OBJSXP => "S4",
-        _ => "unknown type",
-    }
+        _ => return None,
+    })
 }
 
 /// GNU R's `R_typeToChar(x)`: `type2char`, but an OBJSXP that is not S4 is
@@ -326,8 +352,8 @@ pub fn match_args(
                     return Err(cx.error_call(Some(call), &msg));
                 }
                 if cx.warn_partial_match_args() {
-                    let msg = format!("partial argument match of '{}' to '{f}'", String::from_utf8_lossy(t));
-                    cx.warning_call(Some(call), &msg)?;
+                    // R: match.c:277-283 (R_makePartialMatchWarningCondition)
+                    cx.partial_match_warning(Some(call), t, f.as_bytes())?;
                 }
                 actual[fi] = Some(i);
                 used[i] = 1;
@@ -383,8 +409,8 @@ pub fn match_args(
 
 /// GNU R's `check1arg(args, call, formal)`: the first argument, if named,
 /// must be a prefix of `formal`; a partial match warns under
-/// `options(warnPartialMatchArgs)` ("partial argument match of '%s' to
-/// '%s'", against `call`).
+/// `options(warnPartialMatchArgs)` (the `partialMatchWarning`, against
+/// `call`).
 // R: util.c:Rf_check1arg, errors.c:R_makePartialMatchWarningCondition
 pub fn check1arg(
     cx: &mut Cx,
@@ -399,8 +425,8 @@ pub fn check1arg(
         return Err(cx.error_call(Some(call), &msg));
     }
     if cx.warn_partial_match_args() && !supplied.is_empty() && supplied.len() < formal.len() {
-        let msg = format!("partial argument match of '{supplied}' to '{formal}'");
-        cx.warning_call(Some(call), &msg)?;
+        let supplied_tag = tag.name_bytes().to_vec();
+        cx.partial_match_warning(Some(call), &supplied_tag, formal.as_bytes())?;
     }
     Ok(())
 }
@@ -688,5 +714,80 @@ pub fn do_enc2<const CODE: i32>(
         }
         out.set(cx, d.bind(cx));
         Ok(())
+    })
+}
+
+/// A4's planted divergences (feature `diff-plant`, scripts/builtin-diff.py
+/// plant) that a builtin the driver itself calls must not trip: whether
+/// `call` is a case's own call, whose first argument is the case's symbol
+/// `a1` (the driver's and base's calls never name it). Always false in a
+/// build without the feature.
+#[inline(always)]
+pub fn a4_plant_case(cx: &Cx, call: robigo_rtcore::Root<'_>) -> bool {
+    cfg!(feature = "diff-plant")
+        && call
+            .bind(cx)
+            .as_cons()
+            .and_then(|c| c.cdr().as_cons())
+            .and_then(|a| a.car().as_sym())
+            .is_some_and(|s| s.name(cx).bytes() == b"a1")
+}
+
+/// `.Internal(tabulate(bin, nbins))`: how often each of `1..nbins` occurs
+/// in the integer vector `bin` (NA and values outside the range are
+/// skipped); a double result for a long `bin`.
+// R: util.c:do_tabulate
+pub fn do_tabulate(
+    cx: &mut Cx,
+    call: robigo_rtcore::Root<'_>,
+    args: robigo_rtcore::Args<'_>,
+    _env: robigo_rtcore::Root<'_>,
+    out: robigo_rtcore::Out<'_>,
+) -> robigo_rtcore::RResult<()> {
+    crate::row!("tabulate", true).check_arity(cx, call, args)?;
+    let (input, nbin) = (args.root(0), args.root(1));
+    if input.bind(cx).sexptype() != INTSXP {
+        return Err(cx.error("invalid input"));
+    }
+    // XLENGTH(in)
+    if input.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "tabulate() of a package ALTREP vector"));
+    }
+    if nbin.bind(cx).is_package_altrep() {
+        return Err(not_yet(cx, Some(call), "tabulate() with a package ALTREP 'nbins'"));
+    }
+    let nb = crate::coerce::vector::as_integer_warn(cx, nbin)?;
+    if nb == crate::coerce::vector::NA_INTEGER || nb < 0 {
+        return Err(cx.error("invalid 'nbin' argument"));
+    }
+    let nb = nb as usize;
+    cx.build(out, |cx| {
+        let x = input.bind(cx).as_vector::<i32>().unwrap();
+        let n = x.len();
+        // each x[i] that is not NA and in 1..=nb counts in y[x[i] - 1]
+        fn count<Y: Copy + std::ops::AddAssign>(y: &mut [Y], one: Y, xs: impl Iterator<Item = i32>) {
+            let nb = y.len();
+            for v in xs {
+                // (NA_INTEGER is negative)
+                if v > 0 && v as usize <= nb {
+                    y[v as usize - 1] += one;
+                }
+            }
+        }
+        if n > i32::MAX as usize {
+            let mut ans = cx.alloc_vector::<f64>(nb)?;
+            match x.dataptr_or_null() {
+                Some(s) => count(ans.as_mut_slice(), 1.0, s.iter().copied()),
+                None => count(ans.as_mut_slice(), 1.0, (0..n).map(|i| x.get(i))),
+            }
+            Ok(ans.finish().into())
+        } else {
+            let mut ans = cx.alloc_vector::<i32>(nb)?;
+            match x.dataptr_or_null() {
+                Some(s) => count(ans.as_mut_slice(), 1, s.iter().copied()),
+                None => count(ans.as_mut_slice(), 1, (0..n).map(|i| x.get(i))),
+            }
+            Ok(ans.finish().into())
+        }
     })
 }

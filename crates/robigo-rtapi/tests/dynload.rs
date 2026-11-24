@@ -260,3 +260,117 @@ fn dyn_unload_calls_r_unload_and_clears_the_references() {
         assert_eq!(s.val(".Call(\"dl_add1\", 1L, PACKAGE = \"dl_plain\")"), int(2), "{p:?}");
     }
 }
+
+/// `so`'s handshake (tests/support/dlinit_test.c) on another thread: wait
+/// (60 s at most) for the object's constructor or destructor to signal from
+/// inside `dlopen` or `dlclose`, read whether the environment's lock is held
+/// then, and let it go on: `Some(held)`, or None when nothing signalled.
+/// Neither side waits without a bound, so a failure on either never hangs
+/// the test, and the thread never panics: one the test left behind (after
+/// it failed elsewhere and its `Disarm` removed the markers) stays quiet.
+///
+/// It returns once the thread runs: a thread that starts while `dlopen` runs
+/// a constructor waits for it, since a new thread registers its
+/// thread-locals' destructors with glibc's `__cxa_thread_atexit_impl`, which
+/// takes the loader's lock that `dlopen` holds across the constructors.
+fn handshake(so: &std::path::Path) -> std::thread::JoinHandle<Option<bool>> {
+    let ready = std::path::PathBuf::from(format!("{}.ready", so.display()));
+    let go = std::path::PathBuf::from(format!("{}.go", so.display()));
+    let (started, running) = std::sync::mpsc::channel();
+    let t = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let t0 = std::time::Instant::now();
+        while !ready.exists() {
+            if t0.elapsed() > std::time::Duration::from_secs(60) {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // held at each of 200 reads over about 200 ms: the object's code
+        // holds it as long as this thread waits, and another test's brief
+        // hold (this binary's tests share the process) is unlikely to
+        // cover every read
+        let held = (0..200).all(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            !robigo_rtcore::clib::env_lock_is_free()
+        });
+        let _ = std::fs::write(&go, b"");
+        Some(held)
+    });
+    running.recv().unwrap();
+    t
+}
+
+/// The object's markers, removed however the test ends: on a failed assert
+/// or an R error (`s.val` panics) the object stays loaded, and without its
+/// `.armed` its destructor returns at once at the process's exit instead of
+/// waiting 60 s for a `.go`; `.go` is written too, for a handshake still
+/// waiting.
+struct Disarm {
+    so: std::path::PathBuf,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for Disarm {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(format!("{}.armed", self.so.display()));
+        let _ = std::fs::write(format!("{}.go", self.so.display()), b"");
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A library's initializers run inside `dyn.load`'s `dlopen`, and its
+/// finalizers inside `dyn.unload`'s `dlclose`, with the environment's lock
+/// held shared, so no isolate's `Sys.setenv` writes while they may read it
+/// (clib::with_env_shared).
+#[test]
+fn a_librarys_initializers_and_finalizers_hold_env() {
+    // a copy of its own, so that its marker files are this process's
+    let built = support_object("dlinit_test.c", "dl_init", &[]);
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("dlinit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let so = dir.join("dl_init.so");
+    std::fs::copy(&built, &so).unwrap();
+    let _disarm = Disarm { so: so.clone(), dir };
+    std::fs::write(format!("{}.armed", so.display()), b"").unwrap();
+    let mut s = Session::new(Profile::Eval);
+    // The two phases cannot overlap: the constructor and the destructor run
+    // on this thread, inside `dlopen` and `dlclose`, and remove their
+    // markers before they return (dlinit_test.c), so once `s.val` returns
+    // the next `.ready` can only be the next phase's.
+    let joined = |t: std::thread::JoinHandle<Option<bool>>, what: &str| {
+        let held = t.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+        assert!(held.is_some(), "the {what} never signalled (60 s)");
+        assert!(held.unwrap(), "the {what} ran without the environment's lock");
+    };
+    let t = handshake(&so);
+    s.val(&format!("invisible(dyn.load({}))", lit(&so)));
+    joined(t, "constructor");
+    let t = handshake(&so);
+    s.val(&format!("dyn.unload({})", lit(&so)));
+    joined(t, "destructor");
+}
+
+/// The support objects' cleanup (tests/common's `remove_stale_objects`): a
+/// directory another test has just made for its object, still empty, is not
+/// stale and stays (CI's cold runs lost such a directory to a parallel test's
+/// cleanup, and the compiler then had nowhere to write, #955); an empty one
+/// whose own mtime is over a day old, left by a crashed run, goes. (Here, in
+/// one test binary, not in every one that declares `mod common`.)
+#[test]
+fn the_cleanup_keeps_a_new_empty_support_directory_and_removes_an_old_one() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cleanup-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let fresh = base.join("capi_test-fresh-0");
+    let old = base.join("capi_test-old-0");
+    std::fs::create_dir_all(&fresh).unwrap();
+    std::fs::create_dir_all(&old).unwrap();
+    let two_days = std::time::Duration::from_secs(2 * 24 * 60 * 60);
+    std::fs::File::open(&old).unwrap().set_modified(std::time::SystemTime::now() - two_days).unwrap();
+    let keep = base.join("capi_test-keep-0").join("keep.so");
+    remove_stale_objects(&base, &keep);
+    assert!(fresh.is_dir(), "the cleanup removed a directory made a moment ago");
+    assert!(!old.exists(), "the cleanup kept an empty directory over a day old");
+    let _ = std::fs::remove_dir_all(&base);
+}

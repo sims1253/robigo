@@ -9,10 +9,12 @@ the shared object is built there with R CMD SHLIB and loaded by both.
 The no-op .Call is measured as the instructions of the R function noop()
 (10,000 calls) minus nothing: it includes R's loop and call overhead.
 """
-import argparse, json, os, re, shutil, subprocess, tempfile
+import argparse, json, os, re, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from scratch import scratch_dir  # noqa: E402
 FUNCS = ["bench_alloc_small", "bench_alloc_medium", "bench_cons", "bench_protect", "bench_mkchar_hit",
          "bench_mkchar_miss", "bench_install", "bench_integer_loop", "bench_set_string_elt",
          "bench_setcar", "bench_set_vector_elt", "bench_set_attrib", "bench_preserve",
@@ -64,7 +66,8 @@ def main():
     ap.add_argument("--robigo", default=os.path.join(ROOT, ".robigo", "bin", "robigo"))
     ap.add_argument("--out")
     a = ap.parse_args()
-    d = tempfile.mkdtemp(prefix="capibench-", dir="/tmp")
+    # under /tmp: the oracle container mounts it at the same path
+    d = scratch_dir("capibench-", dir="/tmp")
     for f in ("capibench.c", "bench.R"):
         shutil.copy(os.path.join(HERE, f), os.path.join(d, f))
     p = docker(["R", "CMD", "SHLIB", "capibench.c"], d)

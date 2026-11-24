@@ -583,8 +583,9 @@ impl Plan {
     }
 
     /// Fill `m` (made for `nformals` formals) with the match this plan
-    /// memoizes: for a call the plan alone does not bind ([`site_plan`]:
-    /// partial matches to warn of, actuals for `...`).
+    /// memoizes: for a site's call the plan alone does not bind
+    /// ([`site_plan`]: partial matches to warn of), and for an S3 method's
+    /// call (`method_plan_get`, `...` actuals included).
     #[inline(always)]
     fn fill(&self, m: &mut Matched) {
         for i in 0..self.nformals as usize {
@@ -668,10 +669,11 @@ fn method_plan_put(cx: &Cx, stamp: u64, m: &Matched, acts: &[Actual]) {
 }
 
 /// Call site `site`'s plan of the callee code stamped `stamp`, when it
-/// binds the call alone ([`plan_inits`]): no partial match whose warning is
-/// due, no actual for `...`. The pointer is valid until the next safepoint
-/// (the plans' RAWSXP may move then); a call keeps a copy (the site's plan
-/// may be replaced while it runs).
+/// binds the call alone ([`plan_inits`], and [`plan_dots_list`] for the
+/// actuals its `...` formal takes): no partial match whose warning is due.
+/// The pointer is valid until the next safepoint (the plans' RAWSXP may
+/// move then); a call keeps a copy (the site's plan may be replaced while
+/// it runs).
 ///
 /// # Safety
 /// `a` is the caller's activation, its code object live.
@@ -681,7 +683,7 @@ unsafe fn site_plan(a: &Act, site: u16, stamp: u64) -> Option<*const Plan> {
     // 8-aligned at multiples of PLAN_BYTES.
     unsafe {
         let p = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site)? as *const Plan;
-        ((*p).stamp == stamp && (*p).npartial == 0 && (*p).ndots == 0).then_some(p)
+        ((*p).stamp == stamp && (*p).npartial == 0).then_some(p)
     }
 }
 
@@ -820,13 +822,27 @@ pub(crate) fn match_builtin_args<'s>(
     call: Root<'_>,
     formals: &[Sexp],
 ) -> RResult<Vec<Root<'s>>> {
+    match_builtin_args_apart(cx, s, call, call, formals)
+}
+
+/// [`match_builtin_args`] with the arguments read from `ac`, a call over
+/// them (`specials::arg_call`: `applyMethod`'s promises), and the errors and
+/// warnings against `call`.
+// R: match.c:matchArgs_NR
+pub(crate) fn match_builtin_args_apart<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    ac: Root<'_>,
+    formals: &[Sexp],
+) -> RResult<Vec<Root<'s>>> {
     let nil = cx.nil().sexp();
     let missing = cx.missing_arg().sexp();
     let dots = prims::state(cx).syms.dots;
     let mut acts: Buf<Actual> = Buf::new();
     // SAFETY: the rooted call's cells, read in this interval; nothing
     // collects.
-    unsafe { expr_actuals(cx, call.bind(cx).sexp(), &mut acts) };
+    unsafe { expr_actuals(cx, ac.bind(cx).sexp(), &mut acts) };
     let mut m = Matched::new(formals.len());
     // SAFETY: the formals are symbols and the actuals' tags symbols or nil.
     if let Err(e) = unsafe { match_args(formals, acts.as_slice(), nil, dots, &mut m) } {
@@ -910,6 +926,41 @@ enum Went {
     Formal { formal: u16, pos: u16 },
 }
 
+/// [`FillData::each_actual`] of a call bound by plan `p` whose `...` formal
+/// took some of the call's arguments (the plan's dots, in order).
+///
+/// # Safety
+/// The first `p.nactuals` tags are written ([`plan_inits`]).
+#[inline(never)]
+unsafe fn each_actual_dots(
+    p: &Plan,
+    tags: &[MaybeUninit<Sexp>; PLAN_DOTS],
+    missing: u16,
+    f: &mut impl FnMut(Sexp, Went) -> bool,
+) -> bool {
+    let mut dest = [NO; PLAN_DOTS];
+    for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
+        if a != PLAN_NO {
+            dest[a as usize] = fi as u16;
+        }
+    }
+    let dots = &p.dots[..p.ndots as usize];
+    for (j, (&formal, tag)) in dest.iter().zip(tags).take(p.nactuals as usize).enumerate() {
+        let went = if missing & (1 << j) != 0 {
+            Went::Missing
+        } else if let Some(k) = dots.iter().position(|&d| d as usize == j) {
+            Went::Dots(k as u16)
+        } else {
+            Went::Formal { formal, pos: j as u16 }
+        };
+        // SAFETY: the caller's contract.
+        if !f(unsafe { tag.assume_init() }, went) {
+            return false;
+        }
+    }
+    true
+}
+
 impl FillData {
     /// Each actual of the call, in order: its tag (a symbol or R_NilValue)
     /// and where the match put it, given to `f` until it returns false
@@ -945,6 +996,12 @@ impl FillData {
                 true
             }
             FillData::Plan { plan: p, tags, missing } => {
+                // (a plan whose `...` took actuals: out of line, so that
+                // this loop is the same for the calls without)
+                if p.ndots != 0 {
+                    // SAFETY: the caller's contract.
+                    return unsafe { each_actual_dots(p, tags, *missing, &mut f) };
+                }
                 let mut dest = [NO; PLAN_DOTS];
                 for (fi, &a) in p.src[..p.nformals as usize].iter().enumerate() {
                     if a != PLAN_NO {
@@ -1143,6 +1200,83 @@ unsafe fn dots_list(
     Ok(d)
 }
 
+/// The DOTSXP a call bound by its site's plan `p` gives its callee's `...`
+/// formal: the call's arguments at the plan's dots indices, as [`dots_list`]
+/// makes them from the matcher's actuals (the call has no `...` of its own:
+/// a site's plan is made only for such a call). Out of line: the plan path
+/// of calls without one never runs it.
+///
+/// # Safety
+/// `call` is a live call whose arguments are the plan's (`plan_inits`
+/// checked them), reachable from roots; `rho` live.
+#[inline(never)]
+unsafe fn plan_dots_list(
+    cx: &Cx,
+    call: Sexp,
+    p: &Plan,
+    rho: Sexp,
+    profile: Profile,
+    bytecode: bool,
+    codes: Sexp,
+) -> Result<Sexp, NeedGc> {
+    let nil = cx.nil().sexp();
+    let missing = cx.missing_arg().sexp();
+    let mut args = [(nil, nil); PLAN_DOTS];
+    // SAFETY: the caller's contract; nothing collects in this interval, so
+    // the list built so far stays valid.
+    unsafe {
+        let mut el = call.cdr();
+        for a in args.iter_mut().take(p.nactuals as usize) {
+            *a = (el.car(), el.tag());
+            el = el.cdr();
+        }
+        let mut d = nil;
+        for &j in p.dots[..p.ndots as usize].iter().rev() {
+            let (val, tag) = args[j as usize];
+            let a = Actual { val, tag, from: Origin::Expr, missing: val == missing, pos: j as u16 };
+            let v = list_element(cx, &a, rho, profile, bytecode, codes)?;
+            d = cx.alloc_node_raw(DOTSXP, v, d, tag)?;
+        }
+        Ok(d)
+    }
+}
+
+/// The `...` formal's init of a call bound by its site's plan `p`, whose
+/// `...` takes some of the call's arguments: the list [`plan_dots_list`]
+/// makes (allocates; every init is rooted), rooted in `s`, in place of
+/// `plan_inits`' R_MissingArg. Out of line, as the plan path's code for
+/// calls without such actuals.
+///
+/// # Safety
+/// `p` is valid now (read before anything can collect: it is copied first);
+/// `call` and `rho` rooted, the call's arguments the plan's.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+unsafe fn plan_dots<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    p: &Plan,
+    call: Root<'_>,
+    rho: Root<'_>,
+    profile: Profile,
+    bytecode: bool,
+    codes_now: impl Fn() -> Sexp,
+    inits: &mut Buf<SlotInit<'s>>,
+) -> RResult<()> {
+    // (the site's plan may move when the list's allocation collects)
+    let plan = *p;
+    let d = cx.retry_alloc(|cx| {
+        let (c, r) = (call.bind(cx).sexp(), rho.bind(cx).sexp());
+        // SAFETY: the rooted call, whose arguments the plan bound, and
+        // environment.
+        unsafe { plan_dots_list(cx, c, &plan, r, profile, bytecode, codes_now()) }
+    })?;
+    // SAFETY: fresh, of this isolate.
+    let d = s.root(cx, unsafe { Ref::from_sexp(d, cx) });
+    inits.as_mut_slice()[plan.dots_formal as usize] = SlotInit::Bound { value: d, missing: 0 };
+    Ok(())
+}
+
 /// The formals of closure `op` as a vector of their tags and defaults.
 ///
 /// # Safety
@@ -1252,9 +1386,9 @@ pub(crate) fn unused_message(
 }
 
 /// Signal `matchArgs`' partial-match warnings for `partial` (the option is
-/// on): "partial argument match of '%s' to '%s'" against the call, in the
-/// order `matchArgs` signals them.
-// R: match.c:277-279, errors.c:R_makePartialMatchWarningCondition
+/// on): the `partialMatchWarning` of each (supplied tag, formal) against
+/// the call, in the order `matchArgs` signals them.
+// R: match.c:277-283, errors.c:R_makePartialMatchWarningCondition
 fn partial_warnings(
     cx: &mut Cx,
     call: Root<'_>,
@@ -1263,13 +1397,12 @@ fn partial_warnings(
     ftags: &[Sexp],
 ) -> RResult<()> {
     for &(a, f) in partial {
-        // (tags are symbols: immortal)
         // SAFETY: the tags are symbols: immortal.
-        let tag = unsafe { crate::eval::sym_name(cx, acts[a as usize].tag) };
-        // SAFETY: the tags are symbols: immortal.
-        let formal = unsafe { crate::eval::sym_name(cx, ftags[f as usize]) };
-        let msg = format!("partial argument match of '{tag}' to '{formal}'");
-        cx.warning_call(Some(call), &msg)?;
+        let (tag, formal) = unsafe {
+            let name = |y: Sexp| Ref::from_sexp(y, cx).as_sym().unwrap().name_bytes().to_vec();
+            (name(acts[a as usize].tag), name(ftags[f as usize]))
+        };
+        cx.partial_match_warning(Some(call), &tag, &formal)?;
     }
     Ok(())
 }
@@ -1300,8 +1433,10 @@ pub(crate) fn apply(
     // (a method called with its generic's arguments has its own instance:
     // every other call's has none of that code)
     match src {
-        Source::Generic(_) => apply_with::<true>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
-        _ => apply_with::<false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
+        Source::Generic(_) => {
+            apply_with::<true, false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out)
+        }
+        _ => apply_with::<false, false>(cx, call, op, src, arglist, rho, caller, supplied, unpromise, out),
     }
 }
 
@@ -1314,7 +1449,7 @@ pub(crate) fn apply(
 /// whose records take the slots after it).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn apply_with<const GENERIC: bool>(
+fn apply_with<const GENERIC: bool, const EXEC: bool>(
     cx: &mut Cx,
     call: Root<'_>,
     op: Root<'_>,
@@ -1336,7 +1471,13 @@ fn apply_with<const GENERIC: bool>(
     cx.scope(move |cx, s| {
         // (a method's call stays inline in its one caller, `dispatch_method`:
         // out of line it cost `s3` 11 instructions more an iteration, X9-1c)
-        if GENERIC { apply_in::<GENERIC>(cx, s, a, out) } else { apply_out_of_line(cx, s, a, out) }
+        if GENERIC {
+            apply_in::<GENERIC, false>(cx, s, a, out)
+        } else if EXEC {
+            apply_exec_out_of_line(cx, s, a, out)
+        } else {
+            apply_out_of_line(cx, s, a, out)
+        }
     })
 }
 
@@ -1346,19 +1487,47 @@ fn apply_with<const GENERIC: bool>(
 /// an iteration although it makes no call through here, X9-1c).
 #[inline(never)]
 fn apply_out_of_line(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
-    apply_in::<false>(cx, s, a, out)
+    apply_in::<false, false>(cx, s, a, out)
+}
+
+/// [`apply_out_of_line`] for a call [`apply_exec`] makes: its own instance,
+/// so that the code every other call runs is unchanged by it.
+#[inline(never)]
+fn apply_exec_out_of_line(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
+    apply_in::<false, true>(cx, s, a, out)
+}
+
+/// `applyClosure_core(call, op, arglist, rho, R_NilValue, TRUE)` for
+/// `handle_exec_continuation`'s loop ([`crate::tailcall`]): as [`apply`] of
+/// the promise list `arglist`, except that an `Exec`/`Tailcall` landing in
+/// the call's record comes back as the pending [`robigo_rtcore::ExitKind::Exec`] exit, for
+/// the loop to run, instead of being run by this call.
+pub(crate) fn apply_exec(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    arglist: Root<'_>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    apply_with::<false, true>(cx, call, op, Source::List, Some(arglist), rho, None, None, true, out)
 }
 
 /// [`apply_with`] in the scope `s`: the record slot reserved, the call
 /// prepared and made.
 #[inline(always)]
-fn apply_in<const GENERIC: bool>(cx: &mut Cx, s: Scope<'_>, a: CallIn<'_, '_>, out: Out<'_>) -> RResult<()> {
-    cx.with_reserved(move |cx, rec_slot| apply_reserved::<GENERIC>(cx, s, a, rec_slot, out))
+fn apply_in<const GENERIC: bool, const EXEC: bool>(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    a: CallIn<'_, '_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.with_reserved(move |cx, rec_slot| apply_reserved::<GENERIC, EXEC>(cx, s, a, rec_slot, out))
 }
 
 /// [`apply_in`] in the record slot `rec_slot` reserved.
 #[inline(always)]
-fn apply_reserved<'s, const GENERIC: bool>(
+fn apply_reserved<'s, const GENERIC: bool, const EXEC: bool>(
     cx: &mut Cx,
     s: Scope<'s>,
     a: CallIn<'_, '_>,
@@ -1432,9 +1601,9 @@ fn apply_reserved<'s, const GENERIC: bool>(
     let unboxed = match r {
         Ok(u) => u,
         Err(e) => {
-            // a jump past the call: GNU R's cleanup does not run
-            cx.end_call(newrho, false);
-            return Err(e);
+            // (the list `unpromiseArgs` would release, for an Exec landing)
+            let l = if a.unpromise && matches!(src, Source::List) { arglist } else { None };
+            return call_left::<EXEC>(cx, e, newrho, l, res);
         }
     };
     // R: eval.c:applyClosure_core (ADJUST_ENVIR_REFCNTS)
@@ -1463,6 +1632,29 @@ fn apply_reserved<'s, const GENERIC: bool>(
     // D5: the frame to the pool, if nothing can reach it (env::recycle)
     cx.recycle_frame(newrho, if unboxed { None } else { Some(res) });
     Ok(())
+}
+
+/// The exit `e` left the call's record: an `Exec` or `Tailcall` that
+/// landed there (`applyClosure`'s `handle_exec_continuation`, run by
+/// [`crate::tailcall::landed`]), or a jump past the call, for which GNU R's
+/// cleanup does not run. Out of line: the error arm of every instance of
+/// [`apply_reserved`] is this one call.
+// R: eval.c:applyClosure, handle_exec_continuation
+#[cold]
+#[inline(never)]
+fn call_left<const EXEC: bool>(
+    cx: &mut Cx,
+    e: RError,
+    newrho: Root<'_>,
+    unpromise: Option<Root<'_>>,
+    res: Root<'_>,
+) -> RResult<()> {
+    if cx.exit_info(&e).kind == robigo_rtcore::ExitKind::Exec {
+        return crate::tailcall::landed::<EXEC>(cx, e, newrho, unpromise, res);
+    }
+    // a jump past the call: GNU R's cleanup does not run
+    cx.end_call(newrho, false);
+    Err(e)
 }
 
 /// Drops the [`FillData`] in a reserved slot's fill area on every path,
@@ -1640,7 +1832,17 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     let mut aliases = 0usize;
     let (no_early, site, src, arglist) = match hit {
         // SAFETY: the plan of `site_plan`, nothing having collected since.
-        Some((p, site, a)) => unsafe { ((*p).no_early, Some((site, a)), src, arglist) },
+        Some((p, site, a)) => {
+            // SAFETY: the plan of `site_plan`, nothing having collected
+            // since (read before the `...` list's allocation may).
+            let no_early = unsafe { (*p).no_early };
+            // SAFETY: as above.
+            if unsafe { (*p).ndots } > 0 {
+                // SAFETY: as above; the rooted call and environment.
+                unsafe { plan_dots(cx, s, &*p, call, rho, profile, bytecode, codes_now, &mut inits)? };
+            }
+            (no_early, Some((site, a)), src, arglist)
+        }
         None => {
             // (the matcher's actuals and match, read by the lazy
             // `promargs` filler while the call's record lives)
@@ -1882,7 +2084,11 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     // (not when every argument is materialized, ROBIGO_MATERIALIZE=1, or
     // byte code's promises are evaluated under a forced `Eval` profile)
     let early = if bytecode && !materialize && forced != Some(Profile::Eval) {
-        early_args(cx, s, inits.as_mut_slice(), rho, no_early)?
+        let (n, never) = early_args(cx, s, inits.as_mut_slice(), rho, no_early)?;
+        if never != 0 {
+            learn_no_early(site, stamp, never);
+        }
+        n
     } else {
         0
     };
@@ -2029,23 +2235,63 @@ fn end_early_call(cx: &mut Cx, f: Sexp, outer: (Sexp, u32), site: Option<(u16, &
 /// The delayed arguments of compiled code (`inits`) whose values the call
 /// computes early ([`crate::early::value`]), each bound with its value,
 /// except the formals in `skip` (the site's plan: values dropped there
-/// before); how many. Inlined in [`prepare`], its one caller, which is
-/// out of line.
+/// before, or never computed); how many, and the formals (the first 16) a
+/// translated call's promise code declined for good
+/// ([`crate::early::declined_for_good`]), for the site's plan. Inlined in
+/// [`prepare`], its one caller, which is out of line.
 #[inline(always)]
-fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Root<'_>, skip: u16) -> RResult<u32> {
-    let mut n = 0;
+fn early_args<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    inits: &mut [SlotInit<'s>],
+    rho: Root<'_>,
+    skip: u16,
+) -> RResult<(u32, u16)> {
+    let (mut n, mut never) = (0, 0u16);
     for (i, init) in inits.iter_mut().enumerate() {
         if i < 16 && skip & (1 << i) != 0 {
             continue;
         }
-        if let SlotInit::Delayed { expr, value: None, bytecode: true } = *init
-            && let Some(x) = crate::early::value(cx, s, expr, rho)?
-        {
-            *init = SlotInit::Delayed { expr, value: Some(x), bytecode: true };
-            n += 1;
+        if let SlotInit::Delayed { expr, value: None, bytecode: true } = *init {
+            match crate::early::value(cx, s, expr, rho)? {
+                Some(x) => {
+                    *init = SlotInit::Delayed { expr, value: Some(x), bytecode: true };
+                    n += 1;
+                }
+                // (a symbol's or a call's decline is not looked into: only
+                // byte code, whose arguments translated base code passes on
+                // every call, is learned)
+                // SAFETY: a rooted expression.
+                None if i < 16
+                    && unsafe { expr.bind(cx).sexp().typ() } == BCODESXP
+                    && crate::early::declined_for_good(cx, expr) =>
+                {
+                    never |= 1 << i;
+                }
+                None => {}
+            }
         }
     }
-    Ok(n)
+    Ok((n, never))
+}
+
+/// Site `site`'s plan of the callee code stamped `stamp` stops computing
+/// the formals `never` early (their promise code declined for good, at a
+/// site whose arguments keep their shape). Cold: once per site and formal.
+#[cold]
+#[inline(never)]
+fn learn_no_early(site: Option<(u16, &Act)>, stamp: u64, never: u16) {
+    let Some((site, a)) = site else { return };
+    // SAFETY: the caller's live code object, rooted in its activation; its
+    // plans are plain data, 8-aligned (as end_early_call reads them).
+    unsafe {
+        if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
+            let plan = &mut *(p as *mut Plan);
+            if plan.stamp == stamp {
+                plan.no_early |= never;
+            }
+        }
+    }
 }
 
 /// `R_isReplaceSymbol(fun)`: a symbol whose name ends in `<-`.
@@ -2144,7 +2390,9 @@ fn fill_promargs(cx: &mut Cx, id: ContextId, data: usize, out: Out<'_>) -> RResu
             // are fresh; nothing collects in this interval.
             unsafe {
                 for j in (0..n).rev() {
-                    let v = vals.add(j).read().as_object().unwrap();
+                    let s = vals.add(j).read();
+                    s.check_live();
+                    let v = s.as_object().unwrap();
                     let tag = acts[j].0;
                     let c = cx.alloc_node_raw(LISTSXP, v, l, tag)?;
                     // CONS_NR: the construction's counts undone

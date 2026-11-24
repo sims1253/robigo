@@ -9,17 +9,35 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Every main commit gets its own group: its run publishes the perf baseline
-# that pull requests built on that commit compare with (a shared group would
-# cancel queued main runs). Every other run has a group of its own, so no
-# run waits `pending` behind another: a pull request's superseded runs are
-# cancelled by `select`'s first step instead. (A shared group per pull
-# request did that at once, but a cancelled run still queues `Check`, which
-# runs `always()`, and held the group until a runner took it: the new
-# head's run waited behind it. 2026-11-18: 60 runs, 1,268 minutes.)
+# A pull request's runs share one group, `ci-pr-<number>`, with
+# cancel-in-progress: a new push cancels the pull request's older run at
+# once, before any runner is free, so its heavy jobs stop taking runners.
+# (Until 2026-11-21 the cancel was `select`'s first step, which ran only when
+# the new run got its first runner: in a full pool both runs kept queueing
+# until then.) The cancelled run's `Check` still runs (`always()`) and fails
+# on its cancelled needs (what it certifies: the `check` job's comment), and
+# holds the group until it has had a runner: the new run waits that long, as
+# it waited for `select` before. A re-run of a superseded run re-enters
+# `ci-pr-<number>` and cancels the run in progress: re-run only the newest.
+#
+# Main's push runs share one group, `ci-main`. Without cancel-in-progress,
+# GitHub keeps the run in progress and at most one pending: a newer push
+# replaces the pending run, so a burst of merges runs the newest commit
+# next, and the group never cancels a started run. (Until 2026-11-21 every
+# main commit had a group of its own, because its run published the perf
+# baseline that pull requests compared with; since #901 a pull request's
+# perf measures its own base, and no pull request reads that baseline. On
+# 2026-11-21 one merge every 15.5 minutes queued main runs hours behind.)
+# What still reads main's runs needs a recent completed run, not every
+# commit: the progress history (scripts/history.py records each completed
+# run), the nightly packages binary (the newest successful run's), and the
+# caches only main saves. What a skipped commit loses: its point in the
+# history, and a breakage on main names a range of commits, not one.
+#
+# A manual dispatch has a group of its own.
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.run_id }}
-  cancel-in-progress: false
+  group: ci-${{ github.event_name == 'push' && 'main' || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -57,8 +75,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # to cancel this pull request's superseded runs
-      actions: write
     outputs:
       heavy: ${{ steps.sel.outputs.heavy }}
       mode: ${{ steps.sel.outputs.mode }}
@@ -73,42 +89,6 @@ jobs:
       # `oracles=(...)`. A version added there needs its line here.
       image_oracle_4_6_2: ${{ steps.image.outputs.oracle_4_6_2 }}
     steps:
-      # First, before anything else: cancel this pull request's older `ci`
-      # runs that are still going (same head branch and repository, a lower
-      # run id). A plain cancel, so their `Check` still runs and is red on a
-      # commit nobody merges. Until this step runs, both runs are alive: the
-      # older one's jobs keep their runners for the new run's wait for its
-      # first runner (2026-11-18: median 10 min, about 1 job of the older
-      # run on a runner then). A fork's token cannot cancel: it warns, and
-      # both runs finish.
-      - name: Cancel this pull request's superseded runs
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_REF: ${{ github.head_ref }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          # one query per status that is not completed, every page (a
-          # re-run of an old run keeps its old id, however many runs came since)
-          ids=()
-          for status in queued in_progress waiting pending requested; do
-            page=$(gh api -X GET --paginate "repos/$REPO/actions/workflows/ci.yml/runs" -f event=pull_request \
-                     -f branch="$HEAD_REF" -f status="$status" -f per_page=100 --jq ".workflow_runs[]
-                     | select(.id < $RUN_ID and .head_repository.full_name == \"$HEAD_REPO\") | .id") ||
-              { echo "::warning::could not list this pull request's $status runs; superseded ones keep running"; continue; }
-            # (ids are numbers)
-            # shellcheck disable=SC2206
-            ids+=($page)
-          done
-          for id in "${ids[@]}"; do
-            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null; then
-              echo "cancelled superseded run $id"
-            else
-              echo "::warning::could not cancel superseded run $id (a fork's token is read-only)"
-            fi
-          done
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
@@ -142,19 +122,10 @@ jobs:
         with:
           key: lint
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Format
-        run: cargo fmt --check
-      - name: Clippy
-        run: scripts/lint.sh
-      - name: Corpus, oracle, Sexp-check and wall-time tooling
-        run: |
-          python3 scripts/test_corpus.py
-          python3 scripts/test-oracle-diff.py
-          python3 scripts/test-check-sexp-safety.py
-          python3 scripts/test-wall13.py
-          python3 scripts/test-pgo-build.py
-      - name: Target pruning
-        run: python3 scripts/test-prune-target.py
+      # every check of this job is in the script, which delegates run before
+      # pushing: the two cannot drift (scripts/test-rt-ci.py checks it)
+      - name: The lint job's checks (scripts/lint-job.sh)
+        run: scripts/lint-job.sh
 
   miri:
     # (after select only for its `stacked`: a stacked pull request skips it)
@@ -180,9 +151,9 @@ jobs:
       # bitmaps, the size classes, and the symbol arena's threads interning
       # at once (H5). The collector's tests need the C shim.
       - name: Miri on the heap's layout and bitmaps
-        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests' 'arena::'
+        run: cargo +nightly-2026-11-02 miri test --locked -p robigo-heap --lib -- 'layout::' 'heap::bitmap_tests' 'heap::medium_tests' 'arena::' 'gc::freeze'
 
-  # G3's runtime crates (docs/g3.md §14.1, §16): release tests, then the
+  # G3's runtime crates (docs/g3.md §14.1, §16): their tests, then the
   # same under gctorture; the verification modes add steps as they land.
   # Every pull request but a docs-only one runs it. One that touches only
   # those crates (`rt` mode) runs this instead of the heavy jobs:
@@ -215,7 +186,7 @@ jobs:
           IMAGE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
         run: |
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=rdb-oracle-1-$image-${{ hashFiles('scripts/rt-rdb-roundtrip.sh', 'scripts/lazyload-ck.R') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
         id: data
         with:
@@ -250,7 +221,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 20
+    # (measured: about 8 minutes cold here, most of it the External rows'
+    # one process per case, each batch run twice)
+    timeout-minutes: 40
     env:
       ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
     outputs:
@@ -283,15 +256,34 @@ jobs:
         with:
           path: .robigo/builtin-diff-data
           key: ${{ steps.key.outputs.key }}
+      # One file, not the records themselves: the artifact client zips its
+      # files on the fly, and with 76 rows' 84,770 records it stalled
+      # ("Upload progress stalled", run 44263394134). The records are
+      # compressed RDS already, so the tar is stored as it is.
+      - name: Pack the records
+        if: steps.data.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
+        run: tar -C .robigo -cf builtin-diff-data.tar builtin-diff-data
       - uses: actions/upload-artifact@v7
         if: steps.data.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
         with:
           name: builtin-diff-data
-          path: .robigo/builtin-diff-data
+          path: builtin-diff-data.tar
+          compression-level: 0
           retention-days: 1
 
+  # G3's runtime crates: scripts/rt-ci.py's steps in six jobs, one shard
+  # each (rt-ci.py's SHARDS, which says what each runs), built in each job
+  # and run in parallel. One job ran them all until 2026-11-21, in 29-38
+  # minutes against a 40-minute limit (docs/ledger/g3/2026-11-21-a1-rt-shards.md).
+  # Each job's timeout is max(2 × its shard's budget, 20) minutes
+  # (rt-ci.py's BUDGETS and TIMEOUT_FLOOR, pinned by scripts/test-rt-ci.py); each prints its steps' times at the
+  # end of its log, with a warning at 90% of the budget. `Check` needs all.
+  #
+  # rt: the crates' tests (quick profile) and every mode they run under, the
+  # conformance and its short modes, stress, overshoot, E9, the byte-code
+  # crosscheck; then L1's rdb round trip.
   rt:
-    needs: [select, rdb-data, builtin-diff-data]
+    needs: [select, rdb-data]
     if: ${{ needs.select.outputs.rt == 'true' }}
     runs-on: ubuntu-24.04
     container:
@@ -299,12 +291,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    # Measured (docs/ledger/g3/2026-11-17-rt-job-capacity.md and
-    # 2026-11-17-retry-torture-ci.md): the slowest hosted runners take ~20 min
-    # with a case per CPU, ~9 of them the release tests, and the retry-torture
-    # step (rt-ci.py's last: its feature rebuild and run) adds ~4; 40 keeps
-    # 1.6x the ~24. A step that adds minutes moves this number with data.
-    timeout-minutes: 40
+    timeout-minutes: 28
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -327,30 +314,25 @@ jobs:
         with:
           path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
           key: r-4.6.2-tarball
-      # A4's GNU R records (builtin-diff-data): rt-ci.py's builtin
-      # differential step compares robigo-rt's with them
-      - uses: actions/cache/restore@v6
-        id: bdiff
-        with:
-          path: .robigo/builtin-diff-data
-          key: ${{ needs.builtin-diff-data.outputs.key }}
-      - uses: actions/download-artifact@v7
-        if: steps.bdiff.outputs.cache-hit != 'true'
-        with:
-          name: builtin-diff-data
-          path: .robigo/builtin-diff-data
-      - name: rt crates (release, then gctorture)
+      - name: rt-ci.py, shard modes
         env:
-          ROBIGO_BUILTIN_DIFF_DATA: ${{ github.workspace }}/.robigo/builtin-diff-data
-          ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
         run: |
           python3 scripts/test-rt-ci.py
-          python3 scripts/test-builtin-diff.py
-          python3 scripts/rt-ci.py
+          python3 scripts/rt-ci.py --shard modes
       # L1's bar, outside rt-ci's gctorture modes (its 2,440 records): every
       # record of GNU R's base, compiler and tools databases round-trips as
       # GNU R's does. The test fails when the variable is set and a file is
       # missing, and the artifact's download fails when neither has the data.
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-modes
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/cache/restore@v6
         id: rdb
         with:
@@ -367,14 +349,244 @@ jobs:
       # (docs/ledger/g3/2026-11-17-v3-bcodesxp-ir.md)
       # (the classes' counts printed whether the test passes or not: they
       # matter most when it fails; the step keeps the test's status)
-      - name: GNU R's lazy-load databases round-trip (rdb_roundtrip), base.rdb's closures translated
+      - name: GNU R's lazy-load databases (rdb_roundtrip, base.rdb's closures translated; lazyload)
         run: |
           report="$RUNNER_TEMP/bc-crosscheck-base.txt"
           status=0
           ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" ROBIGO_BC_CROSSCHECK=1 ROBIGO_BC_CROSSCHECK_REPORT="$report" \
-            cargo test --release --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
+            cargo test --profile quick --locked -p robigo-rt --test rdb_roundtrip -- --nocapture || status=$?
+          # (L4's makeLazy: base's lazyLoad of the same databases, through the binary)
+          ROBIGO_ORACLE_LIBRARY="$PWD/.robigo/oracle-lib" \
+            cargo test --release --locked -p robigo-rtapi --test lazyload -- --nocapture || status=$?
           if [ -f "$report" ]; then sed 's/: .*//' "$report" | sort | uniq -c; fi
           exit "$status"
+
+
+  # the two long conformance runs under gctorture, plain and with
+  # GC_MOVE=young:16: a conformance build only (the crates' tests, GC_MOVE's
+  # included, run in rt, which builds them anyway)
+  rt-gctorture:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 52
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard gctorture
+        env:
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
+        run: python3 scripts/rt-ci.py --shard gctorture
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-gctorture
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # the crates' tests (quick profile) and the conformance (release) with
+  # `-C debug-assertions=on` (heap's debug_assert!s seeing compiled code:
+  # how H found compile.rs's `@<-` inline bug), a build of its own
+  rt-debug-assertions:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # its own build (RUSTFLAGS) in its own target directory
+          # (rt-ci.py's debug_assertions_steps), so a cache of its own
+          key: rt-debug-assertions
+          workspaces: ". -> target-debug-assertions"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard debug-assertions
+        env:
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
+        run: python3 scripts/rt-ci.py --shard debug-assertions
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-debug-assertions
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # the crates' tests on the full release profile (thin LTO, one codegen
+  # unit), the code users get: every other shard builds them in the quick
+  # profile. Not on pull requests: on main (and a manual dispatch), so a
+  # codegen-dependent crate-test failure shows within one main run of its
+  # merge (the accepted trade, docs/ledger/g3/2026-11-21-a1-rt-shards.md)
+  rt-release-crate-tests:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 34
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard release-crate-tests
+        run: python3 scripts/rt-ci.py --shard release-crate-tests
+
+  # retry-torture's conformance (robigo-rtcore/retry-torture), then in its
+  # build (CHECK_FEATURES) the poison-dead steps (robigo-rt/poison-dead)
+  rt-feature-builds:
+    needs: select
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 34
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      - name: rt-ci.py, shard feature-builds
+        env:
+          RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
+        run: python3 scripts/rt-ci.py --shard feature-builds
+      # each conformance case's wall time (rt-ci.py's TIMES_DIR), for the
+      # slow-case rule and the shards' balance; failed runs too
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rt-case-times-feature-builds
+          path: ${{ runner.temp }}/rt-case-times
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # A4's builtin differential with its planted divergences
+  # (robigo-rtbuiltins/diff-plant), against builtin-diff-data's GNU R records
+  rt-builtin-diff:
+    needs: [select, builtin-diff-data]
+    if: ${{ needs.select.outputs.rt == 'true' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.select.outputs.image_rust }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: rt
+          # (rt saves this cache; two jobs saving one key would race)
+          save-if: false
+      # GNU R 4.6.2's pinned sources: robigo-rt binds base's R code from
+      # them (crates/robigo-rt/src/base.rs). The tarball is cached;
+      # scripts/r-src.sh checks its sha256 and extracts it.
+      - uses: actions/cache/restore@v6
+        id: rsrc462
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
+      # A4's GNU R records (builtin-diff-data): rt-ci.py's builtin
+      # differential step compares robigo-rt's with them
+      - uses: actions/cache/restore@v6
+        id: bdiff
+        with:
+          path: .robigo/builtin-diff-data
+          key: ${{ needs.builtin-diff-data.outputs.key }}
+      - uses: actions/download-artifact@v7
+        if: steps.bdiff.outputs.cache-hit != 'true'
+        with:
+          name: builtin-diff-data
+          path: .robigo
+      # (builtin-diff-data hands the records over as one tar)
+      - name: Unpack A4's GNU R records
+        if: steps.bdiff.outputs.cache-hit != 'true'
+        run: tar -C .robigo -xf .robigo/builtin-diff-data.tar && rm .robigo/builtin-diff-data.tar
+      - name: rt-ci.py, shard builtin-diff
+        env:
+          ROBIGO_BUILTIN_DIFF_DATA: ${{ github.workspace }}/.robigo/builtin-diff-data
+          ROBIGO_BUILTIN_DIFF_ORACLE: ${{ needs.select.outputs.image_oracle_4_6_2 }}
+        run: |
+          python3 scripts/test-builtin-diff.py
+          python3 scripts/rt-ci.py --shard builtin-diff
 
   # robigo-rt's base subset (crates/robigo-rt/proto/base-subset.txt and
   # base-bound.txt) is what scripts/base-subset.sh traces from this tree's
@@ -616,6 +828,17 @@ jobs:
         with:
           path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
           key: r-4.6.2-tarball
+      # robigo-rt boots rdb by default, from a database tree written for one
+      # binary: the binary `cargo test --workspace` spawns (built by the same
+      # command, so with the workspace's features), then its test tree
+      # (scripts/rt-test-tree.sh: its own, never the checkout's). The tests'
+      # helper (ensure_db_tree, crates/robigo-rtapi/tests/common/db_tree.rs)
+      # runs the same script and finds it fresh; without this step it would
+      # build it itself.
+      - name: base's database tree for the tests' robigo-rt (scripts/rt-test-tree.sh)
+        run: |
+          cargo test --locked --profile quick --workspace --no-run
+          scripts/rt-test-tree.sh --profile quick
       - name: Unit tests, parser oracle, conformance (all tiers)
         # The conformance results go to the progress page with the corpora
         # (scripts/history.py records the open gaps from them).
@@ -966,6 +1189,10 @@ jobs:
     # the base and the candidate, each a filtered run (all of them on main),
     # and on a cache miss GNU R too
     timeout-minutes: 90
+    # (for every step: GNU R's records' code digest covers the measuring
+    # environment, so the measurement, extract and fill must see one)
+    env:
+      VALGRIND: valgrind
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1015,12 +1242,47 @@ jobs:
           sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
           pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind 2> /dev/null || true)
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "key=perf-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # the files the records depend on, as perf_suite.py lists them (its
+          # suites' programs, the suite list, the known failures, the
+          # measuring code): not benchmarks/rt/ or perf.py, robigo-rt's
+          # side, which this job does not measure (perf-gnur-1 hashed all of
+          # benchmarks/ and perf.py; perf-gnur-2 still perf.py)
+          # (a file that cannot be read ends the step: no key from a partial hash)
+          inputs=$(python3 scripts/perf.py gnur-inputs | while read -r f; do printf '%s\0' "$f"; sha256sum < "$f" || exit 1; done | sha256sum | cut -c1-16)
+          # the prefix, without the inputs: a pull request whose exact key
+          # is missing restores the newest set of its image, CPU signature
+          # and packages, and fill reuses a record of it only if the
+          # record's program and code digests match (scripts/perf-gnur.py)
+          prefix="perf-gnur-3-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)-"
+          # and the measuring code's digest (cmd_run, the environment): a
+          # change there alone must give main a new entry to save, or pull
+          # requests keep restoring records fill then measures again
+          code=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.gnur_code_digest())')
+          {
+            echo "prefix=$prefix"
+            echo "key=$prefix$inputs-$code"
+            echo "sig=$sig"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
+        id: gnur-cache
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
-          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+          key: ${{ steps.gnur.outputs.key }}
+          restore-keys: ${{ steps.gnur.outputs.prefix }}
+      # (the spread of CPU signatures shows here, run by run: a pull request
+      # hits only a signature main's runs have saved)
+      - name: The CPU signature and GNU R's records
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
+        env:
+          SIG: ${{ steps.gnur.outputs.sig }}
+          HIT: ${{ steps.gnur-cache.outputs.cache-hit }}
+          MATCHED: ${{ steps.gnur-cache.outputs.cache-matched-key }}
+        run: |
+          if [ "$HIT" = true ]; then got="cached (main's, this key)"
+          elif [ -n "$MATCHED" ]; then got="restored from an older key (${MATCHED##*-}): each record checked by its digests"
+          else got="not cached: measured here"; fi
+          echo "perf: CPU signature $SIG; GNU R's records $got" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Measure the base (HEAD^1)
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         env:
@@ -1030,7 +1292,6 @@ jobs:
           echo "baseline: $(cat base/BASELINE), built from the merge's base and measured on this runner" | tee -a "$GITHUB_STEP_SUMMARY"
           export ROBIGO_NATIVES="$PWD/base/natives"
           export ROBIGO_RDBFLAT=""
-          export VALGRIND=valgrind
           filter_flag=()
           if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
           # every selected benchmark gets a GNU R record first: the cache's
@@ -1047,7 +1308,6 @@ jobs:
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
-          export VALGRIND=valgrind
           filter_flag=()
           if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
@@ -1068,7 +1328,6 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
-          export VALGRIND=valgrind
           python3 scripts/perf-paired.py --diagnostic-only --robigo dist/robigo --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Compare with main
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
@@ -1104,7 +1363,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
-          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+          key: ${{ steps.gnur.outputs.key }}
       - uses: actions/upload-artifact@v7
         if: always() && github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
@@ -1146,21 +1405,36 @@ jobs:
           key: rt
           # the rt job saves this cache; two jobs saving one key would race
           save-if: false
+      # the starts' R_HOME trees (perf-rt's [[startup]]) are build products:
+      # made here, with the toolchain and GNU R's sources, each binary's in
+      # its own checkout, and shipped beside the binaries (perf-rt runs in
+      # the oracle image, which has no cargo)
+      - uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
+          key: r-4.6.2-tarball
+      - name: GNU R 4.6.2 sources
+        run: scripts/r-src.sh
       - name: Build robigo-rt
         run: |
           cargo build --release --locked -p robigo-rtapi
           mkdir -p dist
           cp target/release/robigo-rt dist/robigo-rt
+          python3 scripts/rt-startup.py --robigo-rt dist/robigo-rt --pack-trees dist/rt-trees.tar
       - name: Build main's robigo-rt
         # the merge's base, HEAD^1, on the same cache: only the crates that
-        # differ rebuild
+        # differ rebuild. Its trees are main's checkout's, packed by this
+        # checkout's rt-startup.py (main's may not have it)
         if: github.ref != 'refs/heads/main'
         run: |
           git config --global --add safe.directory '*'
+          cp scripts/rt-startup.py scripts/scratch.py "$RUNNER_TEMP/"
           head=$(git rev-parse HEAD)
           git checkout -q --detach HEAD^1
           cargo build --release --locked -p robigo-rtapi
           cp target/release/robigo-rt dist/robigo-rt-main
+          python3 "$RUNNER_TEMP/rt-startup.py" --robigo-rt dist/robigo-rt-main --checkout . \
+            --pack-trees dist/rt-trees-main.tar
           git checkout -q --detach "$head"
       - uses: actions/upload-artifact@v7
         with:
@@ -1230,8 +1504,8 @@ jobs:
         with:
           path: rt-gnur.json
           # the measurement's inputs: the rows, the bars and their programs, the
-          # scripts, and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
-          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+          # scripts (perf_suite.py: BASE_ENV, valgrind_path, r_home), and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/perf_suite.py', 'scripts/rt-startup.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
       # The rival, GNU R's literal default build in this image's toolchain, is
       # needed only to measure GNU R: it does not depend on the CPU, so it is
       # cached per image and build script.
@@ -1266,9 +1540,28 @@ jobs:
         run: |
           python3 scripts/test-perf-rt-bars.py
           main_flag=()
-          if [ -f dist/robigo-rt-main ]; then main_flag=(--main dist/robigo-rt-main); fi
-          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
-            --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -f dist/robigo-rt-main ]; then
+            main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)
+          fi
+          # (rt-bars' --boot: the rows' boot for both binaries, the default
+          # boot's since the flip; each binary boots the trees perf-rt-build
+          # packed for it, as in the starts below)
+          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt --trees dist/rt-trees.tar "${main_flag[@]}" \
+            --gnur rt-gnur.json --boot rdb --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The starts ([[startup]]): an invocation of their own, with its own
+      # JSON, in this job. Each binary boots from the trees perf-rt-build
+      # packed for it, over rt-startup.py's 15 layout shifts. Run when the bars
+      # failed too, so that both report.
+      - name: Starts
+        if: success() || failure()
+        run: |
+          python3 scripts/test-rt-startup.py
+          main_flag=()
+          if [ -f dist/robigo-rt-main ]; then
+            main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)
+          fi
+          python3 scripts/perf.py rt-starts --robigo-rt dist/robigo-rt --trees dist/rt-trees.tar \
+            "${main_flag[@]}" --gnur rt-gnur.json --out rt-starts.json | tee -a "$GITHUB_STEP_SUMMARY"
 
   # robigo-rt's corpus column (`corpus.py run --runtime rt`, against the rt
   # pin's recordings and the `passing-rt/` ratchets;
@@ -1299,6 +1592,11 @@ jobs:
         with:
           name: perf-rt-bins
           path: dist
+      # base's database tree that dist/robigo-rt wrote (perf-rt-build packs
+      # it beside the binary): the cases name no boot, which boots rdb once
+      # it is the default; corpus.py then finds the tree fresh
+      - name: base's database tree for the binary (from perf-rt-build)
+        run: tar -xf dist/rt-trees.tar
       - name: fastr on robigo-rt
         env:
           PR: ${{ github.event.pull_request.number }}
@@ -1330,14 +1628,19 @@ jobs:
   # adding, splitting or resharding jobs needs no ruleset change: add every
   # new gating job to `needs`. It passes when each job passed, or was skipped
   # because `select` said so; a failed, cancelled or unexplained skip fails
-  # it. `always()`: a skipped required check counts as passing, so a
-  # cancelled run must still report a failure here. (A superseded run's
-  # `Check` waits for a runner and is red on a commit nobody merges; it
-  # blocks nothing, since pull request runs share no concurrency group.)
+  # it. `always()`: a skipped required check counts as passing, so a run
+  # cancelled before its evidence exists must still report a failure here.
+  # What `Check` certifies: every job it waits for passed, or was skipped as
+  # `select` said. A run cancelled before that (superseded, or by hand) has a
+  # cancelled or skipped need, which fails it; a run cancelled only after
+  # every need passed has produced that evidence, and its `Check` may pass,
+  # as before this group existed. A `Check` that ends cancelled itself is not
+  # a pass either. A superseded run's `Check` holds the pull request's group
+  # until it has had a runner, so the new run waits that long.
   check:
     name: Check
     if: ${{ always() }}
-    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
+    needs: [select, lint, miri, rdb-data, builtin-diff-data, rt, rt-gctorture, rt-feature-builds, rt-builtin-diff, rt-debug-assertions, rt-release-crate-tests, base-subset, build, perf-base, release-tests, test, bytecode-fidelity, counters, corpora, fuzz, cran, smoke, package-gate, perf, perf-rt-build, perf-rt, rt-corpora]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1375,7 +1678,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy_retry.outputs.page_url }}
     steps:
       - run: |
           apt-get update -qq
@@ -1439,5 +1742,22 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+      # The history record above is what must succeed; the site deploy may
+      # fail on its own: deploy-pages lists the run's artifacts once, and that
+      # listing can lag the upload a moment before (2026-11-21, runs
+      # 44892798651 and 44913195873: "Found 17 artifact(s)", without
+      # `github-pages`). So it gets one retry after 30 s, and a warning, not a
+      # red main, if both fail: the next main run deploys the same history.
+      # (The retry uploads nothing: deploy-pages takes the one `github-pages`
+      # of the run, and fails, never picks, when it sees two.)
       - id: deploy
         uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deploy.outcome == 'failure'
+        run: sleep 30
+      - id: deploy_retry
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deploy.outcome == 'failure' && steps.deploy_retry.outcome == 'failure'
+        run: echo "::warning::the Pages deploy failed twice (the history record is written; the next main run deploys the site)"
