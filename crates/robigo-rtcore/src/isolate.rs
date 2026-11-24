@@ -145,8 +145,8 @@ pub struct Isolate {
     pub(crate) console: std::cell::RefCell<crate::console::Console>,
     /// Active `sink()` hooks installed by the runtime (`console.rs`); `None`
     /// while no sink is active so the common path pays only a null check.
-    pub(crate) out_sink: Cell<Option<fn(&Cx, &[u8]) -> bool>>,
-    pub(crate) err_sink: Cell<Option<fn(&Cx, &[u8]) -> bool>>,
+    pub(crate) out_sink: Cell<Option<crate::console::SinkHook>>,
+    pub(crate) err_sink: Cell<Option<crate::console::SinkHook>>,
     /// Every precise root the isolate holds: what a collection marks first
     /// (docs/g3.md §3, "What a collection marks", item 1). Derived `Trace`,
     /// so a root added here is traced or does not compile.
