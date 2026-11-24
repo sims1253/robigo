@@ -459,6 +459,17 @@ pub struct Peaks {
     pub chunks_mapped: u64,
 }
 
+/// [`Core`]'s `sweep_kinds` (tests only): a small block the sweep skipped,
+/// as nothing died in it.
+#[cfg(test)]
+const SWEPT_SKIPPED: usize = 0;
+/// ... one it walked, with survivors.
+#[cfg(test)]
+const SWEPT_PARTLY: usize = 1;
+/// ... one it walked to empty.
+#[cfg(test)]
+const SWEPT_EMPTY: usize = 2;
+
 /// One heap and its tables. Single-threaded, like R's values.
 pub struct Core {
     heap: Heap,
@@ -466,8 +477,8 @@ pub struct Core {
     /// panic out of a collection (`tests::death`).
     #[cfg(test)]
     panic_at: tests::PanicAt,
-    /// The sweep's small blocks by how it settled them: skipped (nothing
-    /// died), walked with survivors, walked to empty (the tests'
+    /// The sweep's small blocks by how it settled them, indexed by
+    /// [`SWEPT_SKIPPED`], [`SWEPT_PARTLY`] and [`SWEPT_EMPTY`] (the tests'
     /// `Block::cells` coverage).
     #[cfg(test)]
     sweep_kinds: [u64; 3],
@@ -3591,13 +3602,22 @@ impl Core {
     /// # Safety
     /// `x` is a live object of this heap whose charge is its `object_cells`
     /// (as every live object's is), and `change` leaves it an object whose
-    /// `object_cells` can be read.
+    /// `object_cells` can be read. `change` neither allocates nor collects
+    /// (through this heap by any other path than the borrow this call
+    /// holds): a moving collection inside it could move or free `x`, and
+    /// the cells read after it would be an old copy's (debug builds check
+    /// that no collection ran).
     pub unsafe fn recharge(&mut self, x: Sexp, change: impl FnOnce(Sexp)) {
         // SAFETY: the caller's contract; a block's or large chunk's header
         // is at its address rounded down to a block.
         unsafe {
             let before = crate::heapsize::object_cells(x);
+            let collections = self.stats.collections;
             change(x);
+            debug_assert_eq!(
+                self.stats.collections, collections,
+                "robigo: a collection inside Core::recharge's change"
+            );
             let after = crate::heapsize::object_cells(x);
             if before == after {
                 return;
@@ -3707,7 +3727,7 @@ impl Core {
                         // nothing died here: skip the bitmap walk
                         #[cfg(test)]
                         {
-                            self.sweep_kinds[0] += 1;
+                            self.sweep_kinds[SWEPT_SKIPPED] += 1;
                         }
                         live_bytes += (*b).live_objects as u64 * SIZES[(*b).class as usize] as u64;
                         live_objects += (*b).live_objects as u64;
@@ -3811,7 +3831,7 @@ impl Core {
                     (*b).cells = (charged - dead.min(charged)) as u32;
                     #[cfg(test)]
                     {
-                        self.sweep_kinds[if live == 0 { 2 } else { 1 }] += 1;
+                        self.sweep_kinds[if live == 0 { SWEPT_EMPTY } else { SWEPT_PARTLY }] += 1;
                     }
                     live_objects += live as u64;
                     if live == 0 {
@@ -4690,7 +4710,7 @@ mod tests {
             if mode != 1 {
                 // (the full mover moves every block's survivors out)
                 assert!(
-                    c.sweep_kinds.iter().all(|&k| k > 0),
+                    [SWEPT_SKIPPED, SWEPT_PARTLY, SWEPT_EMPTY].iter().all(|&k| c.sweep_kinds[k] > 0),
                     "mode {mode}: every kind of block settled: {:?}",
                     c.sweep_kinds
                 );
