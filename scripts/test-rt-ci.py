@@ -719,6 +719,9 @@ class RtCi(unittest.TestCase):
         "scripts/rt-fail-alloc.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-tcache-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-bc-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree (--checkout)",
+        "scripts/rt-srcref-tcache.sh": "writes its own tree with the binary it is given (R_KEEP_PKG_SOURCE=yes "
+                                       "scripts/rt-home-db.sh --robigo-rt BIN) and boots it at ROBIGO_RT_BOOT=rdb "
+                                       "through the install layout",
         ".github/workflows/ci.yml": "rt-ci's shards; rt-corpora unpacks dist/rt-trees.tar; perf-rt boots "
                                    "--trees dist/rt-trees.tar",
     }

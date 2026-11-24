@@ -3463,13 +3463,17 @@ impl<'g> Comp<'g> {
                     if !check_formals(formals, nil) {
                         return self.error_op(e, "invalid formal argument list for \"function\"", false);
                     }
-                    if n > 2 && a[2].0 != nil {
-                        return self.unimplemented(e, "a 'function' with a srcref (keep.source = TRUE)");
-                    }
                     let mut i = Ins::new(Op::MkClosure);
                     i.a = dst;
                     i.e = self.k(formals);
                     i.f = self.k(a[1].0);
+                    // its srcref (the call's 4th element, keep.source = TRUE):
+                    // the closure's "srcref" attribute, as do_function and
+                    // MAKECLOSURE set it
+                    // R: eval.c:do_function, MAKECLOSURE; cmp.R's "function" handler
+                    if n > 2 && a[2].0 != nil {
+                        i.b = self.k(a[2].0);
+                    }
                     if self.bc.is_some() {
                         // MAKECLOSURE: a closure of compiled code
                         if let Some(code) = self.nested_function(formals, a[1].0)? {

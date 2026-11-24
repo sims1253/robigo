@@ -150,17 +150,10 @@ fn sigint_is_gnu_rs_user_interrupt() {
 #[test]
 fn an_interrupt_at_the_interactive_prompt_starts_a_new_statement() {
     let want = ("> + > [1] 2\n> [1] 5\n> \n", "\n", Some(0));
-    // GNU R's transcript under M1's loader, which runs no profile (the
-    // console's test, ratcheted)
-    let (out, err, status) = interrupt_session("m1");
-    assert_eq!((out.as_str(), err.as_str(), status), want);
-    // INTERIM(srcref): under the default boot the system profile's
-    // options(keep.source = interactive()) is refused first, once (as
-    // tests/cli.rs's SRCREF cases); when source references exist this fails
-    // and the run above takes the default boot
+    // GNU R's transcript under the default boot (the system profile's
+    // options(keep.source = interactive()) included)
     let (out, err, status) = interrupt_session("");
-    let refusal = db_tree::SRCREF_LINE;
-    assert_eq!((out.as_str(), err.as_str(), status), (want.0, format!("{refusal}{}", want.1).as_str(), want.2));
+    assert_eq!((out.as_str(), err.as_str(), status), want);
 }
 
 /// [`an_interrupt_at_the_interactive_prompt_starts_a_new_statement`]'s

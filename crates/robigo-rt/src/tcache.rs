@@ -799,7 +799,9 @@ unsafe fn typed_ok(b: &Built) -> bool {
         Op::BcAssign => plan(i.e),
         Op::Switch => is(i.c, &[STRSXP, NILSXP]),
         Op::LoopResume => i.c == NO_CONST || is(i.b, &[LISTSXP, LANGSXP]),
-        Op::MkClosure => is(i.e, &[LISTSXP, NILSXP]) && i.c == 0,
+        // the srcref operand: 0, or a constant of the pool (any type: GNU R
+        // sets the attribute from any non-NULL object)
+        Op::MkClosure => is(i.e, &[LISTSXP, NILSXP]) && i.c == 0 && (i.b == 0 || k(i.b).is_some()),
         _ => true,
     })
 }

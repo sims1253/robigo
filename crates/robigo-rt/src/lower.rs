@@ -42,6 +42,97 @@ pub fn lower(cx: &Cx, e: &Expr<'_>) -> Result<Sexp, NeedGc> {
 /// mkString2 marks a string without escapes UTF-8 when the parse is known
 /// to be UTF-8, and leaves it native otherwise).
 pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
+    lower_in(cx, e, known, ())
+}
+
+/// What a parse with source references (`keep.source = TRUE`) attaches
+/// srcrefs from: the position after each byte of its text, the srcfile in
+/// effect at each point (`#line` directives switch it), and the class
+/// vector "srcref". All live objects, rooted by the caller.
+pub(crate) struct SrcCtx<'p> {
+    /// The text the parse read.
+    pub src: &'p [u8],
+    pub pos: &'p crate::srcref::Positions,
+    /// The parse's srcfile, then each `#line` alias from its offset on:
+    /// never empty (its first entry, at offset 0, is the parse's srcfile;
+    /// reader.rs's two makers seed it).
+    pub files: Vec<(usize, Sexp)>,
+    pub class: Sexp,
+    /// Whether a srcref was attached: a `function`'s or a `{`'s (gram.y's
+    /// `didAttach`, which the console's srcfile waits on).
+    pub attached: std::cell::Cell<bool>,
+}
+
+impl SrcCtx<'_> {
+    /// The srcfile in effect at byte `at` (gram.y's PS_SRCFILE then).
+    pub(crate) fn file_at(&self, at: usize) -> Sexp {
+        debug_assert!(!self.files.is_empty(), "a source context without its srcfile");
+        self.files.iter().rev().find(|(from, _)| *from <= at).map_or(self.files[0].1, |&(_, f)| f)
+    }
+
+    /// makeSrcref for the bytes of `span`, with the srcfile in effect at
+    /// its end.
+    pub(crate) fn srcref(&self, cx: &Cx, span: robigo_syntax::Span) -> Result<Sexp, NeedGc> {
+        let (first, last) = (span.start as usize, (span.end as usize).saturating_sub(1).max(span.start as usize));
+        // SAFETY: the srcfiles and the class are live (the caller's roots).
+        unsafe { crate::srcref::make(cx, self.pos.fields(first, last), self.file_at(last), self.class) }
+    }
+
+    /// The attributes gram.y's attachSrcrefs puts on `x` (a `{` call or
+    /// the parse's expression vector): "srcref", the list `refs`;
+    /// "srcfile"; and "wholeSrcref" from the start to `last`.
+    ///
+    /// # Safety
+    /// `x` and `refs` are live objects of this heap.
+    // R: gram.y:attachSrcrefs
+    pub(crate) unsafe fn attach(
+        &self,
+        cx: &Cx,
+        x: Sexp,
+        refs: Sexp,
+        last: crate::srcref::Pos,
+        at: usize,
+    ) -> Result<(), NeedGc> {
+        self.attached.set(true);
+        // SAFETY: the caller's contract; fresh objects of this heap.
+        unsafe {
+            let file = self.file_at(at);
+            let whole = crate::srcref::make(cx, crate::srcref::Positions::whole(last), file, self.class)?;
+            let nil = cx.nil().sexp();
+            let tag = |n: &[u8]| cx.install(n).map(|s| s.as_ref().sexp());
+            let a = cx.alloc_node_raw(LISTSXP, whole, nil, tag(b"wholeSrcref")?)?;
+            let a = cx.alloc_node_raw(LISTSXP, file, a, tag(b"srcfile")?)?;
+            let a = cx.alloc_node_raw(LISTSXP, refs, a, tag(b"srcref")?)?;
+            x.set_attrib(a);
+            Ok(())
+        }
+    }
+}
+
+/// Where [`lower_in`] takes source references from: `()` for none, a
+/// [`SrcCtx`] for a parse that keeps them. A type, not an `Option`, so
+/// that the lowering without them is its own instance with no argument
+/// and no tests for them (keep.source = FALSE costs nothing).
+pub(crate) trait Src: Copy {
+    fn ctx(&self) -> Option<&SrcCtx<'_>>;
+}
+
+impl Src for () {
+    #[inline(always)]
+    fn ctx(&self) -> Option<&SrcCtx<'_>> {
+        None
+    }
+}
+
+impl Src for &SrcCtx<'_> {
+    #[inline(always)]
+    fn ctx(&self) -> Option<&SrcCtx<'_>> {
+        Some(self)
+    }
+}
+
+/// [`lower_known`] with source references when `sr` is a [`SrcCtx`].
+pub(crate) fn lower_in<S: Src>(cx: &Cx, e: &Expr<'_>, known: bool, sr: S) -> Result<Sexp, NeedGc> {
     let nil = cx.nil().sexp();
     Ok(match *e {
         Expr::Const(c, _) => constant(cx, c, known)?,
@@ -52,7 +143,7 @@ pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
             let mut list = nil;
             for (i, a) in args.iter().enumerate().rev() {
                 let v = match &a.value {
-                    Some(v) => lower_known(cx, v, known)?,
+                    Some(v) => lower_in(cx, v, known, sr)?,
                     None => cx.missing_arg().sexp(),
                 };
                 let tag = match a.name {
@@ -67,9 +158,35 @@ pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
                 // nothing collects under `&Cx`.
                 list = unsafe { cx.alloc_node_raw(typ, v, list, tag)? };
             }
-            let f = lower_known(cx, fun, known)?;
+            let f = lower_in(cx, fun, known, sr)?;
             // SAFETY: as above.
-            unsafe { cx.alloc_node_raw(LANGSXP, f, list, nil)? }
+            let call = unsafe { cx.alloc_node_raw(LANGSXP, f, list, nil)? };
+            // a `{` keeps a srcref for itself and each statement (the
+            // brace's syntax: a call of `` `{` `` written as one is a
+            // funcall, xxfuncall, and keeps none)
+            // R: gram.y:xxexprlist, xxexprlist0, xxexprlist1, xxexprlist2
+            if let (Some(sr), Expr::Call { fun: Expr::Sym("{", _), span, .. }) = (sr.ctx(), e)
+                && sr.src.get(span.start as usize) == Some(&b'{')
+            {
+                let n = args.len();
+                // SAFETY: fresh objects of this heap; nothing collects.
+                unsafe {
+                    let refs = cx.alloc_vector_raw(VECSXP, n + 1)?;
+                    let brace = robigo_syntax::Span { start: span.start, end: span.start + 1 };
+                    let r0 = sr.srcref(cx, brace)?;
+                    refs.set_elt(0, r0);
+                    for (i, a) in args.iter().enumerate() {
+                        let r = match &a.value {
+                            Some(v) => sr.srcref(cx, v.span())?,
+                            None => nil,
+                        };
+                        refs.set_elt(i + 1, r);
+                    }
+                    let last = (span.end as usize).saturating_sub(1);
+                    sr.attach(cx, call, refs, sr.pos.after(last), last)?;
+                }
+            }
+            call
         }
         Expr::Function { formals, body, .. } => {
             // `function`(formals, body, srcref = NULL), as gram.y's xxdefun
@@ -77,18 +194,27 @@ pub fn lower_known(cx: &Cx, e: &Expr<'_>, known: bool) -> Result<Sexp, NeedGc> {
             let mut fl = nil;
             for f in formals.iter().rev() {
                 let v = match &f.default {
-                    Some(d) => lower_known(cx, d, known)?,
+                    Some(d) => lower_in(cx, d, known, sr)?,
                     None => cx.missing_arg().sexp(),
                 };
                 let tag = cx.install(f.name.as_bytes())?.as_ref().sexp();
                 // SAFETY: as above.
                 fl = unsafe { cx.alloc_node_raw(LISTSXP, v, fl, tag)? };
             }
-            let b = lower_known(cx, body, known)?;
+            let b = lower_in(cx, body, known, sr)?;
             let function = cx.install(b"function")?.as_ref().sexp();
+            // its 4th element: the function's srcref, or NULL
+            // R: gram.y:xxdefun
+            let srcref = match (sr.ctx(), e) {
+                (Some(sr), Expr::Function { span, .. }) => {
+                    sr.attached.set(true);
+                    sr.srcref(cx, *span)?
+                }
+                _ => nil,
+            };
             // SAFETY: as above.
             unsafe {
-                let l = cx.alloc_node_raw(LISTSXP, nil, nil, nil)?;
+                let l = cx.alloc_node_raw(LISTSXP, srcref, nil, nil)?;
                 let l = cx.alloc_node_raw(LISTSXP, b, l, nil)?;
                 let l = cx.alloc_node_raw(LISTSXP, fl, l, nil)?;
                 cx.alloc_node_raw(LANGSXP, function, l, nil)?

@@ -82,6 +82,7 @@ pub mod search;
 pub mod serialize;
 pub mod source;
 mod specials;
+pub(crate) mod srcref;
 mod tailcall;
 mod tcache;
 /// The translation cache's writer: its files, written at the end of the

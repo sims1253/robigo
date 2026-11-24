@@ -152,7 +152,9 @@ pub enum Op {
     /// `a <- function(formals = consts[e]) body = consts[f]` in `rho`
     /// (`mkCLOSXP`). With `c` (not 0) the closure is compiled code made by
     /// compiled code (`MAKECLOSURE`): its code is `consts[c]`; with `g` 1
-    /// it is base's installed byte code (compiled at its first call).
+    /// it is base's installed byte code (compiled at its first call). With
+    /// `b` (not 0) its "srcref" attribute is `consts[b]` (keep.source = TRUE:
+    /// the `function` call's 4th element, MAKECLOSURE's constant's third).
     MkClosure,
     /// `quote(consts[e])`: `a <- consts[e]`, marked not mutable.
     Quote,

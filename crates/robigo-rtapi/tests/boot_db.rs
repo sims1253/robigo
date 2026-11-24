@@ -660,22 +660,44 @@ fn start_up_errors_go_on_to_the_interactive_prompt() {
     );
     let script = boot_reading(&["--no-save".as_ref(), "--quiet".as_ref()], &env, Some(input));
     let _ = std::fs::remove_dir_all(&dir);
-    // INTERIM(keep.source): the system profile's options(keep.source =
-    // interactive()) is refused (no source references yet); GNU R's stderr
-    // does not have this error, and its keep.source is TRUE
-    let want_err =
-        format!("{INTERACTIVE_PROFILE_STOPS}Error: site boom\nError: user boom\nError in .First() : first boom\n");
+    let want_err = "Error: site boom\nError: user boom\nError in .First() : first boom\n";
     assert_eq!(
         (interactive.0.as_str(), interactive.1.as_str(), interactive.2),
-        ("site one\nuser one\nfirst\n> console\n> [1] 2\n> \n", want_err.as_str(), Some(0))
+        ("site one\nuser one\nfirst\n> console\n> [1] 2\n> \n", want_err, Some(0))
     );
     let halted = format!("{PROFILE_STOPS}Error: site boom\nExecution halted\n");
     assert_eq!((script.0.as_str(), script.1.as_str(), script.2), ("site one\n", halted.as_str(), Some(1)));
 }
 
-/// What the system profile's interactive start stops at in robigo-rt and
-/// GNU R does not (INTERIM(keep.source)).
-const INTERACTIVE_PROFILE_STOPS: &str = db_tree::SRCREF_LINE;
+/// An interactive console keeps source references: Common.R's
+/// `options(keep.source = interactive())` is TRUE there, and the console's
+/// parse (R_Parse1Buffer) gives a typed function its srcref and a
+/// "srcfilecopy" of the statement, so it prints as typed. GNU R 4.6.2's
+/// transcript (`R --no-readline --interactive --vanilla --quiet --no-save`,
+/// R_DEFAULT_PACKAGES=NULL, C.UTF-8).
+#[test]
+fn an_interactive_console_keeps_source_references() {
+    let input = b"f <- function(x)  x # c\nf\ng <- function(y) {\n  y  # two\n}\ng\nattr(attr(g, \"srcref\"), \"srcfile\")$lines\n";
+    let (out, err, status) = boot_reading(
+        &[
+            "--no-readline".as_ref(),
+            "--interactive".as_ref(),
+            "--vanilla".as_ref(),
+            "--quiet".as_ref(),
+            "--no-save".as_ref(),
+        ],
+        &[],
+        Some(input),
+    );
+    assert_eq!(
+        (out.as_str(), err.as_str(), status),
+        (
+            "> > function(x)  x\n> + + > function(y) {\n  y  # two\n}\n> [1] \"g <- function(y) {\" \"  y  # two\"         \"}\"                 \n[4] \"\"                  \n> \n",
+            "",
+            Some(0)
+        )
+    );
+}
 
 #[test]
 fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
