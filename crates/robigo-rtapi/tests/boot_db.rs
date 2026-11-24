@@ -9,55 +9,47 @@
 //! many as GNU R 4.6.2's (`ls(baseenv(), all.names = TRUE)` with
 //! `R_DEFAULT_PACKAGES=NULL`: 1407).
 //!
-//! The tree is not in the repository: `ROBIGO_RT_HOME_DB=1` (rt-ci's step,
-//! after `scripts/rt-home-db.sh`) says it must be there. Without the
-//! variable the test says so and passes when the tree is missing.
+//! The tree is not in the repository: each test makes it for cargo's
+//! robigo-rt first when it is missing or stale (`common/db_tree.rs`), and
+//! fails if it cannot.
 
 use std::process::Command;
+
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// What base's boot gives on stderr: nothing. The system profile runs to
 /// its end (its `Sys.info` and `Sys.glob` calls, through
 /// `.expand_R_libs_env_var` and `.libPaths`, are builtins now).
 const PROFILE_STOPS: &str = "";
 
-/// Whether the tree is made by this checkout's scripts/rt-home-db.sh (else
-/// the test is skipped, unless `ROBIGO_RT_HOME_DB` says it must be there):
-/// the script's hash is its stamp's second field from the end, so a tree an
-/// older script made is stale and says so, rather than failing on what it
-/// lacks (an older tree has no etc/Renviron).
+/// The checkout's database tree for cargo's robigo-rt, made if it is
+/// missing or another binary's or script's ([`db_tree::ensure_db_tree`]);
+/// true, for the tests' `if !tree_made()`, which no longer skip.
 fn tree_made() -> bool {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let tree = root.join(".robigo/rt-home-db");
-    let must = std::env::var_os("ROBIGO_RT_HOME_DB").is_some();
-    if !tree.join("library/base/R/base.rdb").is_file() {
-        assert!(
-            !must,
-            "ROBIGO_RT_HOME_DB is set, but {} has no base.rdb: make it with scripts/rt-home-db.sh",
-            tree.display()
-        );
-        eprintln!("{} is not made: skipped (scripts/rt-home-db.sh makes it)", tree.display());
-        return false;
-    }
-    let script = root.join("scripts/rt-home-db.sh");
-    let o = Command::new("sha256sum").arg(&script).output().unwrap_or_else(|e| panic!("running sha256sum: {e}"));
-    let want = String::from_utf8_lossy(&o.stdout).chars().take(16).collect::<String>();
-    let stamp = std::fs::read_to_string(tree.join(".rt-home-db")).unwrap_or_default();
-    if stamp.split_whitespace().rev().nth(1) != Some(want.as_str()) {
-        assert!(
-            !must,
-            "{} is stale (made by another scripts/rt-home-db.sh): rebuild it with scripts/rt-home-db.sh --robigo-rt BIN",
-            tree.display()
-        );
-        eprintln!("{} is stale: skipped (rebuild it with scripts/rt-home-db.sh --robigo-rt BIN)", tree.display());
-        return false;
-    }
+    test_tree();
     true
+}
+
+/// The checkout-shaped directory of cargo's robigo-rt's test tree.
+fn test_tree() -> std::path::PathBuf {
+    db_tree::ensure_db_tree(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")))
 }
 
 /// robigo-rt booted from the tree with `args` and the extra environment
 /// `env`: (stdout, stderr, status).
 fn boot(args: &[&std::ffi::OsStr], env: &[(&str, &std::ffi::OsStr)]) -> (String, String, Option<i32>) {
-    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, None)
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, &[], None)
+}
+
+/// [`boot`] with the variables `remove` removed after the rest (the
+/// boot's own `R_DEFAULT_PACKAGES=NULL` among them).
+fn boot_without(
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+    remove: &[&str],
+) -> (String, String, Option<i32>) {
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, remove, None)
 }
 
 /// [`boot`] with `stdin` as the console's input (None: no stdin).
@@ -66,7 +58,7 @@ fn boot_reading(
     env: &[(&str, &std::ffi::OsStr)],
     stdin: Option<&[u8]>,
 ) -> (String, String, Option<i32>) {
-    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, stdin)
+    boot_bin_reading(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")), args, env, &[], stdin)
 }
 
 /// [`boot`] with the robigo-rt at `bin` (its R_HOME the install layout's:
@@ -76,14 +68,16 @@ fn boot_bin(
     args: &[&std::ffi::OsStr],
     env: &[(&str, &std::ffi::OsStr)],
 ) -> (String, String, Option<i32>) {
-    boot_bin_reading(bin, args, env, None)
+    boot_bin_reading(bin, args, env, &[], None)
 }
 
-/// [`boot_bin`] with `stdin` as the console's input (None: no stdin).
+/// [`boot_bin`] with `stdin` as the console's input (None: no stdin), and
+/// the variables `remove` removed last.
 fn boot_bin_reading(
     bin: &std::path::Path,
     args: &[&std::ffi::OsStr],
     env: &[(&str, &std::ffi::OsStr)],
+    remove: &[&str],
     stdin: Option<&[u8]>,
 ) -> (String, String, Option<i32>) {
     // one directory per run (the tests run in parallel)
@@ -91,8 +85,14 @@ fn boot_bin_reading(
     let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
-    let mut o = Command::new(bin)
-        .args(args)
+    // (cargo's binary from its test tree; another, an install layout's copy,
+    // from the tree beside it, which a start finds first)
+    let mut cmd = if bin == std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")) {
+        db_tree::rt_command()
+    } else {
+        Command::new(bin)
+    };
+    cmd.args(args)
         .current_dir(&home)
         // a private cwd and HOME: no caller's .Renviron or .Rprofile
         .env("HOME", &home)
@@ -100,7 +100,6 @@ fn boot_bin_reading(
         .env("R_DEFAULT_PACKAGES", "NULL")
         .env("LC_ALL", "C.UTF-8")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         // the profile's own controls (Common.R's .Last.sys under R_BATCH,
         // Rprofile.unix's R_TESTS file): not the boot under test
         .env_remove("R_BATCH")
@@ -123,6 +122,8 @@ fn boot_bin_reading(
         // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
         // inherits the environment): the boot under them is not this test's
         .env_remove("ROBIGO_GCTORTURE")
+        // (the hold goes with the modes it holds: alone it is refused)
+        .env_remove("ROBIGO_TORTURE_AFTER_START")
         .env_remove("ROBIGO_GC_STATS")
         .env_remove("ROBIGO_GC_MOVE")
         .env_remove("ROBIGO_GC_PIN_REPORT")
@@ -136,7 +137,11 @@ fn boot_bin_reading(
         .env_remove("ROBIGO_TRANSLATION_CACHE_STATS")
         .env_remove("ROBIGO_TRANSLATION_CACHE_WRITE")
         // the test's own, last (over the removals above)
-        .envs(env.iter().copied())
+        .envs(env.iter().copied());
+    for v in remove {
+        cmd.env_remove(v);
+    }
+    let mut o = cmd
         .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -297,11 +302,59 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
     assert_eq!((caught.0.as_str(), caught.1.as_str(), caught.2), ("one\nscript ran\n", caught_err.as_str(), Some(0)));
 }
 
-/// An unknown `ROBIGO_RT_BOOT` (a typo) is an error, not M1's loader by
-/// default; empty is unset.
+/// The tree declares the default packages it has (scripts/rt-home-db.sh's
+/// line in etc/Renviron, R_DEFAULT_PACKAGES): none today, so a start with
+/// no R_DEFAULT_PACKAGES of its own attaches none and says nothing, and
+/// `library()` of one still fails as GNU R's does in a tree without it
+/// (find.package's short cut for the standard packages gives
+/// `.Library/stats`, which holds no installed package: recorded on 4.6.2
+/// with stats removed from the tree, in a throwaway container).
+#[test]
+fn the_default_start_attaches_the_packages_the_tree_has() {
+    if !tree_made() {
+        return;
+    }
+    let expr = "cat(length(getOption('defaultPackages')), search(), '\\n'); \
+                tryCatch(library(stats), error = function(e) cat(conditionMessage(e), '\\n'))";
+    let (out, err, status) =
+        boot_without(&["--vanilla".as_ref(), "-e".as_ref(), expr.as_ref()], &[], &["R_DEFAULT_PACKAGES"]);
+    assert_eq!(
+        (out.as_str(), err.as_str(), status),
+        (
+            "0 .GlobalEnv Autoloads package:base \n\u{2018}stats\u{2019} is not a valid installed package \n",
+            "",
+            Some(0)
+        )
+    );
+}
+
+/// A user's own R_DEFAULT_PACKAGES is kept over the tree's line: a package
+/// the tree lacks gives GNU R's warning at the end of the start (recorded
+/// on 4.6.2 with a package GNU R lacks, under C.UTF-8).
+#[test]
+fn a_user_s_default_packages_warn_as_in_gnu_r() {
+    if !tree_made() {
+        return;
+    }
+    let (out, err, status) = boot(
+        &["--vanilla".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
+        &[("R_DEFAULT_PACKAGES", "stats".as_ref())],
+    );
+    assert_eq!(
+        (out.as_str(), err.as_str(), status),
+        (
+            "ran\n",
+            "During startup - Warning message:\npackage \u{2018}stats\u{2019} in options(\"defaultPackages\") was not found \n",
+            Some(0)
+        )
+    );
+}
+
+/// An unknown `ROBIGO_RT_BOOT` (a typo) is an error, not the default boot;
+/// empty is unset.
 #[test]
 fn an_unknown_boot_is_an_error() {
-    let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+    let o = db_tree::rt_command()
         .args(["--vanilla", "-e", "1"])
         .env("ROBIGO_RT_BOOT", "rbd")
         .env_remove("R_HOME")
@@ -311,7 +364,8 @@ fn an_unknown_boot_is_an_error() {
         (String::from_utf8_lossy(&o.stdout).as_ref(), String::from_utf8_lossy(&o.stderr).as_ref(), o.status.code()),
         (
             "",
-            "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'stage0', 'rdb' or 'm1' (M1's loader, also when unset)\n",
+            "robigo-rt: ROBIGO_RT_BOOT is 'rbd': it is 'rdb' (the default, also when unset), 'stage0' or 'm1' (M1's \
+             loader)\n",
             Some(2)
         )
     );
@@ -386,14 +440,16 @@ fn a_named_profile_that_does_not_open_is_no_profile() {
 /// (the binary under test need not be the one that built the tree, whose
 /// cache would be another build's).
 fn cached_tree(what: &str) -> Scratch {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let tmp = std::env::temp_dir().join(format!("robigo-{what}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     // (removed when it drops: an assert's unwind below or in the test too)
     let tmp = Scratch(tmp);
     std::fs::create_dir_all(tmp.join(".robigo")).unwrap();
-    let st =
-        Command::new("cp").arg("-a").arg(root.join(".robigo/rt-home-db")).arg(tmp.join(".robigo/rt-home-db")).status();
+    let st = Command::new("cp")
+        .arg("-a")
+        .arg(test_tree().join(".robigo/rt-home-db"))
+        .arg(tmp.join(".robigo/rt-home-db"))
+        .status();
     assert!(st.unwrap().success(), "copying the tree");
     std::fs::create_dir_all(tmp.join(".robigo/rt-home-db-cache")).unwrap();
     write_cache(&tmp);
@@ -712,7 +768,7 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
     // output with its compiler's .rdb and .rdx removed (an emptied .rdb is
     // not a case: GNU R's readRawFromFile then copies the record from past
     // its zero-length cache, serialize.c:3146, and inflates what it read)
-    let tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.robigo/rt-home-db");
+    let tree = test_tree().join(".robigo/rt-home-db");
     static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     // (the install layout robigo-rt finds its R_HOME by: DIR/bin/robigo-rt,
     // DIR/lib/robigo, a copy of the tree; an R_HOME in the environment is

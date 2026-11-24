@@ -9,7 +9,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// The input files, by name.
 fn inputs() -> Vec<(&'static str, Vec<u8>)> {
@@ -271,13 +274,12 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32
 
 /// [`run`] with `env` set on top of its environment.
 fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.args(args).current_dir(dir).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
     // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
@@ -378,7 +380,7 @@ fn a_c_locale_refuses_non_ascii_outside_strings_whatever_n() {
 /// the input to end (a pipe left open).
 #[test]
 fn the_save_check_does_not_wait_for_stdin() {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.arg("--quiet").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("run robigo-rt");
     // (stdin stays open until the child has exited)
@@ -424,7 +426,7 @@ fn interactive_r_without_a_save_action_is_refused() {
 fn the_console_answers_before_stdin_ends() {
     use std::io::{Read, Write};
     for args in [&["--vanilla", "--quiet"][..], &["--no-readline", "--interactive", "--vanilla", "--quiet"][..]] {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+        let mut cmd = db_tree::rt_command();
         cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().expect("run robigo-rt");
         let mut stdin = child.stdin.take().unwrap();
@@ -473,7 +475,7 @@ fn keep_source_true_is_accepted_and_keep_pkg_source_read() {
     // function's; GNU R 4.6.2's output)
     assert_eq!(String::from_utf8_lossy(&out), "function(x)  x\nTRUE \n");
     assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
-    let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\n')";
+    let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\\n')";
     for (v, want) in [("yes", "FALSE TRUE \n"), ("no", "FALSE FALSE \n"), ("YES", "FALSE FALSE \n")] {
         let (out, _, status) =
             run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);

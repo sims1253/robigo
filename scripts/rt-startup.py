@@ -89,12 +89,12 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from scratch import scratch_dir  # noqa: E402
 
-# ROBIGO_RT_BOOT's value for M1's interim loader. Today it is the binary's
-# default (unset or empty); L's default-boot flip makes rdb the default and
-# this "m1", here only. Every start and every row names its boot, so no
+# ROBIGO_RT_BOOT's value for M1's interim loader (INTERIM(L5), until the PR
+# that deletes it): since L's default-boot flip rdb is the binary's default
+# (unset or empty). Every start and every row names its boot, so no
 # measurement depends on a binary's default, and the gate never compares two
 # boots (BOOTS: rt-bars' --boot)
-M1_BOOT = ""
+M1_BOOT = "m1"
 BOOTS = {"m1": M1_BOOT, "rdb": "rdb"}
 # the start bar 5 is judged on, and the default boot's
 DEFAULT_START = "rdb-jit"

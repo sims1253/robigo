@@ -168,6 +168,21 @@ echo 'tools:::.vinstall_package_descriptions_as_RDS(Sys.getenv("RT_OUT"), "base 
 rm -f "$lib/tools/Meta/nsInfo.rds"
 echo 'tools:::.vinstall_package_namespaces_as_RDS(Sys.getenv("RT_OUT"), "base tools compiler")' |
   rexe rdb RT_OUT="$lib" R_DEFAULT_PACKAGES=tools LC_ALL=C
+# the default packages the tree has, declared as GNU R's own mechanism
+# reads them (profile/Common.R: R_DEFAULT_PACKAGES, "NULL" for none), in
+# the system Renviron every start reads (--vanilla too): of GNU R's six,
+# in their order, those with a DESCRIPTION here, so the line never names a
+# package the tree lacks and grows as they are built; a user's own
+# R_DEFAULT_PACKAGES, set or empty, is kept (${VAR-...}). INTERIM(L5): the
+# line goes when the tree has all six (GNU R's Renviron has none)
+dp=
+for p in datasets utils grDevices graphics stats methods; do
+  [ -f "$lib/$p/DESCRIPTION" ] && dp=${dp:+$dp,}$p
+done
+{
+  echo "## robigo-rt's tree (scripts/rt-home-db.sh): the default packages it has"
+  echo "R_DEFAULT_PACKAGES=\${R_DEFAULT_PACKAGES-'${dp:-NULL}'}"
+} >> "$tmp/lib/robigo/etc/Renviron"
 # where the tree was built, which its databases record (.Library, the
 # namespaces' path) as GNU R's record its build tree: for
 # scripts/rt-rdb-compare.sh's path mapping
