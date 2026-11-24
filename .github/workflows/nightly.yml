@@ -116,7 +116,7 @@ jobs:
           key: r-4.6.2-tarball
       - name: GNU R 4.6.2 sources
         run: scripts/r-src.sh
-      - name: rt conformance, every collection moving everything (gctorture)
+      - name: rt conformance, every collection moving everything (gctorture), M1's loader
         env:
           RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
         run: python3 scripts/rt-ci.py --full-move
@@ -162,7 +162,7 @@ jobs:
           key: r-4.6.2-tarball
       - name: GNU R 4.6.2 sources
         run: scripts/r-src.sh
-      - name: rt conformance under gctorture, the freeze checked at every collection
+      - name: rt conformance under gctorture, the freeze checked at every collection, M1's loader
         env:
           RT_CI_TIMES_DIR: ${{ runner.temp }}/rt-case-times
         run: python3 scripts/rt-ci.py --freeze-check

@@ -355,9 +355,10 @@ class Batches(unittest.TestCase):
         self.assertEqual(seen, {"batch": "0", "isolated": "0"})
 
     def test_the_harness_always_sets_the_boot(self):
-        # every boot by name, M1's loader ("interim") as the variable empty:
-        # nothing depends on a binary's default
-        self.assertEqual(bd.boot_env("interim"), {"ROBIGO_RT_BOOT": ""})
+        # every boot by name, M1's loader ("interim") as `m1` (an empty
+        # value is the rdb boot since L5's flip): nothing depends on a
+        # binary's default
+        self.assertEqual(bd.boot_env("interim"), {"ROBIGO_RT_BOOT": "m1"})
         self.assertEqual(bd.boot_env("rdb"), {"ROBIGO_RT_BOOT": "rdb"})
         self.assertIn(bd.DEFAULT_BOOT, bd.BOOTS)
         # an External row's cases run in an environment made from nothing:
