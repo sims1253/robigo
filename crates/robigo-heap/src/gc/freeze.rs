@@ -2076,7 +2076,8 @@ mod tests {
             v.set_elt(1, leaf);
             c.freeze(&mut One(v), |_| false);
             assert!(c.is_frozen(leaf));
-            v.set_std_len(1);
+            // (in place, through the heap: its cells change)
+            c.recharge(v, |v| v.set_std_len(1));
             assert_ne!(c.remembered.1.get() & Remembered::DIRTY, 0, "a frozen vector shortened");
             c.frozen_pass(&mut One(v));
             assert!(c.is_frozen(v) && c.is_frozen(leaf), "no freeze roots: nothing thawed");

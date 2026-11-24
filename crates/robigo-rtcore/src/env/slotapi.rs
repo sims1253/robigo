@@ -293,8 +293,9 @@ impl Cx {
         let iso = self.iso();
         let f = frame.bind(self).sexp();
         let v = value.map_or(iso.nil, |v| v.bind(self).sexp());
-        // SAFETY: rooted objects of this heap; the cleanup has run.
-        unsafe { iso.envs().pool.offer(f, v, iso.nil) }
+        // SAFETY: rooted objects of this heap; the cleanup has run; the
+        // core's reference ends with the call, which reaches no other one.
+        unsafe { iso.envs().pool.offer(f, v, iso.nil, iso.core()) }
     }
 
     /// `defineVar(sym, value, rho)` for a scalar: in a slot frame whose

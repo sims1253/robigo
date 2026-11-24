@@ -1042,7 +1042,7 @@ def cmd_plant(a):
     prefix = ["unshare", "-rn"] if unshare_works() else []
     base_rt = a.robigo_rt or default_rt()
     # (the plain binary's tree, which the planted one boots too: the cases
-    # name no boot, rdb once it is the default; ci's run made it already)
+    # name no boot, so rdb, the default; ci's run made it already)
     rt_trees.ensure(base_rt)
     a.rsrc = r_source()
     ok = True

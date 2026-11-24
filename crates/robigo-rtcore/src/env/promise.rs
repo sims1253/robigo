@@ -398,10 +398,6 @@ impl Cx {
         unsafe { set_prvalue(ps, vs, iso.nil) };
     }
 
-    /// GNU R's `forcePromise(p)`, and the promise's value written to `out`.
-    /// The value is not marked: `ENSURE_NAMEDMAX` does nothing under
-    /// reference counting (`Defn.h:337-340`).
-    // R: eval.c:forcePromise
     /// Whether `p` is a promise `forcePromise` would evaluate plainly: not
     /// evaluated, PRSEEN 0, its code not byte code.
     pub fn promise_unforced_ast(&self, p: Ref<'_>) -> bool {
@@ -434,6 +430,10 @@ impl Cx {
         }
     }
 
+    /// GNU R's `forcePromise(p)`, and the promise's value written to `out`.
+    /// The value is not marked: `ENSURE_NAMEDMAX` does nothing under
+    /// reference counting (`Defn.h:337-340`).
+    // R: eval.c:forcePromise
     pub fn force_promise(&mut self, p: Root<'_>, out: Out<'_>) -> RResult<()> {
         assert_eq!(p.bind(self).sexptype(), PROMSXP, "robigo: forcing a non-promise");
         // SAFETY: a rooted promise.
@@ -686,8 +686,8 @@ impl Cx {
         if !early.is_null() {
             self.early_taken(f);
             // SAFETY: a delayed slot's expression is live.
-            let (bc, call) = unsafe { (s.has(layout::META_BYTECODE), s.aux().typ() == LANGSXP) };
-            if (self.iso().hooks.get().early_force)(self, bc, call) {
+            let (bc, kind) = unsafe { (s.has(layout::META_BYTECODE), s.aux().typ()) };
+            if (self.iso().hooks.get().early_force)(self, bc, kind) {
                 let iso = self.iso();
                 // SAFETY: the slot holds the value; it becomes the forced
                 // value (nothing ran since it was read).

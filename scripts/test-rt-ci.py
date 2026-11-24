@@ -569,13 +569,23 @@ class RtCi(unittest.TestCase):
     def test_the_end_to_end_crosscheck_test_clears_every_modes_variables(self):
         # robigo-rtapi's a_lost_crosscheck_record_fails_the_run runs a case
         # as the plain binary does, inside whatever crate-test step runs it:
-        # each variable such a step sets is in its MODE_VARS, or is one that
-        # does not change the case (the runner's own, the crosscheck's, the
-        # tree's)
+        # each variable such a step sets is in tests/common/db_tree.rs's
+        # MODE_VARS (which boot_db.rs's and lazyload.rs's spawns drop too)
+        # or conformance.rs's CASE_VARS, or is one that does not change the
+        # case (the runner's own, the crosscheck's, the tree's)
         import re
-        src = (HERE.parent / "crates" / "robigo-rtapi" / "tests" / "conformance.rs").read_text()
-        block = re.search(r"const MODE_VARS: &\[&str\] = &\[(.*?)\];", src, re.S).group(1)
-        cleared = set(re.findall(r'"([A-Z_0-9]+)"', block))
+        tests = HERE.parent / "crates" / "robigo-rtapi" / "tests"
+        cleared = set()
+        for f, const in (("common/db_tree.rs", "MODE_VARS"), ("conformance.rs", "CASE_VARS")):
+            block = re.search(rf"const {const}: &\[&str\] = &\[(.*?)\];", (tests / f).read_text(), re.S)
+            self.assertIsNotNone(block, f"{f}: no {const}")
+            cleared |= set(re.findall(r'"([A-Z_0-9]+)"', block.group(1)))
+            if const == "CASE_VARS":
+                # (a case's own, not a mode: a new mode belongs in MODE_VARS,
+                # which boot_db.rs and lazyload.rs drop too, so this list
+                # does not grow without this test)
+                self.assertEqual(set(re.findall(r'"([A-Z_0-9]+)"', block.group(1))),
+                                 {"ROBIGO_RT_BOOT", "R_VSIZE", "R_MAX_VSIZE"}, f)
         harmless = {"ROBIGO_RT_HOME_DB", "ROBIGO_TRANSLATION_CACHE", "RUSTFLAGS", "CARGO_TARGET_DIR"}
         crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
         for shard in rt.SHARDS:
@@ -584,7 +594,21 @@ class RtCi(unittest.TestCase):
                     for k in env:
                         if k.startswith("ROBIGO_CONF_") or k.startswith("ROBIGO_BC_CROSSCHECK") or k in harmless:
                             continue
-                        self.assertIn(k, cleared, f"{shard}: {title}: {k} is not in MODE_VARS")
+                        self.assertIn(k, cleared, f"{shard}: {title}: {k} is in neither MODE_VARS nor CASE_VARS")
+
+    def test_the_spawns_that_are_not_the_modes_subject_drop_the_one_list(self):
+        # one list of the modes (db_tree::MODE_VARS): boot_db.rs's and
+        # lazyload.rs's spawns drop it through without_modes, and keep no
+        # hand-written copy that could miss the next mode
+        import re
+        tests = HERE.parent / "crates" / "robigo-rtapi" / "tests"
+        block = re.search(r"const MODE_VARS: &\[&str\] = &\[(.*?)\];", (tests / "common" / "db_tree.rs").read_text(), re.S)
+        modes = set(re.findall(r'"([A-Z_0-9]+)"', block.group(1)))
+        for f in ("boot_db.rs", "lazyload.rs"):
+            src = (tests / f).read_text()
+            self.assertIn("db_tree::without_modes(", src, f)
+            copies = sorted(modes & set(re.findall(r'env_remove\("([A-Z_0-9]+)"\)', src)))
+            self.assertEqual(copies, [], f"{f}: removes modes by hand (db_tree::without_modes drops them)")
 
     def test_every_step_that_can_boot_rdb_has_its_binarys_tree_before_it(self):
         # base's database tree is written by one binary (rt-home-db.sh's
@@ -647,7 +671,9 @@ class RtCi(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
         ov = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ov)
-        self.assertEqual(set(ov.BOOTS), {"benchmarks/rt/mem/strings1e6.R"})
+        # (none since paste collects in its loop: strings1e6.R, the flip's
+        # one entry, runs under the default boot)
+        self.assertEqual(set(ov.BOOTS), set())
         with tempfile.TemporaryDirectory() as tmp:
             names = [n for n, _p in ov.programs(tmp)]
         for name, (boot, why) in ov.BOOTS.items():
@@ -666,7 +692,7 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(r["boot"], ov.BOOTS.get(name, (None, ""))[0], name)
         for name, boot in seen.items():
             self.assertEqual(boot, ov.BOOTS[name][0] if name in ov.BOOTS else None, name)
-        self.assertEqual(len(seen), 4)
+        self.assertEqual(len(seen), 3 + len(ov.BOOTS))
 
     # Every file that runs a robigo-rt binary, and how that binary gets base's
     # database tree written by itself (a binary naming no boot boots rdb once
@@ -1520,6 +1546,53 @@ def rust_src_snippets(root):
             if location.match(line) and n < len(lines) and lines[n].lstrip().startswith("|"):
                 out.append(f"{path.relative_to(root)}:{n}: {line.strip()} (and the source under it)")
     return out
+
+
+class OvershootReportOnly(unittest.TestCase):
+    """scripts/rt-overshoot.py's report-only programs (benchmarks/rt/mem-report):
+    reported, their overshoot never failing the step (a missing report
+    does); nothing in benchmarks/rt/mem is one."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec_ = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
+        cls.ov = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(cls.ov)
+
+    def result(self, program, over):
+        return {"program": program, "profile": "eval", "exit": 0, "collections": 1, "max": 40 << 20,
+                "live": 1 << 20, "total": 40 << 20, "over": over, "exit_due": None, "ratio": 1.2}
+
+    def test_a_report_only_program_over_the_bound_never_fails_the_step(self):
+        p = "benchmarks/rt/mem-report/x.R"
+        report = {p: ("a family", "a PR")}
+        self.assertEqual(self.ov.verdict([self.result(p, 1)], report), 0)
+        # the same result for a gated program fails it, and so does a gated
+        # program's missing report beside a report-only one
+        self.assertEqual(self.ov.verdict([self.result("benchmarks/rt/mem/x.R", 1)], report), 1)
+        self.assertEqual(self.ov.verdict([self.result(p, 1), {"program": "tests/rt/a.R", "error": "timeout"}], report), 1)
+        # a report-only program that gives no report, or times out, fails it
+        # too: its number is missing, not merely over
+        self.assertEqual(self.ov.verdict([{"program": p, "error": "timeout"}], report), 1)
+        self.assertEqual(self.ov.verdict([{"program": p, "error": "no report (exit 1)"}], report), 1)
+
+    def test_every_mem_report_program_names_its_family_and_cure_and_is_run(self):
+        d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem-report"
+        files = sorted(f.name for f in d.glob("*.R"))
+        self.assertTrue(files, "benchmarks/rt/mem-report has no programs")
+        report = self.ov.report_only()
+        self.assertEqual(sorted(os.path.basename(p) for p in report), files)
+        for p, (family, cure) in report.items():
+            self.assertTrue(family.strip() and cure.strip(), p)
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            names = {n for n, _ in self.ov.programs(tmp)}
+        self.assertTrue(set(report) <= names)
+
+    def test_nothing_in_mem_is_report_only(self):
+        d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem"
+        for f in sorted(d.glob("*.R")):
+            self.assertIsNone(self.ov.report_header(os.path.join("benchmarks", "rt", "mem", f.name)), f.name)
 
 
 class CompileFailExpectations(unittest.TestCase):

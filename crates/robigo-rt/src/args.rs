@@ -2084,7 +2084,11 @@ fn prepare<'s: 'r, 'r, 'a, const GENERIC: bool>(
     // (not when every argument is materialized, ROBIGO_MATERIALIZE=1, or
     // byte code's promises are evaluated under a forced `Eval` profile)
     let early = if bytecode && !materialize && forced != Some(Profile::Eval) {
-        early_args(cx, s, inits.as_mut_slice(), rho, no_early)?
+        let (n, never) = early_args(cx, s, inits.as_mut_slice(), rho, no_early)?;
+        if never != 0 {
+            learn_no_early(site, stamp, never);
+        }
+        n
     } else {
         0
     };
@@ -2231,23 +2235,63 @@ fn end_early_call(cx: &mut Cx, f: Sexp, outer: (Sexp, u32), site: Option<(u16, &
 /// The delayed arguments of compiled code (`inits`) whose values the call
 /// computes early ([`crate::early::value`]), each bound with its value,
 /// except the formals in `skip` (the site's plan: values dropped there
-/// before); how many. Inlined in [`prepare`], its one caller, which is
-/// out of line.
+/// before, or never computed); how many, and the formals (the first 16) a
+/// translated call's promise code declined for good
+/// ([`crate::early::declined_for_good`]), for the site's plan. Inlined in
+/// [`prepare`], its one caller, which is out of line.
 #[inline(always)]
-fn early_args<'s>(cx: &mut Cx, s: Scope<'s>, inits: &mut [SlotInit<'s>], rho: Root<'_>, skip: u16) -> RResult<u32> {
-    let mut n = 0;
+fn early_args<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    inits: &mut [SlotInit<'s>],
+    rho: Root<'_>,
+    skip: u16,
+) -> RResult<(u32, u16)> {
+    let (mut n, mut never) = (0, 0u16);
     for (i, init) in inits.iter_mut().enumerate() {
         if i < 16 && skip & (1 << i) != 0 {
             continue;
         }
-        if let SlotInit::Delayed { expr, value: None, bytecode: true } = *init
-            && let Some(x) = crate::early::value(cx, s, expr, rho)?
-        {
-            *init = SlotInit::Delayed { expr, value: Some(x), bytecode: true };
-            n += 1;
+        if let SlotInit::Delayed { expr, value: None, bytecode: true } = *init {
+            match crate::early::value(cx, s, expr, rho)? {
+                Some(x) => {
+                    *init = SlotInit::Delayed { expr, value: Some(x), bytecode: true };
+                    n += 1;
+                }
+                // (a symbol's or a call's decline is not looked into: only
+                // byte code, whose arguments translated base code passes on
+                // every call, is learned)
+                // SAFETY: a rooted expression.
+                None if i < 16
+                    && unsafe { expr.bind(cx).sexp().typ() } == BCODESXP
+                    && crate::early::declined_for_good(cx, expr) =>
+                {
+                    never |= 1 << i;
+                }
+                None => {}
+            }
         }
     }
-    Ok(n)
+    Ok((n, never))
+}
+
+/// Site `site`'s plan of the callee code stamped `stamp` stops computing
+/// the formals `never` early (their promise code declined for good, at a
+/// site whose arguments keep their shape). Cold: once per site and formal.
+#[cold]
+#[inline(never)]
+fn learn_no_early(site: Option<(u16, &Act)>, stamp: u64, never: u16) {
+    let Some((site, a)) = site else { return };
+    // SAFETY: the caller's live code object, rooted in its activation; its
+    // plans are plain data, 8-aligned (as end_early_call reads them).
+    unsafe {
+        if let Some(p) = crate::code::plan_bytes(a.obj(crate::ir::R_CODE), site) {
+            let plan = &mut *(p as *mut Plan);
+            if plan.stamp == stamp {
+                plan.no_early |= never;
+            }
+        }
+    }
 }
 
 /// `R_isReplaceSymbol(fun)`: a symbol whose name ends in `<-`.
