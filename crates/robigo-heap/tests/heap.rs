@@ -1650,11 +1650,14 @@ fn alloc_shortened_with_end_pointer(c: &mut Core, growable: bool) -> usize {
         for i in 0..FILL {
             *(x.std_data() as *mut f64).add(i) = 1.5;
         }
-        x.set_truelen(FILL as isize);
-        if growable {
-            x.set_gp(x.gp() | gp::vector::GROWABLE);
-        }
-        x.set_std_len(2);
+        // (in place, through the heap: its cells may change, Block::cells)
+        c.recharge(x, |x| {
+            x.set_truelen(FILL as isize);
+            if growable {
+                x.set_gp(x.gp() | gp::vector::GROWABLE);
+            }
+            x.set_std_len(2);
+        });
     }
     let n = c.alloc_vector(REALSXP, FILL).unwrap();
     assert_eq!(n.addr(), x.addr() + SLOT, "adjacent slots");
@@ -1690,8 +1693,11 @@ fn alloc_large_ending_at_its_chunk(c: &mut Core) -> usize {
     let x = c.alloc_vector(REALSXP, LARGE_FILL).unwrap();
     unsafe {
         *(x.std_data() as *mut f64).add(LARGE_FILL - 1) = 1.5;
-        x.set_truelen(LARGE_FILL as isize);
-        x.set_std_len(2);
+        // (in place, through the heap: its cells change)
+        c.recharge(x, |x| {
+            x.set_truelen(LARGE_FILL as isize);
+            x.set_std_len(2);
+        });
         x.std_data() as usize + LARGE_FILL * 8
     }
 }

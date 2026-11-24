@@ -16,7 +16,7 @@ use crate::exit::RResult;
 use crate::fresh::FreshVec;
 use crate::handle::Elt;
 use crate::isolate::Cx;
-use robigo_heap::{GC_DUE, GcStats, LARGE, Safepoint};
+use robigo_heap::{GC_DUE, GcStats, LARGE, Safepoint, Sexp};
 use std::sync::atomic::Ordering;
 
 /// [`Cx::refuse_first`]'s guard.
@@ -37,6 +37,20 @@ impl Drop for RefuseFirst<'_> {
 }
 
 impl Cx {
+    /// `SETLEVELS(x, levs)` on a live object: a vector's GROWABLE bit
+    /// decides its vector cells (robigo-heap's `heapsize::object_cells`),
+    /// so the change moves its charge to the vector heap's use with it
+    /// (`Core::recharge`): unserialize's levels, read verbatim as GNU R's
+    /// ReadItem sets them.
+    ///
+    /// # Safety
+    /// `x` is a live object of this isolate's heap.
+    pub unsafe fn set_levels(&self, x: Sexp, levs: u16) {
+        // SAFETY: the caller's contract; the core's reference ends with the
+        // call, which reaches no other one.
+        unsafe { self.iso().core().recharge(x, |x| x.set_gp(levs)) }
+    }
+
     /// Whether a collection is due: served at the next safepoint.
     #[inline(always)]
     pub fn gc_due(&self) -> bool {
