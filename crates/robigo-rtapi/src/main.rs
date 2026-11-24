@@ -778,8 +778,6 @@ fn suicide(cx: &mut robigo_rtcore::Cx) -> ! {
 mod tests {
     use super::*;
 
-    /// The unmade checkout's message (no installed tree either), which an
-    /// integration test cannot reach: it depends on the machine's trees.
     #[test]
     fn a_shell_word_is_one_word() {
         assert_eq!(shell_word("/home/u/.cache/release/robigo-rt"), "/home/u/.cache/release/robigo-rt");
@@ -787,6 +785,8 @@ mod tests {
         assert_eq!(shell_word("/tmp/it's/robigo-rt"), "'/tmp/it'\\''s/robigo-rt'");
     }
 
+    /// The unmade checkout's message (no installed tree either), which an
+    /// integration test cannot reach: it depends on the machine's trees.
     #[test]
     fn a_missing_default_tree_says_how_to_make_it() {
         let h = std::path::PathBuf::from("/nonexistent/robigo/.robigo/rt-home");

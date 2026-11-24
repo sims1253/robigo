@@ -576,6 +576,10 @@ pub struct RtState {
     pub inline: std::cell::Cell<bool>,
     /// The calls run inline so far (for tests).
     pub inline_runs: std::cell::Cell<u64>,
+    /// A translated call's promise code (a BCODESXP) is computed early
+    /// (`crate::early::value`): off only in tests, which compare the counts
+    /// a force makes with and without its early value.
+    pub early_bytecode: std::cell::Cell<bool>,
     /// The `<<-` writes of the inline run under way (`crate::inline`).
     pub(crate) inline_writes: crate::inline::WriteLog,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.

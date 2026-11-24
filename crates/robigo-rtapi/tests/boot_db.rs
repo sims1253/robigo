@@ -23,14 +23,6 @@ mod db_tree;
 /// `.expand_R_libs_env_var` and `.libPaths`, are builtins now).
 const PROFILE_STOPS: &str = "";
 
-/// The checkout's database tree for cargo's robigo-rt, made if it is
-/// missing or another binary's or script's ([`db_tree::ensure_db_tree`]);
-/// true, for the tests' `if !tree_made()`, which no longer skip.
-fn tree_made() -> bool {
-    test_tree();
-    true
-}
-
 /// The checkout-shaped directory of cargo's robigo-rt's test tree.
 fn test_tree() -> std::path::PathBuf {
     db_tree::ensure_db_tree(std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")))
@@ -80,11 +72,9 @@ fn boot_bin_reading(
     remove: &[&str],
     stdin: Option<&[u8]>,
 ) -> (String, String, Option<i32>) {
-    // one directory per run (the tests run in parallel)
-    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let home = std::env::temp_dir().join(format!("robigo-boot-db-home-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
+    // one directory per run (the tests run in parallel), no other process's
+    // (db_tree::unique_dir)
+    let home = db_tree::unique_dir(&std::env::temp_dir(), "robigo-boot-db-home");
     // (cargo's binary from its test tree; another, an install layout's copy,
     // from the tree beside it, which a start finds first)
     let mut cmd = if bin == std::path::Path::new(env!("CARGO_BIN_EXE_robigo-rt")) {
@@ -92,6 +82,9 @@ fn boot_bin_reading(
     } else {
         Command::new(bin)
     };
+    // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
+    // inherits the environment): the boot under them is not this test's
+    db_tree::without_modes(&mut cmd);
     cmd.args(args)
         .current_dir(&home)
         // a private cwd and HOME: no caller's .Renviron or .Rprofile
@@ -119,18 +112,6 @@ fn boot_bin_reading(
         .env_remove("R_MIN_JIT_SCORE")
         .env_remove("R_DISABLE_BYTECODE")
         .env_remove("_R_COMPILE_PKGS_")
-        // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
-        // inherits the environment): the boot under them is not this test's
-        .env_remove("ROBIGO_GCTORTURE")
-        // (the hold goes with the modes it holds: alone it is refused)
-        .env_remove("ROBIGO_TORTURE_AFTER_START")
-        .env_remove("ROBIGO_GC_STATS")
-        .env_remove("ROBIGO_GC_MOVE")
-        .env_remove("ROBIGO_GC_PIN_REPORT")
-        .env_remove("ROBIGO_FRAME_QUARANTINE")
-        .env_remove("ROBIGO_FAIL_ALLOC_AT")
-        .env_remove("ROBIGO_NO_INPLACE")
-        .env_remove("ROBIGO_MATERIALIZE")
         .env_remove("ROBIGO_BOOT_VERBOSE")
         // the translation cache's controls (C1): the tree's cache, on
         .env_remove("ROBIGO_TRANSLATION_CACHE")
@@ -164,9 +145,6 @@ fn boot_bin_reading(
 
 #[test]
 fn base_boots_from_its_database() {
-    if !tree_made() {
-        return;
-    }
     let expr = "f <- get('paste', baseenv()); \
                 cat(typeof(.Internal(bodyCode(f))), exists('.C_R_addTaskCallback'), exists('.F_dqrdc2'), \
                     length(ls(.BaseNamespaceEnv[['.__S3MethodsTable__.']], all.names = TRUE)) == nrow(.S3_methods_table), \
@@ -186,9 +164,6 @@ fn base_boots_from_its_database() {
 /// `.Library.site` gone from it. Recorded on the oracle with the same files.
 #[test]
 fn the_start_up_files_are_read_as_gnu_r_reads_them() {
-    if !tree_made() {
-        return;
-    }
     let dir = std::env::temp_dir().join(format!("robigo-boot-db-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let renviron = dir.join("renviron");
@@ -236,9 +211,6 @@ fn the_start_up_files_are_read_as_gnu_r_reads_them() {
 /// read and the script runs.
 #[test]
 fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
-    if !tree_made() {
-        return;
-    }
     let dir = std::env::temp_dir().join(format!("robigo-boot-db-profile-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("s.R");
@@ -311,9 +283,6 @@ fn a_user_profile_s_errors_end_it_as_in_gnu_r() {
 /// with stats removed from the tree, in a throwaway container).
 #[test]
 fn the_default_start_attaches_the_packages_the_tree_has() {
-    if !tree_made() {
-        return;
-    }
     let expr = "cat(length(getOption('defaultPackages')), search(), '\\n'); \
                 tryCatch(library(stats), error = function(e) cat(conditionMessage(e), '\\n'))";
     let (out, err, status) =
@@ -333,9 +302,6 @@ fn the_default_start_attaches_the_packages_the_tree_has() {
 /// on 4.6.2 with a package GNU R lacks, under C.UTF-8).
 #[test]
 fn a_user_s_default_packages_warn_as_in_gnu_r() {
-    if !tree_made() {
-        return;
-    }
     let (out, err, status) = boot(
         &["--vanilla".as_ref(), "-e".as_ref(), "cat('ran\\n')".as_ref()],
         &[("R_DEFAULT_PACKAGES", "stats".as_ref())],
@@ -373,9 +339,6 @@ fn an_unknown_boot_is_an_error() {
 
 #[test]
 fn the_jit_starts_as_setup_rmainloop_ends() {
-    if !tree_made() {
-        return;
-    }
     // GNU R 4.6.2's (R_DEFAULT_PACKAGES=NULL R --vanilla --no-echo -e ...):
     // the compiler loaded at the end of the start when the JIT is on, its
     // closures byte code from compiler.rdb; the JIT's level, then
@@ -421,9 +384,6 @@ fn the_jit_starts_as_setup_rmainloop_ends() {
 
 #[test]
 fn a_named_profile_that_does_not_open_is_no_profile() {
-    if !tree_made() {
-        return;
-    }
     // R_OpenSiteFile and R_OpenInitFile return R_fopen's NULL, which
     // R_LoadProfile skips (startup.c:115, sys-unix.c:77, main.c:723); GNU R
     // 4.6.2 runs on, as here
@@ -495,9 +455,6 @@ fn write_cache(tmp: &std::path::Path) {
 fn the_writer_replaces_a_cache_file_by_rename() {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
-    if !tree_made() {
-        return;
-    }
     let tmp = cached_tree("tcache-rename");
     let path = tmp.join(".robigo/rt-home-db-cache/base.rtc");
     let mut old = std::fs::File::open(&path).unwrap();
@@ -522,9 +479,6 @@ fn the_writer_replaces_a_cache_file_by_rename() {
 /// with a message, not passed.
 #[test]
 fn writing_and_verifying_the_cache_in_one_run_is_refused() {
-    if !tree_made() {
-        return;
-    }
     let tmp = cached_tree("tcache-write-verify");
     let (_, err, st) = boot(
         &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("1")],
@@ -548,9 +502,6 @@ fn writing_and_verifying_the_cache_in_one_run_is_refused() {
 /// and the test has nothing to run.
 #[test]
 fn a_verification_stopped_for_a_retry_compares_nothing() {
-    if !tree_made() {
-        return;
-    }
     let (_, err, st) = boot(
         &[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new("1")],
         &[("ROBIGO_RETRY_TORTURE", std::ffi::OsStr::new("1"))],
@@ -613,9 +564,6 @@ fn a_verification_stopped_for_a_retry_compares_nothing() {
 #[test]
 fn a_start_falls_back_silently_without_a_valid_translation_cache() {
     use std::os::unix::fs::PermissionsExt;
-    if !tree_made() {
-        return;
-    }
     let tmp = cached_tree("tcache");
     let mine = tmp.join(".robigo/rt-home-db-cache");
     let cp = |from: &std::path::Path, to: &std::path::Path| {
@@ -692,9 +640,6 @@ fn a_start_falls_back_silently_without_a_valid_translation_cache() {
 /// a script at the site profile's error.
 #[test]
 fn start_up_errors_go_on_to_the_interactive_prompt() {
-    if !tree_made() {
-        return;
-    }
     let dir = std::env::temp_dir().join(format!("robigo-boot-db-interactive-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let site = dir.join("site.R");
@@ -732,9 +677,6 @@ fn start_up_errors_go_on_to_the_interactive_prompt() {
 /// R_DEFAULT_PACKAGES=NULL, C.UTF-8).
 #[test]
 fn an_interactive_console_keeps_source_references() {
-    if !tree_made() {
-        return;
-    }
     let input = b"f <- function(x)  x # c\nf\ng <- function(y) {\n  y  # two\n}\ng\nattr(attr(g, \"srcref\"), \"srcfile\")$lines\n";
     let (out, err, status) = boot_reading(
         &[
@@ -759,9 +701,6 @@ fn an_interactive_console_keeps_source_references() {
 
 #[test]
 fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
-    if !tree_made() {
-        return;
-    }
     // R_init_jit_enabled's loadCompilerNamespace fails: check_session_exit
     // halts R, or with options(error) lets it go on to R_Suicide("unable to
     // initialize the JIT") (main.c:1205-1214, eval.c:1415); GNU R 4.6.2's
@@ -769,14 +708,11 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
     // not a case: GNU R's readRawFromFile then copies the record from past
     // its zero-length cache, serialize.c:3146, and inflates what it read)
     let tree = test_tree().join(".robigo/rt-home-db");
-    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     // (the install layout robigo-rt finds its R_HOME by: DIR/bin/robigo-rt,
     // DIR/lib/robigo, a copy of the tree; an R_HOME in the environment is
     // ignored, as GNU R's is)
     let copy = |what: &str| {
-        let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("robigo-boot-db-{what}-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = db_tree::unique_dir(&std::env::temp_dir(), &format!("robigo-boot-db-{what}"));
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::create_dir_all(dir.join("lib")).unwrap();
         std::fs::copy(env!("CARGO_BIN_EXE_robigo-rt"), dir.join("bin/robigo-rt")).unwrap();
@@ -837,9 +773,6 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
 /// missed note (frozen garbage no pass removes) fails here too.
 #[test]
 fn no_frozen_reachability_pass_in_steady_state() {
-    if !tree_made() {
-        return;
-    }
     // (name, setup, body, iterations per round, gctorture: a collection at
     // every allocation, as rt-ci's E3 steps run: deep frames there were the
     // case the foreman named, tests/r/lang/tailcall-frames.R. Turned on by
