@@ -671,7 +671,9 @@ class RtCi(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
         ov = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ov)
-        self.assertEqual(set(ov.BOOTS), {"benchmarks/rt/mem/strings1e6.R"})
+        # (none since paste collects in its loop: strings1e6.R, the flip's
+        # one entry, runs under the default boot)
+        self.assertEqual(set(ov.BOOTS), set())
         with tempfile.TemporaryDirectory() as tmp:
             names = [n for n, _p in ov.programs(tmp)]
         for name, (boot, why) in ov.BOOTS.items():
@@ -690,7 +692,7 @@ class RtCi(unittest.TestCase):
                 self.assertEqual(r["boot"], ov.BOOTS.get(name, (None, ""))[0], name)
         for name, boot in seen.items():
             self.assertEqual(boot, ov.BOOTS[name][0] if name in ov.BOOTS else None, name)
-        self.assertEqual(len(seen), 4)
+        self.assertEqual(len(seen), 3 + len(ov.BOOTS))
 
     # Every file that runs a robigo-rt binary, and how that binary gets base's
     # database tree written by itself (a binary naming no boot boots rdb once
@@ -1544,6 +1546,53 @@ def rust_src_snippets(root):
             if location.match(line) and n < len(lines) and lines[n].lstrip().startswith("|"):
                 out.append(f"{path.relative_to(root)}:{n}: {line.strip()} (and the source under it)")
     return out
+
+
+class OvershootReportOnly(unittest.TestCase):
+    """scripts/rt-overshoot.py's report-only programs (benchmarks/rt/mem-report):
+    reported, their overshoot never failing the step (a missing report
+    does); nothing in benchmarks/rt/mem is one."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec_ = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
+        cls.ov = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(cls.ov)
+
+    def result(self, program, over):
+        return {"program": program, "profile": "eval", "exit": 0, "collections": 1, "max": 40 << 20,
+                "live": 1 << 20, "total": 40 << 20, "over": over, "exit_due": None, "ratio": 1.2}
+
+    def test_a_report_only_program_over_the_bound_never_fails_the_step(self):
+        p = "benchmarks/rt/mem-report/x.R"
+        report = {p: ("a family", "a PR")}
+        self.assertEqual(self.ov.verdict([self.result(p, 1)], report), 0)
+        # the same result for a gated program fails it, and so does a gated
+        # program's missing report beside a report-only one
+        self.assertEqual(self.ov.verdict([self.result("benchmarks/rt/mem/x.R", 1)], report), 1)
+        self.assertEqual(self.ov.verdict([self.result(p, 1), {"program": "tests/rt/a.R", "error": "timeout"}], report), 1)
+        # a report-only program that gives no report, or times out, fails it
+        # too: its number is missing, not merely over
+        self.assertEqual(self.ov.verdict([{"program": p, "error": "timeout"}], report), 1)
+        self.assertEqual(self.ov.verdict([{"program": p, "error": "no report (exit 1)"}], report), 1)
+
+    def test_every_mem_report_program_names_its_family_and_cure_and_is_run(self):
+        d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem-report"
+        files = sorted(f.name for f in d.glob("*.R"))
+        self.assertTrue(files, "benchmarks/rt/mem-report has no programs")
+        report = self.ov.report_only()
+        self.assertEqual(sorted(os.path.basename(p) for p in report), files)
+        for p, (family, cure) in report.items():
+            self.assertTrue(family.strip() and cure.strip(), p)
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            names = {n for n, _ in self.ov.programs(tmp)}
+        self.assertTrue(set(report) <= names)
+
+    def test_nothing_in_mem_is_report_only(self):
+        d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem"
+        for f in sorted(d.glob("*.R")):
+            self.assertIsNone(self.ov.report_header(os.path.join("benchmarks", "rt", "mem", f.name)), f.name)
 
 
 class CompileFailExpectations(unittest.TestCase):

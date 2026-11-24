@@ -14,6 +14,13 @@ exit with the bytes allocated since. The programs:
   cases robigo-rt ratchets (tests/r/passing-rt), their package C from
   scripts/rt-capi-build.sh;
 - benchmarks/suite/{calls,fib,binarytrees}.R and benchmarks/rt/mem/*.R;
+- benchmarks/rt/mem-report/*.R, report-only: each program's first line
+  says which builtin family it measures and the PR expected to cure it
+  (`# E4 report-only: FAMILY; cured by: PR`). Their overshoot is printed in
+  a table of its own and never fails the step (one that gives no report,
+  or times out, still does: a missing number is worse than a red step); a program moves to
+  benchmarks/rt/mem/ when its cure lands, and that move is the cure's
+  proof;
 - every row of benchmarks/rt/calls-rows.toml, as the N loop
   scripts/idiom-vs-r.py runs (`SETUP; g <- function() { for (i in 1:N)
   { BODY }; NULL }; g()`).
@@ -40,6 +47,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from perf import rows_with_setups  # noqa: E402
 BOUND_FLOOR = 32 << 20
+REPORT_DIR = os.path.join("benchmarks", "rt", "mem-report")
+REPORT_HEADER = re.compile(r"^# E4 report-only: (.+?); cured by: (.+)$")
 
 COLLECTIONS = re.compile(r"^robigo gc: collections (\d+)", re.M)
 OVERSHOOT = re.compile(
@@ -57,19 +66,11 @@ DUE_AT_EXIT = re.compile(
 # the bound there; a named one must still pass under its boot. INTERIM(L5):
 # an entry goes when its cure lands, and M1's loader cannot be deleted while
 # one names it (docs/ledger/g3/2026-11-23-l5-flip.md, the deletion list).
-BOOTS = {
-    # One collection, at paste0's return, under both boots; by then rdb has
-    # allocated 51,826 more objects (the boot heap: base and the compiler),
-    # so the node trigger falls about 52k CHARSXPs earlier inside paste0's
-    # loop. paste0 has no safepoint until it returns, so what it allocates
-    # after the trigger is overshoot; GNU R collects inside the loop,
-    # because its allocVector collects anywhere. Max overshoot: m1
-    # 31,631,328 bytes; rdb 34,116,528 (eval) and 34,046,544 (bc); bound
-    # 33,554,432. The cure: paste0's string loop collects (B's); then this
-    # entry goes and the program passes under rdb.
-    "benchmarks/rt/mem/strings1e6.R": ("m1", "paste0's string loop has no safepoint; under rdb the node trigger "
-                                       "falls 52k CHARSXPs earlier in it"),
-}
+# None today: benchmarks/rt/mem/strings1e6.R, the one entry the flip made
+# (paste0's loop had no safepoint, so under rdb it overshot 34.1 MB past a
+# 33.55 MB bound), runs under rdb since paste collects between its elements
+# (Cx::fill_strings, B's paste poll): 48 bytes.
+BOOTS = {}
 
 
 def bound(live):
@@ -100,14 +101,47 @@ def ratcheted(suite):
     return sorted(out)
 
 
-def programs(tmp):
-    """(name, path) of every program to run."""
+def report_header(path):
+    """(family, cure) from a report-only program's first line, else None."""
+    with open(os.path.join(ROOT, path)) as f:
+        m = REPORT_HEADER.match(f.readline().rstrip("\n"))
+    return (m.group(1), m.group(2)) if m else None
+
+
+def report_only():
+    """{name: (family, cure)} of benchmarks/rt/mem-report's programs; a
+    program there without the header is an error."""
+    d = os.path.join(ROOT, REPORT_DIR)
+    out = {}
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if f.endswith(".R"):
+            p = os.path.join(REPORT_DIR, f)
+            h = report_header(p)
+            if h is None:
+                sys.exit(f"rt-overshoot: {p} has no '# E4 report-only: FAMILY; cured by: PR' first line")
+            out[p] = h
+    return out
+
+
+def verdict(res, report):
+    """The step's exit status: 1 if a gated program passed the bound or
+    any program gave no report (a report-only one too); a report-only
+    program's overshoot never fails it."""
+    over = [r for r in res if "error" not in r and r["over"] and r["program"] not in report]
+    errors = [r for r in res if "error" in r]
+    return 1 if over or errors else 0
+
+
+def programs(tmp, report=None):
+    """(name, path) of every program to run; `report` is report_only()'s
+    snapshot (read here when not given)."""
     progs = [(p, p) for p in ratcheted("rt") + ratcheted("r")]
     for f in ["benchmarks/suite/calls.R", "benchmarks/suite/fib.R", "benchmarks/suite/binarytrees.R"]:
         progs.append((f, f))
     mem = os.path.join(ROOT, "benchmarks", "rt", "mem")
     progs += [(os.path.join("benchmarks/rt/mem", f), os.path.join("benchmarks/rt/mem", f))
               for f in sorted(os.listdir(mem)) if f.endswith(".R")]
+    progs += [(p, p) for p in (report_only() if report is None else report)]
     with open(os.path.join(ROOT, "benchmarks", "rt", "calls-rows.toml"), "rb") as f:
         rows = rows_with_setups(tomllib.load(f))
     # (the jit rows compile through the compiler namespace, which robigo-rt
@@ -161,16 +195,20 @@ def main():
     bin_ = a.bin or default_bin()
     if not os.access(bin_, os.X_OK):
         sys.exit(f"rt-overshoot: no robigo-rt at {bin_}")
+    # one snapshot of the report-only programs, for the run and the verdict
+    report = report_only()
     with tempfile.TemporaryDirectory() as tmp:
         libs = os.path.join(tmp, "libs")
         subprocess.run([os.path.join(ROOT, "scripts", "rt-capi-build.sh"), libs], check=True)
-        progs = programs(tmp)
+        progs = programs(tmp, report)
         jobs = [(n, p, prof) for n, p in progs for prof in a.profiles.split(",")]
         with ThreadPoolExecutor(a.jobs) as ex:
             res = list(ex.map(lambda j: run(bin_, j[0], j[1], j[2], libs), jobs))
     errors = [r for r in res if "error" in r]
     ok = [r for r in res if "error" not in r]
     ok.sort(key=lambda r: -r["ratio"])
+    reported = [r for r in ok if r["program"] in report]
+    ok = [r for r in ok if r["program"] not in report]
     print(f"rt-overshoot: {bin_}, {len(progs)} programs x {len(a.profiles.split(','))} profiles")
     print()
     print("| program | profile | boot | collections | max overshoot | live after | bound | max / bound | over |")
@@ -184,7 +222,7 @@ def main():
     over = [r for r in ok if r["over"]]
     due = [r for r in ok if r["exit_due"]]
     print()
-    print(f"runs: {len(res)}; with a report: {len(ok)}; over the bound: {len(over)}; "
+    print(f"runs: {len(res)}; gated runs with a report: {len(ok)}; over the bound: {len(over)}; "
           f"a collection due at exit: {len(due)}; largest max/bound: {ok[0]['ratio'] if ok else 0:.4f}")
     for r in errors:
         print(f"no result: {r['program']} ({r['profile']}): {r['error']}")
@@ -196,10 +234,22 @@ def main():
     for r in over:
         print(f"OVER: {r['program']} ({r['profile']}): max {r['max']:,} bytes, live {r['live']:,}, "
               f"exit {r['exit_due']}")
+    if reported:
+        print()
+        print("report-only (benchmarks/rt/mem-report: its overshoot never fails the step; no report does)")
+        print()
+        print("| program | profile | family | cured by | collections | max overshoot | bound | max / bound |")
+        print("|---|---|---|---|---:|---:|---:|---:|")
+        for r in reported:
+            fam, cure = report[r["program"]]
+            print(f"| {r['program']} | {r['profile']} | {fam} | {cure} | {r['collections']} | {r['max']:,} | "
+                  f"{bound(r['live']):,} | {r['ratio']:.4f} |")
+        print()
+        print(f"report-only runs: {len(reported)}; over the bound: {sum(1 for r in reported if r['over'])}")
     if a.json:
         with open(a.json, "w") as f:
             json.dump({"bin": bin_, "runs": res}, f, indent=1)
-    return 1 if over or errors else 0
+    return verdict(res, report)
 
 
 if __name__ == "__main__":
