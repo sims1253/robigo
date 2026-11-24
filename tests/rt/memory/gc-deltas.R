@@ -1,14 +1,18 @@
 # L7 (amended 2026-11-24): cells kept alive by data a builtin makes, as the
-# difference of two gc() deltas (cancelling the measuring call's own cells),
-# and memory.profile() deltas by type for the same objects.
+# difference of two gc() deltas (keeping the object vs making and dropping a
+# zero-size counterpart through the same call path, which cancels both the
+# measuring call's own cells and any quarantined frames), and memory.profile()
+# deltas by type for the same objects.
 
 e <- new.env(parent = emptyenv())
 e$x <- NULL
 
-f_null <- function() NULL
-f_num  <- function() numeric(1e5)
-f_list <- function() .Internal(as.vector(1:1000, "list"))
-f_int  <- function() integer(1e4)
+f_num   <- function() numeric(1e5)
+f_num0  <- function() { numeric(0); NULL }
+f_list  <- function() .Internal(as.vector(1:1000, "list"))
+f_list0 <- function() { .Internal(as.vector(1:1, "list")); NULL }
+f_int   <- function() integer(1e4)
+f_int0  <- function() { integer(0); NULL }
 
 m_gc <- function(make) {
   gc()
@@ -28,27 +32,23 @@ m_mp <- function(make) {
   p1 - p0
 }
 
-measure <- function(f, base_gc, base_mp) {
-  list(gc = m_gc(f) - base_gc, mp = m_mp(f) - base_mp)
+measure <- function(f, f0) {
+  list(gc = m_gc(f) - m_gc(f0),
+       mp = m_mp(f) - m_mp(f0))
 }
 
 # Warm up closures, bytecode, and first-use CHARSXPs (including memory.profile's
 # type names, kept alive so the CHARSXP cache stays stable across calls).
 mp_names <- names(memory.profile())
-z0 <- c(0, 0)
-p_zero <- integer(length(mp_names))
 for (k in 1:2) {
-  for (f in list(f_null, f_num, f_list, f_int)) {
-    invisible(measure(f, z0, p_zero))
-  }
+  invisible(measure(f_num, f_num0))
+  invisible(measure(f_list, f_list0))
+  invisible(measure(f_int, f_int0))
 }
 
-base_gc <- m_gc(f_null)
-base_mp <- m_mp(f_null)
-
-r_num  <- measure(f_num, base_gc, base_mp)
-r_list <- measure(f_list, base_gc, base_mp)
-r_int  <- measure(f_int, base_gc, base_mp)
+r_num  <- measure(f_num, f_num0)
+r_list <- measure(f_list, f_list0)
+r_int  <- measure(f_int, f_int0)
 
 show_res <- function(label, r) {
   cat(label, "gc:", r$gc, "\n")
