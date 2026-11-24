@@ -132,32 +132,12 @@ fn the_r_home_tools_probe_fails_on_a_failing_probe() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// The verification modes' variables (scripts/rt-ci.py's steps), which a
-/// test that runs one case as the plain binary does clears for it
-/// (scripts/test-rt-ci.py checks that every variable a crate-test step sets
-/// is here or is known not to change the binary's behaviour).
-const MODE_VARS: &[&str] = &[
-    "R_GCTORTURE",
-    "R_GCTORTURE_WAIT",
-    "ROBIGO_GCTORTURE",
-    "ROBIGO_GC_MOVE",
-    "ROBIGO_TORTURE_AFTER_START",
-    "ROBIGO_RETRY_TORTURE",
-    "ROBIGO_REQUIRE_RETRY_TORTURE",
-    "ROBIGO_RT_BOOT",
-    "ROBIGO_FAIL_ALLOC_AT",
-    "ROBIGO_NO_INPLACE",
-    "ROBIGO_MATERIALIZE",
-    "ROBIGO_FRAME_QUARANTINE",
-    "ROBIGO_POISON_DEAD",
-    "ROBIGO_GC_STATS",
-    "ROBIGO_GC_PIN_REPORT",
-    "ROBIGO_GC_FREEZE",
-    "ROBIGO_GC_FREEZE_CHECK",
-    "ROBIGO_GC_FREEZE_CHECK_REPORT",
-    "R_VSIZE",
-    "R_MAX_VSIZE",
-];
+/// What a case runs under beside the modes ([`db_tree::MODE_VARS`]): the
+/// boot and the vector limits a step sets. A test that runs one case as the
+/// plain binary does clears both lists for it (scripts/test-rt-ci.py checks
+/// that every variable a crate-test step sets is in one of them or is known
+/// not to change the binary's behaviour).
+const CASE_VARS: &[&str] = &["ROBIGO_RT_BOOT", "R_VSIZE", "R_MAX_VSIZE"];
 
 /// The lost-record rule end to end: robigo-rt's crosscheck (its
 /// `RECORD_LOST` line) and the runner (its `UNWRITTEN_REPORT`) are two
@@ -167,8 +147,8 @@ const MODE_VARS: &[&str] = &[
 /// holds it, with the binary's own line.
 #[test]
 fn a_lost_crosscheck_record_fails_the_run() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("lost-record-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // (a directory no other process has: db_tree::unique_dir)
+    let dir = db_tree::unique_dir(Path::new(env!("CARGO_TARGET_TMPDIR")), "lost-record");
     let id = "tests/rt/lost/compiled.R";
     let script = dir.join(id);
     std::fs::create_dir_all(script.parent().unwrap()).unwrap();
@@ -187,7 +167,13 @@ fn a_lost_crosscheck_record_fails_the_run() {
     // (the binary's own database tree, never the checkout's: its cases boot
     // rdb, the default)
     let checkout = db_tree::ensure_db_tree(&o.bin);
-    o.env.push(("ROBIGO_RT_CHECKOUT".into(), Some(checkout.clone().into())));
+    o.env.push(("ROBIGO_RT_CHECKOUT".into(), Some(checkout.into())));
+    // (and none of the caller's start-up files: a ~/.Rprofile that quits
+    // would end the case before its record; db_tree's private HOME)
+    o.env.push(("HOME".into(), Some(db_tree::private_home().into())));
+    for v in db_tree::USER_VARS {
+        o.env.push((v.into(), None));
+    }
     o.filter = Some("tests/rt/lost".into());
     o.slots = None;
     o.times = None;
@@ -195,7 +181,7 @@ fn a_lost_crosscheck_record_fails_the_run() {
     // runs this test is in (rt-ci runs the crates' tests under gctorture,
     // the moving collector, ...: under them the case would time out, and a
     // timeout is no lost record)
-    for k in MODE_VARS {
+    for k in db_tree::MODE_VARS.iter().chain(CASE_VARS) {
         o.env.push((k.into(), None));
     }
     o.env.push(("R_ENABLE_JIT".into(), Some("0".into())));
