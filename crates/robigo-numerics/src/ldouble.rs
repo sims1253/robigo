@@ -1464,6 +1464,24 @@ mod x87_vs_soft {
         }
     }
 
+    /// Whether `x` is a pseudo-denormal: biased exponent 0 with the
+    /// explicit integer bit set (the x87 reads it as 2^-16382 * 1.f).
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn is_pseudo_denormal(x: &LDouble) -> bool {
+        u16::from_le_bytes([x.0[8], x.0[9]]) & 0x7fff == 0 && x.0[7] & 0x80 != 0
+    }
+
+    /// A pseudo-denormal's normal encoding (biased exponent 1, the same
+    /// significand and sign); any other value as it is.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn canonical_encoding(x: &LDouble) -> LDouble {
+        let mut v = *x;
+        if is_pseudo_denormal(x) {
+            v.0[8] |= 1;
+        }
+        v
+    }
+
     /// soft::powl vs glibc's powl: see [`Tally`].
     #[test]
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -1473,7 +1491,20 @@ mod x87_vs_soft {
         let mut tally = Tally::new("powl");
         let mut check = |a: &LDouble, b: &LDouble| {
             let args = || format!("({}, {})", hex(a), hex(b));
-            tally.check(args, &imp::powl(a, b), &soft::powl_with::<X87>(a, b), &soft::powl(a, b));
+            let (glibc, on_x87, exact) = (imp::powl(a, b), soft::powl_with::<X87>(a, b), soft::powl(a, b));
+            if is_pseudo_denormal(a) {
+                // For a pseudo-denormal x, the results are compared as
+                // values, not encodings. glibc 2.44's powl(x, 1.0L)
+                // returns x as it is, still pseudo-denormal; glibc 2.41
+                // (CI's images, GNU R 4.6.2's build) and the port return
+                // the normal encoding the x87's arithmetic makes. Both
+                // encodings are the same number, and no R computation
+                // makes a pseudo-denormal (#1021).
+                let c = canonical_encoding;
+                tally.check(args, &c(&glibc), &c(&on_x87), &c(&exact));
+            } else {
+                tally.check(args, &glibc, &on_x87, &exact);
+            }
         };
         // R's only Linux use of powl (format.c): powl(10, kp) — exact bytes.
         for kp in -340i64..=340 {

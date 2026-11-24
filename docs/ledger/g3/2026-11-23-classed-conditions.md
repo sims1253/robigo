@@ -39,7 +39,7 @@ still refuses the option ("not implemented yet").
 |---|---|---|
 | errors.c:2782 `R_MissingArgError_c`: eval.c:1184, 5834; envir.c:1923, 2471; arithmetic.c:1918, 1936; RNG.c:355 | `missingArgError` (`evalError`, `getvarError`, `getMissingError`, `log1Error`, `log2Error`, `getRNGError`) | rtcore `Cx::missing_arg_error`; eval.rs, env/mod.rs, envir.rs, math.rs, rng.rs |
 | eval.c:3061, 3074 (`Tailcall`, `Exec`) | `missingArgError` (`tailcallError`, `tailcallRecError`) | tailcall.rs |
-| arithmetic.c:1819 | `missingArgError` (`MathMissingError`) | not raised: `sin()` reaches the arity check first, in both (probe: "0 arguments passed to 'sin' which requires 1") |
+| arithmetic.c:1819 (`do_Math2`) | `missingArgError` (`MathMissingError`) | math.rs `do_math2_special` (`round`, `signif`; tests/rt/math/round-errors.R). The earlier row probed `sin()`, which is `do_math1` and reaches the arity check first; `do_Math2` is `round`/`signif`, which robigo-rt lacked ("robigo: the primitive 'round' is not implemented yet") |
 | envir.c:2622 (`get0`/`exists`'s varex) | `missingArgError` (`getVarExError`) | not found in robigo-rt; not probed |
 | subset.c:98, subassign.c:1602 `R_makeNotSubsettableError` | `notSubsettableError` | robigo-rtbuiltins subscript.rs |
 | subset.c:108, subassign.c:1611, subscript.c:67 `R_makeMissingSubscriptError[1]` | `MissingSubscriptError` | subscript.rs |

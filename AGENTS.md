@@ -112,6 +112,17 @@ See `docs/verification.md` for everything; in short:
   about 30% slower, so never measure with it.
 - `cargo test` runs unit tests, the parser oracle and the conformance suite;
   add `--profile quick` for a binary close to `release` speed.
+- `robigo-rt` (G3's runtime, `cargo build --release -p robigo-rtapi --bin
+  robigo-rt`) boots base GNU R's way, from base's database tree, which its
+  binary writes: `scripts/rt-home-db.sh --robigo-rt BIN` (into
+  `.robigo/rt-home-db`; without it a start exits 2 naming this command).
+  `ROBIGO_RT_BOOT=m1` runs the interim M1 loader instead, until it is
+  deleted. A fresh checkout needs nothing more before `cargo test`: the
+  tests that spawn robigo-rt make the two trees for the binary they test
+  (`crates/robigo-rtapi/tests/common/db_tree.rs`, about 25 s the first
+  time and again whenever that binary changes, then a stamp check). They
+  need GNU R 4.6.2's sources, as `scripts/rt-home.sh` does
+  (`scripts/r-src.sh` fetches them).
 - `scripts/corpus.py run fastr --filter 'TestBuiltin_paste'` runs a slice of
   a corpus; `scripts/corpus.py show fastr ID` diffs one case.
 - `scripts/perf.py run --metric instr --filter shootout/` measures

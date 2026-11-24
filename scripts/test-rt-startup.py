@@ -203,34 +203,6 @@ class Boots(unittest.TestCase):
         self.assertTrue(rows[3].startswith("| rdb-jit (default) |"))
 
 
-@unittest.skipUnless(os.environ.get("RT_STARTUP_TEST_BIN") and su.M1_BOOT == "",
-                     "a binary in RT_STARTUP_TEST_BIN (perf-rt's Starts step gives it), whose unset boot is M1's")
-class M1Name(unittest.TestCase):
-    """`ROBIGO_RT_BOOT=m1` names the boot an unset value is until L5's flip
-    (main.rs), so that the flip's one-line change of M1_BOOT to "m1" moves
-    nothing: the interim start under each, on the binary under test, over
-    the same 15 layouts, within #995's measured floor (0.073% instructions,
-    14 KiB anonymous peak). Skipped once M1_BOOT is "m1" (the flip): unset
-    is then the rdb boot."""
-
-    def tearDown(self):
-        # the measurement's pools and timers end with it: a thread left
-        # alive here would make the next test's fork a fork of a
-        # multi-threaded process
-        others = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
-        self.assertEqual(others, [], "threads left alive after M1Name")
-
-    def test_the_interim_start_is_the_same_under_m1(self):
-        bin_ = os.environ["RT_STARTUP_TEST_BIN"]
-        trees = os.environ.get("RT_STARTUP_TEST_TREES") or False
-        starts = dict(su.STARTS, **{"interim-m1": {"ROBIGO_RT_BOOT": "m1"}})
-        with unittest.mock.patch.object(su, "STARTS", starts):
-            got = su.run(bin_, starts=["interim", "interim-m1"], trees=trees, runs=1)
-        a, b = got["interim"], got["interim-m1"]
-        self.assertLessEqual(abs(b["instr"] / a["instr"] - 1) * 100, 0.073, (a["instr"], b["instr"]))
-        self.assertLessEqual(abs(b["anon_kib"] - a["anon_kib"]), 14, (a["anon_kib"], b["anon_kib"]))
-
-
 class Reallocs(unittest.TestCase):
     def test_growth_reallocs_are_charged_to_the_function_that_grew(self):
         # callgrind_annotate's lines for a file made with --separate-callers=3:

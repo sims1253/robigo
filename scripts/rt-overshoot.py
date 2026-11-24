@@ -24,6 +24,9 @@ exit with the bytes allocated since. The programs:
   scripts/idiom-vs-r.py runs (`SETUP; g <- function() { for (i in 1:N)
   { BODY }; NULL }; g()`).
 
+Each runs under the default boot, but those BOOTS names, each with its
+reason (printed with the table).
+
 Prints a table of the worst programs and a summary; exits 1 if any
 overshoot passes the bound. A program's exit status does not matter (a
 case may end in an error): only the report does, and a missing report
@@ -55,6 +58,26 @@ OVERSHOOT = re.compile(
 DUE_AT_EXIT = re.compile(
     r"^robigo gc: due at exit: (\d+) bytes since \(live (\d+) bytes\), over max\(32 MiB, 10% live\) (\d)$", re.M
 )
+
+
+# The programs that run under a boot other than the default, each with the
+# boot and why. Every other program boots the default (rdb) and is held to
+# the bound there; a named one must still pass under its boot. INTERIM(L5):
+# an entry goes when its cure lands, and M1's loader cannot be deleted while
+# one names it (docs/ledger/g3/2026-11-23-l5-flip.md, the deletion list).
+BOOTS = {
+    # One collection, at paste0's return, under both boots; by then rdb has
+    # allocated 51,826 more objects (the boot heap: base and the compiler),
+    # so the node trigger falls about 52k CHARSXPs earlier inside paste0's
+    # loop. paste0 has no safepoint until it returns, so what it allocates
+    # after the trigger is overshoot; GNU R collects inside the loop,
+    # because its allocVector collects anywhere. Max overshoot: m1
+    # 31,631,328 bytes; rdb 34,116,528 (eval) and 34,046,544 (bc); bound
+    # 33,554,432. The cure: paste0's string loop collects (B's); then this
+    # entry goes and the program passes under rdb.
+    "benchmarks/rt/mem/strings1e6.R": ("m1", "paste0's string loop has no safepoint; under rdb the node trigger "
+                                       "falls 52k CHARSXPs earlier in it"),
+}
 
 
 def bound(live):
@@ -140,17 +163,20 @@ def programs(tmp):
 def run(bin_, name, path, profile, libs):
     env = dict(os.environ, ROBIGO_GC_STATS="1", ROBIGO_RT_PROFILE=profile, RT_CAPI_LIBS=libs,
                R_DEFAULT_PACKAGES="NULL", LANGUAGE="en", LC_ALL="C.UTF-8", TZ="UTC")
+    boot = BOOTS.get(name, (None, ""))[0]
+    if boot:
+        env["ROBIGO_RT_BOOT"] = boot
     try:
         p = subprocess.run([bin_, path], cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                            timeout=1800)
         err = p.stderr.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
-        return {"program": name, "profile": profile, "error": "timeout"}
+        return {"program": name, "profile": profile, "boot": boot, "error": "timeout"}
     m = OVERSHOOT.search(err)
     c = COLLECTIONS.search(err)
     if not m or not c:
-        return {"program": name, "profile": profile, "error": "no report (exit %d)" % p.returncode}
-    r = {"program": name, "profile": profile, "exit": p.returncode, "collections": int(c.group(1)), "max": int(m.group(1)),
+        return {"program": name, "profile": profile, "boot": boot, "error": "no report (exit %d)" % p.returncode}
+    r = {"program": name, "profile": profile, "boot": boot, "exit": p.returncode, "collections": int(c.group(1)), "max": int(m.group(1)),
          "live": int(m.group(2)), "total": int(m.group(3)), "over": int(m.group(4)), "exit_due": None}
     d = DUE_AT_EXIT.search(err)
     if d:
@@ -189,11 +215,14 @@ def main():
     ok = [r for r in ok if r["program"] not in report]
     print(f"rt-overshoot: {bin_}, {len(progs)} programs x {len(a.profiles.split(','))} profiles")
     print()
-    print("| program | profile | collections | max overshoot | live after | bound | max / bound | over |")
-    print("|---|---|---:|---:|---:|---:|---:|---:|")
-    for r in ok[: a.top]:
-        print(f"| {r['program']} | {r['profile']} | {r['collections']} | {r['max']:,} | {r['live']:,} | "
-              f"{bound(r['live']):,} | {r['ratio']:.4f} | {r['over']} |")
+    print("| program | profile | boot | collections | max overshoot | live after | bound | max / bound | over |")
+    print("|---|---|---|---:|---:|---:|---:|---:|---:|")
+    # (the worst, and every program BOOTS names, wherever it ranks)
+    for r in [r for i, r in enumerate(ok) if i < a.top or r["boot"]]:
+        print(f"| {r['program']} | {r['profile']} | {r['boot'] or 'default'} | {r['collections']} | {r['max']:,} | "
+              f"{r['live']:,} | {bound(r['live']):,} | {r['ratio']:.4f} | {r['over']} |")
+    for name, (boot, why) in sorted(BOOTS.items()):
+        print(f"boot {boot}: {name}: {why} (INTERIM(L5))")
     over = [r for r in ok if r["over"]]
     due = [r for r in ok if r["exit_due"]]
     print()

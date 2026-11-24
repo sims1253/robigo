@@ -210,17 +210,18 @@ class Unusable(Exception):
 
 
 # robigo-rt's boot, which the harness always sets (ROBIGO_RT_BOOT), so that
-# no list depends on a binary's default: "interim" is M1's loader (the variable
-# empty), "stage0" base from source, "rdb" base from base.rdb. The known
-# lists are made under DEFAULT_BOOT; the default-boot flip changes it in
-# the same commit as the lists it regenerates.
+# no list depends on a binary's default: "interim" is M1's loader
+# (ROBIGO_RT_BOOT=m1), "stage0" base from source, "rdb" base from base.rdb
+# (also the binary's default since L5's flip). The known
+# lists are made under DEFAULT_BOOT; the default-boot flip changed it to
+# "rdb" in the same commit as the lists it regenerated.
 BOOTS = ("interim", "stage0", "rdb")
-DEFAULT_BOOT = "interim"
+DEFAULT_BOOT = "rdb"
 
 
 def boot_env(boot):
     """The environment that selects `boot` in robigo-rt."""
-    return {"ROBIGO_RT_BOOT": "" if boot == "interim" else boot}
+    return {"ROBIGO_RT_BOOT": "m1" if boot == "interim" else boot}
 
 
 # The machine-wide slot pool every driver process takes a slot of (the
