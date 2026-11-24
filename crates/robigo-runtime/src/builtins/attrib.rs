@@ -69,12 +69,16 @@ fn do_attr(_: &mut Interp, call: &Value, args: Vec<Arg>, _: &Env) -> RResult<Val
     // on pairlists / 1D arrays) falls through to R's prefix rules below.
     if let Some(sym) = Sym::lookup(&want) {
         if let Some(val) = x.get_attr(sym) {
-            return Ok(if matches!(sym, s::ROW_NAMES | s::NAMES) { get_attrib(&x, sym) } else { val });
+            if matches!(sym, s::ROW_NAMES | s::NAMES) {
+                return Ok(get_attrib(&x, sym));
+            }
+            return Ok(val);
         }
         if exact && sym != s::NAMES {
             return Ok(Value::Null);
         }
-    } else if exact && &*want != "names" {
+    } else if exact {
+        // "names" is predefined in the interner, so a lookup miss can never be "names".
         return Ok(Value::Null);
     }
 
