@@ -117,9 +117,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 /// What a pass of the builtin's loop ends with: done or stopped by
 /// [`Fill::put`] (`Ok(Ok(()))`), an error to raise (the partial result is
-/// dropped), or the allocation the heap refused for the element given to
-/// [`Fill::put`] (the fill collects and runs the loop again from that
-/// element; refused again, it is GNU R's error for the cause).
+/// dropped), or an allocation the heap refused (`Err`; refused again, it is
+/// GNU R's error for the cause). Two refusals are the same to the loop,
+/// which returns either with `?`:
+/// - the one given to [`Fill::put`], for that element's CHARSXP: the fill
+///   collects and runs the loop again from that element;
+/// - one the loop met in an allocation of its own, outside `put` (a
+///   coercion in its setup, a buffer): the fill collects and runs the pass
+///   again from its start, `fill.start()` (0 for the first pass). The
+///   elements the pass had put are made again, with the same values.
 pub type FillPass = Result<Result<(), Diag<'static>>, NeedGc>;
 
 /// Where a pass of [`Cx::fill_strings`]'s loop stores its elements.
