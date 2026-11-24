@@ -1796,7 +1796,7 @@ class BcMutateFailures(unittest.TestCase):
         old = m.CORPUS
         m.CORPUS = f.name
         try:
-            self.assertEqual(m.corpus(), [(300014, 4, "signal-11")])
+            self.assertEqual(m.corpus(), [(300014, 4, "signal-11", False)])
         finally:
             m.CORPUS = old
 
