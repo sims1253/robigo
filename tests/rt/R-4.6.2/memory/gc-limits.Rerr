@@ -1,0 +1,8 @@
+Warning message:
+In mem.maxVSize("abc") : NAs introduced by coercion
+Warning message:
+In mem.maxNSize("abc") : NAs introduced by coercion
+Warning message:
+In mem.maxVSize(1) : a limit lower than current usage, so ignored
+Warning message:
+In mem.maxNSize(1) : a limit lower than current usage, so ignored

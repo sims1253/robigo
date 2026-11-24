@@ -1,0 +1,9 @@
+verbose_len: 3 
+Garbage collection N = a+b+c (level L) ... 
+X.Y Mbytes of cons cells used (P%)
+X.Y Mbytes of vectors used (P%)
+switches: FALSE TRUE TRUE FALSE 
+gcinfo_nonempty: TRUE 
+Garbage collection N = a+b+c (level L) ... 
+X.Y Mbytes of cons cells used (P%)
+X.Y Mbytes of vectors used (P%)

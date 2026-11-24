@@ -13,6 +13,18 @@
 use crate::isolate::Cx;
 use std::io::Write;
 
+/// Hook called by [`Cx::rprintf`] or [`Cx::reprintf`] while an output or
+/// message sink is active (`sink()`).
+///
+/// Return `true` when the hook has delivered `b` and the console write should
+/// be suppressed, or `false` to fall through to the console. A hook that
+/// forwards or splits bytes back to the console must call
+/// [`Cx::write_console_out`] or [`Cx::write_console_err`] (never
+/// [`Cx::rprintf`] or [`Cx::reprintf`], which would recurse into the hook).
+/// The hook always runs with no console `RefCell` borrow held, so calling
+/// `write_console_out` / `write_console_err` from inside it is safe.
+pub type SinkHook = fn(&Cx, &[u8]) -> bool;
+
 /// The two streams of a console.
 pub struct Console {
     out: Box<dyn Write>,
@@ -75,21 +87,56 @@ impl Drop for Console {
 }
 
 impl Cx {
-    /// `Rprintf`: `b` written to the console's output.
+    /// `Rprintf`: `b` written to the console's output (or the active output
+    /// sink when `sink()` has diverted it).
     // R: printutils.c:Rprintf, Rvprintf
     pub fn rprintf(&self, b: &[u8]) {
+        if let Some(f) = self.iso().out_sink.get()
+            && f(self, b)
+        {
+            return;
+        }
+        self.write_console_out(b);
+    }
+
+    /// `REprintf`: `b` written to the console's error stream (after the
+    /// output is flushed), or to the active message sink when
+    /// `sink(..., type = "message")` has diverted it.
+    // R: printutils.c:REprintf, REvprintf
+    pub fn reprintf(&self, b: &[u8]) {
+        if let Some(f) = self.iso().err_sink.get()
+            && f(self, b)
+        {
+            return;
+        }
+        self.write_console_err(b);
+    }
+
+    /// Write directly to the console's output stream, bypassing `out_sink`.
+    pub fn write_console_out(&self, b: &[u8]) {
         let mut c = self.iso().console.borrow_mut();
         let _ = c.out.write_all(b);
     }
 
-    /// `REprintf`: `b` written to the console's error stream (after the
-    /// output is flushed).
-    // R: printutils.c:REprintf, REvprintf
-    pub fn reprintf(&self, b: &[u8]) {
+    /// Write directly to the console's error stream (flushing output first),
+    /// bypassing `err_sink`.
+    pub fn write_console_err(&self, b: &[u8]) {
         let mut c = self.iso().console.borrow_mut();
         let _ = c.out.flush();
         let _ = c.err.write_all(b);
         let _ = c.err.flush();
+    }
+
+    /// Install or clear the output-sink hook (`sink(type = "output")`).
+    /// See [`SinkHook`] for the return-value and re-entrancy contract.
+    pub fn set_out_sink(&self, f: Option<SinkHook>) {
+        self.iso().out_sink.set(f);
+    }
+
+    /// Install or clear the message-sink hook (`sink(type = "message")`).
+    /// See [`SinkHook`] for the return-value and re-entrancy contract.
+    pub fn set_err_sink(&self, f: Option<SinkHook>) {
+        self.iso().err_sink.set(f);
     }
 
     /// `R_FlushConsole`: the output stream flushed.
@@ -128,5 +175,61 @@ mod tests {
         cx.rprintf(b"one");
         assert_eq!(out.take(), b"one");
         assert_eq!(o2.take(), b"two");
+    }
+
+    #[test]
+    fn sink_hooks_consume_fall_through_and_allow_console_reentry() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        let (c, out, err) = Console::capture();
+        cx.replace_console(c);
+
+        // Consuming hook suppresses console write.
+        cx.set_out_sink(Some(|_cx, _b| true));
+        cx.rprintf(b"suppressed");
+        assert_eq!(out.take(), b"");
+
+        // Non-consuming hook falls through to the console.
+        cx.set_out_sink(Some(|_cx, _b| false));
+        cx.rprintf(b"kept");
+        assert_eq!(out.take(), b"kept");
+
+        // Hook can write directly to the console without panicking on a borrow
+        // (e.g. split = TRUE or a sink pointing at stdout).
+        cx.set_out_sink(Some(|cx, b| {
+            cx.write_console_out(b"[");
+            cx.write_console_out(b);
+            cx.write_console_out(b"]");
+            true
+        }));
+        cx.rprintf(b"split");
+        assert_eq!(out.take(), b"[split]");
+
+        // Clearing restores direct writes.
+        cx.set_out_sink(None);
+        cx.rprintf(b"plain");
+        assert_eq!(out.take(), b"plain");
+
+        // Same contract for the message (stderr) sink.
+        cx.set_err_sink(Some(|_cx, _b| true));
+        cx.reprintf(b"suppressed-err");
+        assert_eq!(err.take(), b"");
+
+        cx.set_err_sink(Some(|_cx, _b| false));
+        cx.reprintf(b"kept-err");
+        assert_eq!(err.take(), b"kept-err");
+
+        cx.set_err_sink(Some(|cx, b| {
+            cx.write_console_err(b"<");
+            cx.write_console_err(b);
+            cx.write_console_err(b">");
+            true
+        }));
+        cx.reprintf(b"reenter-err");
+        assert_eq!(err.take(), b"<reenter-err>");
+
+        cx.set_err_sink(None);
+        cx.reprintf(b"plain-err");
+        assert_eq!(err.take(), b"plain-err");
     }
 }

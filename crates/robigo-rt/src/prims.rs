@@ -258,6 +258,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("flush", crate::connections::do_flush, Inline::None, 111, 1),
     builtin("getAllConnections", crate::connections::do_getallconnections, Inline::None, 11, 0),
     builtin("getConnection", crate::connections::do_getconnection, Inline::None, 11, 1),
+    builtin("sink", crate::connections::do_sink, Inline::None, 111, 4),
     builtin("sink.number", crate::connections::do_sinknumber, Inline::None, 11, 1),
     builtin("file", crate::connections::do_file, Inline::None, 11, 6),
     builtin("gzfile", crate::connections::do_gzfile::<0>, Inline::None, 11, 4),
