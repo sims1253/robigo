@@ -120,9 +120,10 @@ class RtCi(unittest.TestCase):
                          "modes")
         self.assertEqual(where["ROBIGO_MATERIALIZE=1 (every argument slot materialized)"], "modes")
         self.assertEqual([t for t, s in where.items() if s == "gctorture"],
-                         ["conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)",
+                         ["conformance under M1's loader with the boot heap's freeze off (ROBIGO_RT_BOOT=m1, "
+                          "ROBIGO_GC_FREEZE=0)",
                           "conformance under gctorture (E3)",
-                          f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"])
+                          f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture, M1's loader (ROBIGO_RT_BOOT=m1, E3)"])
         self.assertEqual([t for t, s in where.items() if s == "builtin-diff"],
                          ["builtin differential and its planted divergences (A4, scripts/builtin-diff.py ci)"])
         self.assertEqual([t for t, s in where.items() if s == "feature-builds"],
@@ -187,8 +188,11 @@ class RtCi(unittest.TestCase):
         # cache must change nothing a case sees)
         steps = rt.steps(["robigo-rt", "robigo-rtapi"])
         titles = [t for t, _, _ in steps]
-        rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT") == "rdb" and rt.CONFORMANCE in c
-               and "--skip" not in c]
+        # (the default boot is rdb: a step that names no boot runs it)
+        boot_keys = {"ROBIGO_RT_BOOT", "ROBIGO_CONF_JOBS", "ROBIGO_CONF_TIMEOUTS", "ROBIGO_BC_CROSSCHECK",
+                     "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_GC_FREEZE", "ROBIGO_TRANSLATION_CACHE"}
+        rdb = [i for i, (_, e, c) in enumerate(steps) if e.get("ROBIGO_RT_BOOT", "rdb") == "rdb"
+               and rt.CONFORMANCE in c and "--skip" not in c and set(e) <= boot_keys]
         # plain, crosschecked, with the boot heap's freeze off, and without
         # the translation cache
         self.assertEqual(len(rdb), 4)
@@ -198,8 +202,8 @@ class RtCi(unittest.TestCase):
         # (ROBIGO_CONF_TIMEOUTS: the default-timeout steps' allowances, set apart)
         self.assertEqual(sorted(sorted(k for k in steps[i][1] if k != "ROBIGO_CONF_TIMEOUTS") for i in rdb),
                          [["ROBIGO_BC_CROSSCHECK", "ROBIGO_BC_CROSSCHECK_REPORT", "ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
-                          ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE", "ROBIGO_RT_BOOT"],
-                          ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT"],
+                          ["ROBIGO_CONF_JOBS"],
+                          ["ROBIGO_CONF_JOBS", "ROBIGO_GC_FREEZE"],
                           ["ROBIGO_CONF_JOBS", "ROBIGO_RT_BOOT", "ROBIGO_TRANSLATION_CACHE"]])
         self.assertEqual(sum(steps[i][1].get("ROBIGO_TRANSLATION_CACHE") == "0" for i in rdb), 1)
 
@@ -523,7 +527,7 @@ class RtCi(unittest.TestCase):
                     self.assertEqual(env.get("ROBIGO_GC_FREEZE"), "0", title)
         self.assertGreaterEqual(seen, 5)
         starts = [(t, e, c) for t, e, c in rt.steps(crates) if t.startswith("the start tortured")]
-        self.assertEqual(sorted(e["ROBIGO_RT_BOOT"] for _t, e, _c in starts), ["", "rdb"])
+        self.assertEqual(sorted(e["ROBIGO_RT_BOOT"] for _t, e, _c in starts), ["m1", "rdb"])
         for title, env, cmd in starts:
             self.assertEqual(env["ROBIGO_TORTURE_AFTER_START"], "0", title)
             self.assertEqual((env["R_GCTORTURE"], env["R_GCTORTURE_WAIT"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_MOVE"]),
@@ -534,7 +538,7 @@ class RtCi(unittest.TestCase):
         # the rdb one after base's database tree is written
         titles = [t for t, _e, _c in rt.steps(crates)]
         tree = next(i for i, t in enumerate(titles) if t.startswith("base's database tree"))
-        self.assertGreater(titles.index(starts[1][0] if starts[1][1]["ROBIGO_RT_BOOT"] else starts[0][0]), tree)
+        self.assertGreater(titles.index(next(t for t, e, _c in starts if e["ROBIGO_RT_BOOT"] == "rdb")), tree)
 
     def test_each_shards_crate_tests_are_built_in_a_step_of_their_own(self):
         # a crate-test step's time is its tests' alone: its build (the same
@@ -595,7 +599,7 @@ class RtCi(unittest.TestCase):
         plans["full-move"] = rt.full_move_steps()
         plans["freeze-check"] = rt.freeze_check_steps()
         binary_scripts = ("scripts/rt-stress.sh", "scripts/rt-overshoot.py", "scripts/rt-fail-alloc.py",
-                          "scripts/rt-tcache-mutate.py", "scripts/builtin-diff.py")
+                          "scripts/rt-tcache-mutate.py", "scripts/rt-bc-mutate.py", "scripts/builtin-diff.py")
 
         def build_of(cmd):
             # (a release cargo command's build: its features, or plain)
@@ -620,14 +624,49 @@ class RtCi(unittest.TestCase):
                     continue
                 if "scripts/builtin-diff.py" in cmd:
                     binary[target] = "plain"       # (it builds the release binary first)
-                runs = release and "--no-run" not in cmd or any(x in cmd for x in binary_scripts)
-                if not runs or env.get("ROBIGO_RT_BOOT", "rdb") != "rdb":
+                # (or the binary run outright: the start-torture steps)
+                runs = (release and "--no-run" not in cmd or any(x in cmd for x in binary_scripts)
+                        or cmd[:1] == [rt.rt_binary(target or None)])
+                # (unset or empty is rdb, the default)
+                if not runs or env.get("ROBIGO_RT_BOOT", "rdb") not in ("", "rdb"):
                     continue
                 checked += 1
                 self.assertIsNotNone(tree.get(target), f"{name}: {title}: no tree before it")
                 self.assertEqual(tree[target], binary.get(target),
                                  f"{name}: {title}: the tree was written by another build")
         self.assertGreater(checked, 20)
+
+    def test_only_the_overshoot_programs_named_leave_the_default_boot(self):
+        # E4 runs every program under the default boot but those
+        # rt-overshoot's BOOTS names (INTERIM(L5), the foreman's ruling on
+        # the flip): each named one is a program it runs, names a boot that
+        # is not the default, and says why; run() sets ROBIGO_RT_BOOT for
+        # those alone, and never for the others
+        import tempfile
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("rt_overshoot", HERE / "rt-overshoot.py")
+        ov = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ov)
+        self.assertEqual(set(ov.BOOTS), {"benchmarks/rt/mem/strings1e6.R"})
+        with tempfile.TemporaryDirectory() as tmp:
+            names = [n for n, _p in ov.programs(tmp)]
+        for name, (boot, why) in ov.BOOTS.items():
+            self.assertIn(name, names)
+            self.assertIn(boot, ("m1", "stage0"), name)
+            self.assertTrue(why.strip(), name)
+        seen = {}
+
+        def fake(cmd, env, **_kw):
+            seen[cmd[1]] = env.get("ROBIGO_RT_BOOT")
+            return mock.Mock(returncode=0, stderr=b"")
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(ov.subprocess, "run", side_effect=fake):
+            os.environ.pop("ROBIGO_RT_BOOT", None)
+            for name in names[:3] + list(ov.BOOTS):
+                r = ov.run("/bin/robigo-rt", name, name, "eval", "/libs")
+                self.assertEqual(r["boot"], ov.BOOTS.get(name, (None, ""))[0], name)
+        for name, boot in seen.items():
+            self.assertEqual(boot, ov.BOOTS[name][0] if name in ov.BOOTS else None, name)
+        self.assertEqual(len(seen), 4)
 
     # Every file that runs a robigo-rt binary, and how that binary gets base's
     # database tree written by itself (a binary naming no boot boots rdb once
@@ -644,6 +683,8 @@ class RtCi(unittest.TestCase):
         "scripts/perf.py": "rt-startup's trees (rt-starts --trees, rt-bars' make_trees)",
         "scripts/rt_trees.py": "is the way",
         "scripts/rt-home-db.sh": "writes the tree (boots stage0 itself)",
+        "scripts/rt-test-tree.sh": "writes a test binary's own tree (rt-home-db.sh into .robigo/test-trees/<key>, "
+                                   "never the checkout's): tests/common/db_tree.rs and CI's test job",
         "scripts/rt-base-build.sh": "names its boot (ROBIGO_RT_BOOT=stage0)",
         "scripts/rt-rdb-compare.sh": "reads trees, runs no binary at a default boot",
         "scripts/pgo-build.sh": "L's flip branch makes its training run's tree",
@@ -884,6 +925,13 @@ class RtCi(unittest.TestCase):
             self.assertRegex(c, r"^python3 scripts/test[-_][\w-]+\.py$")
             self.assertTrue((HERE.parent / c.split()[1]).exists(), c)
         self.assertTrue(os.access(HERE / "lint-job.sh", os.X_OK))
+        # docs/verification.md's lint entry names every suite the script
+        # runs, and no other (it went stale once: #1024's bot, round 1)
+        doc = (HERE.parent / "docs" / "verification.md").read_text()
+        entry = re.search(r"2\. \*\*lint:\*\*.*?script suites \((.*?)\)\.", doc, re.S).group(1)
+        named = [n.strip() for n in entry.split(",")]
+        self.assertEqual(sorted(named), sorted(c.split()[1].removeprefix("scripts/").removesuffix(".py")
+                                               for c in listed[2:]))
 
     def test_a_crosscheck_that_compares_fewer_than_its_floor_fails(self):
         # the rdb boot's report: a boot that stopped loading the compiler's
@@ -939,8 +987,8 @@ class RtCi(unittest.TestCase):
         # conformance under each boot with it off
         off = [(e, c) for t, e, c in rt.steps(["robigo-rt"]) if e.get("ROBIGO_GC_FREEZE") == "0"
                and rt.CONFORMANCE in c and "ROBIGO_GCTORTURE" not in e]
-        boots = sorted(e.get("ROBIGO_RT_BOOT", "M1") for e, _ in off)
-        self.assertEqual(boots, ["M1", "rdb"])
+        boots = sorted(e.get("ROBIGO_RT_BOOT", "rdb") for e, _ in off)
+        self.assertEqual(boots, ["m1", "rdb"])
         # every step of the moving collector turns it off explicitly, and no
         # step but those and the freeze-off ones does
         for t, e, _ in [*rt.steps(["robigo-rt"]), *rt.full_move_steps()]:
@@ -986,6 +1034,9 @@ class RtCi(unittest.TestCase):
         self.assertEqual(night[2], rt.db_tree(rt.rt_binary()))
         _, env, cmd = night[3]
         self.assertEqual((env["ROBIGO_GC_FREEZE_CHECK"], env["ROBIGO_GCTORTURE"], env["ROBIGO_GC_FREEZE"]), ("1", "1", "1"))
+        # (under M1's loader, INTERIM(L5), as the nightly ran before the flip)
+        self.assertEqual(env.get("ROBIGO_RT_BOOT"), "m1")
+        self.assertIn("ROBIGO_RT_BOOT=m1", night[3][0])
         # a failed check fails the step, whatever the case's output (S14)
         self.assertEqual(env["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK_REPORT"], rt.FREEZE_REPORT)
@@ -1079,7 +1130,7 @@ class RtCi(unittest.TestCase):
         cross = [e for e, _ in own if "ROBIGO_BC_CROSSCHECK" in e]
         self.assertEqual(len(cross), 2)
         # (one per boot, each with a report of its own)
-        self.assertEqual(sorted(e.get("ROBIGO_RT_BOOT", "") for e in cross), ["", "rdb"])
+        self.assertEqual(sorted(e.get("ROBIGO_RT_BOOT", "rdb") for e in cross), ["m1", "rdb"])
         self.assertEqual(len({e["ROBIGO_BC_CROSSCHECK_REPORT"] for e in cross}), 2)
         for title, _, cmd in steps:
             # (a build-only step, --no-run, runs no test at all)
@@ -1315,13 +1366,18 @@ class RtCi(unittest.TestCase):
         moving = [e for t, e, c in steps if "ROBIGO_GC_MOVE" in e and "--exact" in c]
         self.assertEqual(len(moving), 1)
         self.assertEqual(moving[0]["ROBIGO_GC_MOVE"], rt.GC_MOVE_YOUNG)
+        # under M1's loader with the freeze off, INTERIM(L5): the rdb boot's
+        # unfrozen heap is marked at every collection (five cases over their
+        # limits), and the freeze on would leave the boot objects unmoved
+        # (H's ruling on the flip); the default boot fails this test
+        self.assertEqual((moving[0].get("ROBIGO_RT_BOOT"), moving[0]["ROBIGO_GC_FREEZE"]), ("m1", "0"))
         # (and the plain gctorture step, which names GCTORTURE_FIRST at its
         # own limit: started first, not given longer)
         plain = [e for t, e, c in steps if t == "conformance under gctorture (E3)"]
         # (every default-timeout step names DEFAULT_STEP_SLOW: set apart)
         named = [t for t, e, _ in steps if "ROBIGO_CONF_TIMEOUTS" in e and "ROBIGO_CONF_TIMEOUT" in e]
         self.assertEqual(sorted(named), sorted(["conformance under gctorture (E3)",
-                                                f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture (E3)"]))
+                                                f"conformance under ROBIGO_GC_MOVE={rt.GC_MOVE_YOUNG} with gctorture, M1's loader (ROBIGO_RT_BOOT=m1, E3)"]))
         first = dict(item.rsplit("=", 1) for item in plain[0]["ROBIGO_CONF_TIMEOUTS"].split(","))
         self.assertEqual(first, {c: str(s) for c, s in {**rt.GCTORTURE_FIRST, **rt.GCTORTURE_SLOW}.items()})
         # GCTORTURE_SLOW's get longer (c-stack-overflow.R's interim 780 s);
@@ -1353,6 +1409,10 @@ class RtCi(unittest.TestCase):
         self.assertEqual(len(full), 4)
         _, env, cmd = full[3]
         self.assertEqual((env["ROBIGO_GC_MOVE"], env["ROBIGO_GCTORTURE"]), ("1", "1"))
+        # the nightly's modes under M1's loader, INTERIM(L5), as before the
+        # flip (the foreman's ruling): under rdb 18 cases time out
+        self.assertEqual(env.get("ROBIGO_RT_BOOT"), "m1")
+        self.assertIn("ROBIGO_RT_BOOT=m1", full[3][0])
         self.assertIn(rt.CONFORMANCE, cmd)
         named = dict(item.rsplit("=", 1) for item in env["ROBIGO_CONF_TIMEOUTS"].split(","))
         self.assertEqual(set(named), set(rt.FULL_MOVE_SLOW))
@@ -1520,6 +1580,49 @@ class BuildOraclePull(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertNotIn("docker login", p.stderr)
         self.assertIn("scripts/build-oracle.sh --image 4.6.2", p.stderr)
+
+
+class CiImageEnsure(unittest.TestCase):
+    """scripts/ci-image.sh ensure: only a tag the registry says it lacks is
+    built and pushed; another failure (an auth or network error) stops,
+    since a rebuild would push over a tag that exists with other packages,
+    and caches key on the tag. docker faked on PATH."""
+
+    def ensure(self, inspect_err):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d, "calls")
+            fake = Path(d, "docker")
+            fake.write_text("#!/bin/sh\n"
+                            f"echo \"$*\" >> {log}\n"
+                            "case \"$1 $2\" in\n"
+                            f"  'manifest inspect') echo '{inspect_err}' >&2; exit 1 ;;\n"
+                            "esac\n"
+                            "exit 0\n")
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}")
+            p = subprocess.run([str(HERE / "ci-image.sh"), "ensure"], env=env, capture_output=True, text=True)
+            calls = log.read_text().splitlines() if log.exists() else []
+            return p, calls
+
+    def test_a_missing_tag_is_built_and_pushed(self):
+        p, calls = self.ensure("manifest unknown")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(any(c.startswith("build ") for c in calls), calls)
+        self.assertTrue(any(c.startswith("push ") for c in calls), calls)
+
+    def test_a_registry_error_builds_nothing(self):
+        # (docker's "no such manifest" also stands for an unauthorized or
+        # unexpected answer: not proof the tag is missing)
+        for err in ("unauthorized: authentication required", "no such manifest: ghcr.io/x:y"):
+            p, calls = self.ensure(err)
+            self.assertNotEqual(p.returncode, 0, err)
+            self.assertFalse([c for c in calls if c.startswith(("build ", "push "))], (err, calls))
+        p, calls = self.ensure("unauthorized: authentication required")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("cannot tell whether", p.stderr)
+        self.assertFalse([c for c in calls if c.startswith(("build ", "push "))], calls)
 
 
 if __name__ == "__main__":

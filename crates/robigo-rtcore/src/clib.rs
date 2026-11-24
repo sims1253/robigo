@@ -1831,6 +1831,63 @@ pub fn is_writeable_dir(path: Option<&[u8]>) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
+/// The C library's `errno` (the thread's).
+pub fn errno() -> i32 {
+    // SAFETY: __errno_location gives the calling thread's errno, valid for
+    // the thread's life.
+    unsafe { *libc::__errno_location() }
+}
+
+/// Set the C library's `errno` (the thread's): what a C function robigo
+/// ports leaves there, for C code that reads it after calling back into
+/// robigo (glibc's stdio, connections/stdio.rs).
+pub fn set_errno(e: i32) {
+    // SAFETY: as for `errno`.
+    unsafe { *libc::__errno_location() = e }
+}
+
+/// What `fstat(2)` says of an open file (glibc's `_IO_file_stat`, which
+/// GNU R's `isDir` and `shouldBuffer` call too): Rust's `File::metadata`
+/// is `statx`, with probes and a fallback of its own.
+pub struct FileStat {
+    pub is_reg: bool,
+    pub is_chr: bool,
+    pub is_dir: bool,
+    pub blksize: u64,
+    pub size: u64,
+}
+
+/// `fstat(fd)` of `f`'s descriptor.
+pub fn fstat(f: &std::fs::File) -> std::io::Result<FileStat> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: a zeroed `struct stat` is valid (plain integers).
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat writes `st` for an open descriptor, which `f` holds for
+    // the call.
+    if unsafe { libc::fstat(f.as_raw_fd(), &mut st) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let fmt = st.st_mode & libc::S_IFMT;
+    Ok(FileStat {
+        is_reg: fmt == libc::S_IFREG,
+        is_chr: fmt == libc::S_IFCHR,
+        is_dir: fmt == libc::S_IFDIR,
+        blksize: st.st_blksize as u64,
+        size: st.st_size as u64,
+    })
+}
+
+/// `close(fd)` of `f`'s descriptor, with its result: a dropped `File`
+/// closes without one (glibc's `fclose` returns `close`'s failure,
+/// libio/fileops.c `_IO_new_file_close_it`).
+pub fn close_file(f: std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::IntoRawFd;
+    let fd = f.into_raw_fd();
+    // SAFETY: `into_raw_fd` gave up the descriptor, which nothing else owns,
+    // so closing it here is its one close.
+    if unsafe { libc::close(fd) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
 /// `mkdtemp(template)`: the directory made from `template` (its trailing
 /// `XXXXXX` replaced), or None when it could not be.
 pub fn mkdtemp(template: &[u8]) -> Option<Vec<u8>> {

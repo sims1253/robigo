@@ -30,9 +30,10 @@ fn root() -> PathBuf {
 }
 
 /// The `.requires` features this build has: the old runtime has no
-/// observation modes, so it always keeps the production identities.
+/// observation or torture modes, so it always keeps the production
+/// identities and collection schedule.
 fn features() -> Vec<&'static str> {
-    let mut f = vec!["inplace-identity", "promise-identity"];
+    let mut f = vec!["inplace-identity", "promise-identity", "collection-schedule"];
     if cfg!(feature = "bytecode-fidelity") {
         f.push("bytecode-fidelity");
     }

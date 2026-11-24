@@ -512,3 +512,33 @@ fn eval_src(cx: &mut Cx, src: &str) {
         }
     });
 }
+
+/// `translation_gaps` walks the constants of the byte code it translates
+/// for the byte code they hold, and `mkCode` takes any constants: a code
+/// object whose constants are no list (an integer vector here), at the top
+/// and inside a MAKECLOSURE-shaped constant, is translated (its LDNULL,
+/// RETURN reads none) and its constants are not walked as a list's (they
+/// were: an out-of-bounds read, #1003's review).
+#[test]
+fn translation_gaps_walks_only_list_constants() {
+    let mut r = common::Session::jit();
+    r.val(
+        r#"
+inner <- .Internal(mkCode(c(12L, 17L, 1L), 1:3))
+top <- .Internal(bcClose(NULL, .Internal(mkCode(c(12L, 17L, 1L), 1:3)), globalenv()))
+nested <- .Internal(bcClose(NULL, .Internal(mkCode(c(12L, 17L, 1L), list(NULL, list(NULL, inner)))), globalenv()))
+"#,
+    );
+    let cx = r.cx();
+    for name in ["top", "nested"] {
+        let gaps = cx.scope(|cx, s| {
+            let sym = cx.install_rooted(s, name.as_bytes()).unwrap();
+            let g = s.root(cx, cx.global_env());
+            let out = s.out(cx);
+            let f = out.root();
+            cx.find_var(sym, g, out).unwrap();
+            robigo_rt::compile::translation_gaps(cx, f).map_err(|e| common::message(cx, e))
+        });
+        assert_eq!(gaps, Ok(vec![]), "{name}");
+    }
+}

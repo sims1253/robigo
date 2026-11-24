@@ -172,6 +172,8 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
+    special_fn("round", crate::specials::do_math2::<false>, 0, -1),
+    special_fn("signif", crate::specials::do_math2::<true>, 0, -1),
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
@@ -253,6 +255,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("load.from.file", crate::serialize::saveload::do_loadfile, Inline::None, 11, 1),
     // connections.c (L1)
     builtin("close", crate::connections::do_close, Inline::None, 111, 2),
+    builtin("flush", crate::connections::do_flush, Inline::None, 111, 1),
     builtin("getAllConnections", crate::connections::do_getallconnections, Inline::None, 11, 0),
     builtin("getConnection", crate::connections::do_getconnection, Inline::None, 11, 1),
     builtin("sink.number", crate::connections::do_sinknumber, Inline::None, 11, 1),

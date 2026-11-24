@@ -828,6 +828,17 @@ jobs:
         with:
           path: ~/.cache/robigo-research/rsrc/R-4.6.2.tar.gz
           key: r-4.6.2-tarball
+      # robigo-rt boots rdb by default, from a database tree written for one
+      # binary: the binary `cargo test --workspace` spawns (built by the same
+      # command, so with the workspace's features), then its test tree
+      # (scripts/rt-test-tree.sh: its own, never the checkout's). The tests'
+      # helper (ensure_db_tree, crates/robigo-rtapi/tests/common/db_tree.rs)
+      # runs the same script and finds it fresh; without this step it would
+      # build it itself.
+      - name: base's database tree for the tests' robigo-rt (scripts/rt-test-tree.sh)
+        run: |
+          cargo test --locked --profile quick --workspace --no-run
+          scripts/rt-test-tree.sh --profile quick
       - name: Unit tests, parser oracle, conformance (all tiers)
         # The conformance results go to the progress page with the corpora
         # (scripts/history.py records the open gaps from them).
@@ -1178,6 +1189,10 @@ jobs:
     # the base and the candidate, each a filtered run (all of them on main),
     # and on a cache miss GNU R too
     timeout-minutes: 90
+    # (for every step: GNU R's records' code digest covers the measuring
+    # environment, so the measurement, extract and fill must see one)
+    env:
+      VALGRIND: valgrind
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1227,12 +1242,47 @@ jobs:
           sig=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.cpu_signature()[1])')
           pkgs=$(dpkg-query -W -f '${Package}=${Version} ' libc6 valgrind 2> /dev/null || true)
           image=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-16)
-          echo "key=perf-gnur-1-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          # the files the records depend on, as perf_suite.py lists them (its
+          # suites' programs, the suite list, the known failures, the
+          # measuring code): not benchmarks/rt/ or perf.py, robigo-rt's
+          # side, which this job does not measure (perf-gnur-1 hashed all of
+          # benchmarks/ and perf.py; perf-gnur-2 still perf.py)
+          # (a file that cannot be read ends the step: no key from a partial hash)
+          inputs=$(python3 scripts/perf.py gnur-inputs | while read -r f; do printf '%s\0' "$f"; sha256sum < "$f" || exit 1; done | sha256sum | cut -c1-16)
+          # the prefix, without the inputs: a pull request whose exact key
+          # is missing restores the newest set of its image, CPU signature
+          # and packages, and fill reuses a record of it only if the
+          # record's program and code digests match (scripts/perf-gnur.py)
+          prefix="perf-gnur-3-$image-$sig-$(printf '%s' "$pkgs" | sha256sum | cut -c1-16)-"
+          # and the measuring code's digest (cmd_run, the environment): a
+          # change there alone must give main a new entry to save, or pull
+          # requests keep restoring records fill then measures again
+          code=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import perf; print(perf.gnur_code_digest())')
+          {
+            echo "prefix=$prefix"
+            echo "key=$prefix$inputs-$code"
+            echo "sig=$sig"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v6
+        id: gnur-cache
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
-          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+          key: ${{ steps.gnur.outputs.key }}
+          restore-keys: ${{ steps.gnur.outputs.prefix }}
+      # (the spread of CPU signatures shows here, run by run: a pull request
+      # hits only a signature main's runs have saved)
+      - name: The CPU signature and GNU R's records
+        if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
+        env:
+          SIG: ${{ steps.gnur.outputs.sig }}
+          HIT: ${{ steps.gnur-cache.outputs.cache-hit }}
+          MATCHED: ${{ steps.gnur-cache.outputs.cache-matched-key }}
+        run: |
+          if [ "$HIT" = true ]; then got="cached (main's, this key)"
+          elif [ -n "$MATCHED" ]; then got="restored from an older key (${MATCHED##*-}): each record checked by its digests"
+          else got="not cached: measured here"; fi
+          echo "perf: CPU signature $SIG; GNU R's records $got" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Measure the base (HEAD^1)
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         env:
@@ -1242,7 +1292,6 @@ jobs:
           echo "baseline: $(cat base/BASELINE), built from the merge's base and measured on this runner" | tee -a "$GITHUB_STEP_SUMMARY"
           export ROBIGO_NATIVES="$PWD/base/natives"
           export ROBIGO_RDBFLAT=""
-          export VALGRIND=valgrind
           filter_flag=()
           if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
           # every selected benchmark gets a GNU R record first: the cache's
@@ -1259,7 +1308,6 @@ jobs:
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
           export ROBIGO_RDBFLAT=""
-          export VALGRIND=valgrind
           filter_flag=()
           if [ -n "$PERF_FILTER" ]; then filter_flag=(--filter "$PERF_FILTER"); fi
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
@@ -1280,7 +1328,6 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           export ROBIGO_NATIVES="$PWD/dist/natives"
-          export VALGRIND=valgrind
           python3 scripts/perf-paired.py --diagnostic-only --robigo dist/robigo --rdbflat dist/rdbflat | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Compare with main
         if: github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
@@ -1316,7 +1363,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && steps.select.outputs.run == 'true'
         with:
           path: gnur.json
-          key: ${{ steps.gnur.outputs.key }}-${{ hashFiles('benchmarks/**', 'scripts/perf.py') }}
+          key: ${{ steps.gnur.outputs.key }}
       - uses: actions/upload-artifact@v7
         if: always() && github.event_name == 'pull_request' && steps.select.outputs.run == 'true'
         with:
@@ -1457,8 +1504,8 @@ jobs:
         with:
           path: rt-gnur.json
           # the measurement's inputs: the rows, the bars and their programs, the
-          # scripts, and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
-          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/rt-startup.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
+          # scripts (perf_suite.py: BASE_ENV, valgrind_path, r_home), and the rival's build (gnur-stock.sh, the tarball pin in r-src.sh)
+          key: ${{ steps.cpu.outputs.key }}-${{ hashFiles('benchmarks/rt/calls-rows.toml', 'benchmarks/rt/m1-bars.toml', 'benchmarks/rt/mem/*.R', 'benchmarks/suite/binarytrees.R', 'scripts/idiom-vs-r.py', 'scripts/rss.py', 'scripts/perf.py', 'scripts/perf_suite.py', 'scripts/rt-startup.py', 'scripts/gnur-stock.sh', 'scripts/r-src.sh') }}
       # The rival, GNU R's literal default build in this image's toolchain, is
       # needed only to measure GNU R: it does not depend on the CPU, so it is
       # cached per image and build script.
@@ -1496,8 +1543,11 @@ jobs:
           if [ -f dist/robigo-rt-main ]; then
             main_flag=(--main dist/robigo-rt-main)
           fi
-          # (rt-bars' --boot: the rows' boot for both binaries, M1's interim
-          # loader until the default-boot flip)
+          # (rt-bars' --boot: the rows' boot for both binaries. Still m1, M1's
+          # interim loader, though rdb is the default since L5's flip:
+          # rt-bars cannot yet point each binary at its own packed trees, as
+          # rt-starts does with --trees; X's harness PR does, and moves this
+          # to rdb. The starts judge rdb meanwhile; docs/verification.md)
           python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
             --boot m1 --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       # The starts ([[startup]]): an invocation of their own, with its own
@@ -1507,14 +1557,7 @@ jobs:
       - name: Starts
         if: success() || failure()
         run: |
-          # the suite without the binary (M1Name skips), as before; then
-          # M1Name alone, in a process of its own, with the binary under test
-          # and its trees: its check that ROBIGO_RT_BOOT=m1 is the interim
-          # start, until the default-boot flip (its real measurements never
-          # share a process with the other tests)
           python3 scripts/test-rt-startup.py
-          RT_STARTUP_TEST_BIN=dist/robigo-rt RT_STARTUP_TEST_TREES=dist/rt-trees.tar \
-            python3 scripts/test-rt-startup.py M1Name
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then
             main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)
