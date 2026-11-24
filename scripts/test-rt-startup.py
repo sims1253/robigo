@@ -568,7 +568,7 @@ class Memory(unittest.TestCase):
         # finds it, parked at its exit stop
         prog = "import threading, time\n[threading.Thread(target=time.sleep, args=(0.2,)).start() for _ in range(8)]\n"
         with unittest.mock.patch.object(su, "event_msg", side_effect=RuntimeError("no event message")):
-            box, secs = self.bounded(lambda: su.memory([self.PY, "-c", prog], dict(os.environ), timeout=5), 30)
+            box, _ = self.bounded(lambda: su.memory([self.PY, "-c", prog], dict(os.environ), timeout=5), 30)
         self.assertIsInstance(box.get("error"), RuntimeError, box)
         self.no_child_left()
 
@@ -597,7 +597,7 @@ class Memory(unittest.TestCase):
                 # with stops at system calls and without (Sol's r3: the
                 # event's own thread killed before its message is read)
                 syscalls = i % 2 == 0
-                box, secs = self.bounded(lambda: su.memory([exe], dict(os.environ), syscalls, timeout=5), 30)
+                box, _ = self.bounded(lambda: su.memory([exe], dict(os.environ), syscalls, timeout=5), 30)
                 self.assertNotIn("error", box, f"run {i} (syscalls={syscalls}): {box.get('error')!r}")
                 self.assertEqual(box["value"][2], 0)
                 self.no_child_left()
