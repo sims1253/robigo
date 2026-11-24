@@ -237,7 +237,7 @@ exports! {
         R_withCallingErrorHandler;
     // Rust leaves: no collection, no exit
     (leaf), false =>
-        robigo_rtapi_store robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
+        robigo_rtapi_store robigo_rtapi_remember robigo_rtapi_print robigo_rtapi_warn_length R_ReleaseObject vmaxget vmaxset
         R_altrep_inherits
         R_set_altrep_UnserializeEX_method R_set_altrep_Unserialize_method R_set_altrep_Serialized_state_method
         R_set_altrep_DuplicateEX_method R_set_altrep_Duplicate_method R_set_altrep_Coerce_method
@@ -279,7 +279,8 @@ exports! {
     (entry 2), true => Rf_eval Rf_nthcdr Rf_getAttrib Rf_coerceVector Rf_findVar R_NewHashedEnv;
     (entry 1), true => Rf_asBool;
     (leaf), false => Rf_isInteger;
-    (entry 3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib;
+    (entry 3), true => R_tryEval R_NewEnv Rf_defineVar Rf_setAttrib R_getVar;
+    (entry 4), true => R_getVarEx;
     (entry 4), true => R_ParseVector;
     (entry 1), true => Rf_GetOption1 Rf_asInteger Rf_asLogical Rf_asReal robigo_rtapi_length_slow;
     // context.c

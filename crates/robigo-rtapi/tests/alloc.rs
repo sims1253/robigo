@@ -6,12 +6,13 @@
 //! `n` = 10^6 (both past one chunk), in the AST and in byte code, and so
 //! are those of `seq_len(n)` and `seq_along(x)` over a compact `x`.
 
-use std::process::Command;
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// The objects and bytes robigo-rt's heap allocated running `src`, from
 /// `ROBIGO_GC_STATS`' report.
 fn allocated(src: &str, profile: Option<&str>) -> (u64, u64) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.args(["-e", src]).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("R_DEFAULT_PACKAGES", "NULL");
     // (rt-ci's `check` counts too, and panics on what it checks)
     if std::env::var("ROBIGO_GC_STATS").as_deref() != Ok("check") {

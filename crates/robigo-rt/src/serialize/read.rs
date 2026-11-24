@@ -114,17 +114,28 @@ enum Conv {
     Open(Codeset, Codeset),
 }
 
-pub(super) struct Reader<'h, 'r> {
+/// `V`: a verbose load's reader (`loadFromConn2(verbose = TRUE)`), which
+/// prints what it reads; the plain reader (`V = false`) has none of that
+/// code in its loops.
+pub(super) struct Reader<'h, 'r, const V: bool> {
     pub inp: InStream,
     refs: Root<'r>,
     nrefs: usize,
     hook: Option<Root<'h>>,
-    /// `R_ReadItemDepth` (`R_InitReadItemDepth` is 0).
+    /// `R_ReadItemDepth`.
     depth: i32,
+    /// `R_InitReadItemDepth`: 0, or `-verbose` for `loadFromConn2`, whose
+    /// reader prints the tags and list positions it reads while the
+    /// depth is at most 0.
+    init_depth: i32,
     lastname: Vec<u8>,
     native: Vec<u8>,
     nat2nat: Conv,
     nat2utf8: Conv,
+    /// The translation cache's key context, for a record of one of the
+    /// tree's own lazy-load databases (`crate::tcache`): each BCODESXP made
+    /// is numbered, and marked when the cache has its translation.
+    tkey: Option<crate::tcache::RecordKey>,
 }
 
 fn unpack(flags: i32) -> (i32, u16, bool, bool, bool) {
@@ -156,20 +167,51 @@ fn decode_version(packed: i32) -> (i32, i32, i32) {
 /// `R_Unserialize(stream)`: the object, written to `out`.
 // R: serialize.c:R_Unserialize
 pub(super) fn unserialize(cx: &mut Cx, inp: InStream, hook: Option<Root<'_>>, out: Out<'_>) -> RResult<()> {
+    unserialize_at::<false>(cx, inp, hook, None, 0, out)
+}
+
+/// [`unserialize`] of a lazy-load database's record, with the translation
+/// cache's key context for it (`tkey`, `crate::tcache::record_key`). The
+/// context is this reader's alone: anything a hook unserializes is read
+/// with none.
+pub(super) fn unserialize_keyed(
+    cx: &mut Cx,
+    inp: InStream,
+    hook: Option<Root<'_>>,
+    tkey: Option<crate::tcache::RecordKey>,
+    out: Out<'_>,
+) -> RResult<()> {
+    unserialize_at::<false>(cx, inp, hook, tkey, 0, out)
+}
+
+/// The reader's entry: [`unserialize_keyed`] with `R_InitReadItemDepth =
+/// R_ReadItemDepth = init_depth` (`loadFromConn2`'s `-verbose`; `V` when
+/// that is below 0, the reader that prints).
+// R: serialize.c:R_Unserialize, saveload.c:do_loadFromConn2
+pub(super) fn unserialize_at<const V: bool>(
+    cx: &mut Cx,
+    inp: InStream,
+    hook: Option<Root<'_>>,
+    tkey: Option<crate::tcache::RecordKey>,
+    init_depth: i32,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
         let refs = s.out(cx);
         let refs_root = refs.root();
         cx.build(refs, |cx| Ok(cx.alloc_vector::<Ref<'_>>(INITIAL_REFREAD_TABLE_SIZE)?.finish().into()))?;
-        let mut rd = Reader {
+        let mut rd: Reader<'_, '_, V> = Reader {
             inp,
             refs: refs_root,
             nrefs: 0,
             hook,
-            depth: 0,
+            depth: init_depth,
+            init_depth,
             lastname: b"<unknown>".to_vec(),
             native: Vec::new(),
             nat2nat: Conv::Unopened,
             nat2utf8: Conv::Unopened,
+            tkey,
         };
         rd.in_format(cx)?;
         let version = rd.int(cx)?;
@@ -301,7 +343,36 @@ fn in_format(cx: &mut Cx, inp: &mut InStream) -> RResult<()> {
     Ok(())
 }
 
-impl<'r> Reader<'_, 'r> {
+impl<'r, const V: bool> Reader<'_, 'r, V> {
+    /// `Rprintf("%*s", 2 * (R_ReadItemDepth - R_InitReadItemDepth), "")`.
+    fn indent(&self, cx: &mut Cx) {
+        let n = (2 * (self.depth - self.init_depth)).max(0) as usize;
+        cx.rprintf(" ".repeat(n).as_bytes());
+    }
+
+    /// `load(verbose = TRUE)`'s line for a pairlist tag: the indent, then
+    /// `PrintValue(TAG(s))`. (Out of line and cold: only a verbose load
+    /// reaches it, and the reader's loops stay as they were.)
+    #[cold]
+    #[inline(never)]
+    fn trace_tag(&self, cx: &mut Cx, tag: Sexp) -> RResult<()> {
+        self.indent(cx);
+        cx.scope(|cx, s| {
+            // SAFETY: the tag of the cell the caller holds rooted.
+            let tag = s.root(cx, unsafe { r(cx, tag) });
+            let g = s.root(cx, cx.global_env());
+            crate::print::print_value_env(cx, tag, g)
+        })
+    }
+
+    /// `load(verbose = TRUE)`'s line for a list's element `i`: `[i + 1]`.
+    #[cold]
+    #[inline(never)]
+    fn trace_index(&self, cx: &mut Cx, i: usize) {
+        self.indent(cx);
+        cx.rprintf(format!("[{}]\n", i + 1).as_bytes());
+    }
+
     fn in_format(&mut self, cx: &mut Cx) -> RResult<()> {
         in_format(cx, &mut self.inp)
     }
@@ -551,16 +622,19 @@ impl<'r> Reader<'_, 'r> {
             let t = robigo_rtbuiltins::util::type_to_char(c);
             return Err(cx.error(&format!("'installTrChar' must be called on a CHARSXP, but got '{t}'")));
         };
-        let name = match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(ch), cx.locale()) {
-            Ok(b) => b.into_owned(),
-            Err(_) => {
-                return Err(
-                    cx.error("robigo: a symbol name not representable in the native encoding is not implemented yet")
-                );
-            }
+        // installTrChar's translation, warning and name checks (Sol S1)
+        let (name, w) = match robigo_rtbuiltins::text::install_tr_name(robigo_rtbuiltins::coerce::text(ch), cx.locale())
+        {
+            Ok((n, w)) => (n.into_owned(), w),
+            Err(d) => return Err(cx.raise(d)),
         };
-        robigo_rtbuiltins::text::check_install_name(&name).map_err(|m| cx.error(&m))?;
-        cx.install_rooted(s, &name)
+        if let Some(w) = w {
+            cx.warning(&w)?;
+        }
+        let o = s.out(cx);
+        let r = o.root();
+        cx.build(o, |cx| Ok(cx.install_tr(pn.bind(cx).as_char().unwrap(), &name)?.into()))?;
+        Ok(r)
     }
 
     /// `ReadItem_Iterative`: a run of pairlist-like cells (LISTSXP,
@@ -608,10 +682,13 @@ impl<'r> Reader<'_, 'r> {
                     // SAFETY: as above.
                     unsafe {
                         last.bind(cx).sexp().set_tag(tag);
-                        if self.depth == 1 && tag.typ() == SYMSXP {
+                        if self.depth == if V { self.init_depth + 1 } else { 1 } && tag.typ() == SYMSXP {
                             self.lastname = tag.sym_name_bytes().to_vec();
                             set_lastname = true;
                         }
+                    }
+                    if V && self.depth <= 0 {
+                        self.trace_tag(cx, tag)?;
                     }
                 }
                 let car = self.read_item(cx)?;
@@ -945,7 +1022,7 @@ impl<'r> Reader<'_, 'r> {
                 x.set_object(objf);
                 x.set_gp(levs);
             }
-            if self.depth > 0 {
+            if self.depth > if V { self.init_depth } else { 0 } {
                 cx.materialize(v)?;
             }
             Ok(v.bind(cx).sexp())
@@ -1089,7 +1166,12 @@ impl<'r> Reader<'_, 'r> {
                     // SAFETY: fresh (its elements R_NilValue or "").
                     let x = s.root(cx, unsafe { r(cx, v) });
                     self.depth += 1;
+                    // (the depth is the same at each element: read_item puts it back)
+                    let trace = V && t != STRSXP && self.depth <= 0;
                     for i in 0..len {
+                        if trace {
+                            self.trace_index(cx, i);
+                        }
                         let e = self.read_item(cx)?;
                         if t == STRSXP {
                             self.set_string_elt(cx, x, i, e)?;
@@ -1120,7 +1202,9 @@ impl<'r> Reader<'_, 'r> {
             unsafe {
                 let o = x.bind(cx).sexp();
                 if o.gp() != levs {
-                    o.set_gp(levs);
+                    // (a vector's GROWABLE bit from the stream changes its
+                    // cells: through the heap, which moves the charge)
+                    cx.set_levels(o, levs);
                 }
                 if o.is_object() != objf {
                     o.set_object(objf);
@@ -1178,6 +1262,25 @@ impl<'r> Reader<'_, 'r> {
             let b = cx.retry_alloc(|cx| unsafe { cx.alloc_node_raw(BCODESXP, nil, nil, nil) })?;
             // SAFETY: fresh.
             let bc = s.root(cx, unsafe { r(cx, b) });
+            // the translation cache's mark, in the order BCODESXPs are made
+            if let Some(stub) = self.tkey.as_mut().and_then(|k| k.next_stub()) {
+                let bytes = stub.bytes();
+                let raw = cx.retry_alloc(|cx| {
+                    let v = cx.alloc_vector_raw(RAWSXP, crate::tcache::STUB_BYTES)?;
+                    // SAFETY: a fresh RAWSXP of that many bytes; its extra
+                    // word is robigo's own: the boot's freeze leaves the
+                    // stub ordinary (it is replaced at the first call), H's
+                    // half of the pairing in gc/freeze.rs.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), v.std_data(), bytes.len());
+                        v.set_extra(v.extra() | robigo_heap::extra::vector::NO_FREEZE);
+                    }
+                    Ok(v)
+                })?;
+                // SAFETY: the rooted cell; its 4th word is robigo-rt's, traced,
+                // and stored with the barrier.
+                unsafe { bc.bind(cx).sexp().set_aux(raw) };
+            }
             let bytes = self.read_deeper(cx)?;
             // SAFETY: just read.
             let bytes = s.root(cx, unsafe { r(cx, bytes) });

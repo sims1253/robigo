@@ -16,7 +16,7 @@ use crate::exit::RResult;
 use crate::fresh::FreshVec;
 use crate::handle::Elt;
 use crate::isolate::Cx;
-use robigo_heap::{GC_DUE, GcStats, LARGE, Safepoint};
+use robigo_heap::{GC_DUE, GcStats, LARGE, Safepoint, Sexp};
 use std::sync::atomic::Ordering;
 
 /// [`Cx::refuse_first`]'s guard.
@@ -37,6 +37,20 @@ impl Drop for RefuseFirst<'_> {
 }
 
 impl Cx {
+    /// `SETLEVELS(x, levs)` on a live object: a vector's GROWABLE bit
+    /// decides its vector cells (robigo-heap's `heapsize::object_cells`),
+    /// so the change moves its charge to the vector heap's use with it
+    /// (`Core::recharge`): unserialize's levels, read verbatim as GNU R's
+    /// ReadItem sets them.
+    ///
+    /// # Safety
+    /// `x` is a live object of this isolate's heap.
+    pub unsafe fn set_levels(&self, x: Sexp, levs: u16) {
+        // SAFETY: the caller's contract; the core's reference ends with the
+        // call, which reaches no other one.
+        unsafe { self.iso().core().recharge(x, |x| x.set_gp(levs)) }
+    }
+
     /// Whether a collection is due: served at the next safepoint.
     #[inline(always)]
     pub fn gc_due(&self) -> bool {
@@ -73,6 +87,16 @@ impl Cx {
         unsafe { iso.core().safepoint(kind, iso.roots_mut()) };
         self.flush_gc_report();
         Ok(())
+    }
+
+    /// `ROBIGO_GC_STATS`'s report as the heap prints it when it is dropped
+    /// (None while the mode is off), for an end of the process that drops
+    /// nothing: `quit()` ends R from inside the call, as GNU R's `exit`
+    /// does, and its caller prints this last.
+    pub fn gc_stats_report(&self) -> Option<String> {
+        // SAFETY: one read of the core, which calls nothing of ours.
+        let core = unsafe { self.iso().core() };
+        (core.stats_mode() != robigo_heap::StatsMode::Off).then(|| core.stats_report())
     }
 
     /// Print the reports of the collections that just ran (`gcinfo(TRUE)`),
@@ -185,6 +209,28 @@ impl Cx {
         unsafe { self.iso().core() }.set_max_vsize(bytes)
     }
 
+    /// Hold the torture set now through the start (robigo-heap's
+    /// `Core::hold_torture_until_armed`): only the embedder that will call
+    /// [`Cx::arm_torture_after_start`] holds, before the start allocates.
+    pub fn hold_torture_until_armed(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.hold_torture_until_armed()
+    }
+
+    /// Whether a hold waits for its arming.
+    pub fn torture_held(&self) -> bool {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.torture_held()
+    }
+
+    /// Arm the torture `ROBIGO_TORTURE_AFTER_START=1` held through the
+    /// start (robigo-heap's `Core::arm_after_start`): call it where the
+    /// program under test starts, beside [`Cx::arm_fail_alloc`].
+    pub fn arm_torture_after_start(&mut self) {
+        // SAFETY: one call into the core, which calls nothing of ours.
+        unsafe { self.iso().core() }.arm_after_start()
+    }
+
     /// Start E9's allocation-failure knob (`ROBIGO_FAIL_ALLOC_AT=n`) if
     /// the environment set it: from here the `n`th allocation is refused
     /// once, and every refusal takes the retry path of the code that made it
@@ -200,6 +246,16 @@ impl Cx {
     fn refuse_next_alloc(&self, on: bool) {
         // SAFETY: one call into the core, which calls nothing of ours.
         unsafe { self.iso().core() }.fail_alloc_at(on as u64)
+    }
+
+    /// Under [`Cx::retry_torture`], refuse the next allocation once, where
+    /// the caller is (a window a test must see stopped for a retry, such as
+    /// robigo-rt's translation-cache verification); nothing otherwise.
+    pub fn torture_refuse_next(&self) {
+        #[cfg(feature = "retry-torture")]
+        if self.retry_torture() {
+            self.refuse_next_alloc(true);
+        }
     }
 
     /// [`Cx::retry_torture`] for one attempt: the next allocation is

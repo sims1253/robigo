@@ -24,6 +24,7 @@
 
 #![allow(unsafe_code)]
 
+mod inflate;
 pub mod read;
 pub mod stream;
 pub mod write;
@@ -185,7 +186,7 @@ fn raw_vector(cx: &mut Cx, bytes: &[u8], out: Out<'_>) -> RResult<()> {
 
 /// `R_InitConnOutPStream`'s checks, then `R_Serialize` to connection `n`.
 // R: serialize.c:R_InitConnOutPStream, CheckOutConn
-fn serialize_to_conn(
+pub(super) fn serialize_to_conn(
     cx: &mut Cx,
     n: i32,
     object: Root<'_>,
@@ -203,8 +204,34 @@ fn serialize_to_conn(
     if f.text && !matches!(fmt, Format::Ascii | Format::AsciiHex) {
         return Err(cx.error("only ascii format can be written to text mode connections"));
     }
+    if !matches!(version, 2 | 3) && fmt != Format::Any {
+        // R_Serialize streams: OutFormat's line is written, then the
+        // version refused, before any item (or effect point). An error
+        // later in the walk leaves nothing written here, where GNU R has
+        // written the items before it: robigo-rt's writer works in memory
+        // and may start its walk over, so it has no prefix to give.
+        let line: &[u8] = match fmt {
+            Format::Ascii | Format::AsciiHex => b"A\n",
+            Format::Binary => b"B\n",
+            Format::Xdr | Format::Any => b"X\n",
+        };
+        write_conn(cx, n, f.text, line)?;
+        return Err(cx.error(&format!("version {version} not supported")));
+    }
     let bytes = write::serialize(cx, object, OutStream::new(fmt, version), hook)?;
-    connections::write_all(cx, n, &bytes, "error writing to connection")
+    write_conn(cx, n, f.text, &bytes)
+}
+
+/// The connection stream's write: on a text-mode connection
+/// `Rconn_printf` (`connections::printf_write`), else `con->write`,
+/// checked.
+// R: serialize.c:OutCharConn, OutBytesConn
+fn write_conn(cx: &mut Cx, n: i32, text: bool, buf: &[u8]) -> RResult<()> {
+    if text {
+        connections::printf_write(cx, n, buf)
+    } else {
+        connections::write_all(cx, n, buf, "error writing to connection")
+    }
 }
 
 /// `R_InitConnInPStream`'s checks: the stream over connection `n`.
@@ -519,29 +546,55 @@ fn slice_at(d: &[u8], offset: i64, len: usize) -> Option<Vec<u8>> {
     d.get(o..o.checked_add(len)?).map(|s| s.to_vec())
 }
 
+/// The lazy-load databases' decompressor, reused from record to record
+/// ([`decompress1`]). GNU R keeps one in a function-local `static`; ours is
+/// the isolate's (a layer state of its own, not an `RtState` field, whose
+/// layout the VM reads), as all mutable runtime state is (g3.md §11):
+/// isolates run on threads of their own, and a libdeflate decompressor
+/// serves one call at a time. A `Cell` taken for the call and put back
+/// after it: no use can overlap another, since between the take and the
+/// put-back only libdeflate runs (no R code, no allocation of R objects, no
+/// safepoint; the warning comes after the put-back). Were one to nest, it
+/// would find the cell empty and make its own decompressor; no borrow can
+/// panic.
+struct RdbInflater(std::cell::Cell<Option<inflate::Decompressor>>);
+
 /// `R_decompress1(in, &err)`: a 4-byte big-endian length, then a zlib
-/// stream (libdeflate's, in GNU R's build: its error numbers).
-// R: connections.c:R_decompress1
+/// stream, decompressed by libdeflate as GNU R's build does
+/// ([`inflate::Decompressor`]): its result codes in the warning, and the
+/// stream's own length when it is shorter than the header says.
+// R: connections.c:R_decompress1 (HAVE_LIBDEFLATE)
 fn decompress1(cx: &mut Cx, data: &[u8]) -> RResult<Option<Vec<u8>>> {
     if data.len() < 4 {
         cx.warning("internal error 1 in R_decompress1 with libdeflate")?;
         return Ok(None);
     }
     let outlen = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let mut buf = vec![0u8; outlen];
-    let mut d = flate2::Decompress::new(true);
-    let r = d.decompress(&data[4..], &mut buf, flate2::FlushDecompress::Finish);
-    let code = match r {
-        Ok(flate2::Status::StreamEnd) => 0,
-        Ok(_) if d.total_out() as usize == outlen => 3,
-        _ => 1,
-    };
-    if code != 0 {
-        cx.warning(&format!("internal error {code} in R_decompress1 with libdeflate"))?;
-        return Ok(None);
+    if cx.ext::<RdbInflater>().is_none() {
+        cx.set_ext(RdbInflater(std::cell::Cell::new(None)));
     }
-    buf.truncate(d.total_out() as usize);
-    Ok(Some(buf))
+    let d = cx.ext::<RdbInflater>().and_then(|c| c.0.take()).or_else(inflate::Decompressor::new);
+    let Some(mut d) = d else {
+        return Err(cx.error("allocation error in R_decompress1 with libdeflate"));
+    };
+    // libdeflate_zlib_decompress(d, p + 4, inlen - 4, buf, outlen,
+    // &actual_out): `actual_out` bytes, fewer than the header's when the
+    // stream is short (a success, as in GNU R)
+    let mut buf = vec![0u8; outlen];
+    let r = d.zlib_decompress(&data[4..], &mut buf);
+    if let Some(c) = cx.ext::<RdbInflater>() {
+        c.0.set(Some(d));
+    }
+    match r {
+        Ok(n) => {
+            buf.truncate(n);
+            Ok(Some(buf))
+        }
+        Err(code) => {
+            cx.warning(&format!("internal error {code} in R_decompress1 with libdeflate"))?;
+            Ok(None)
+        }
+    }
 }
 
 /// `R_compress1(in)`: the length, big-endian, then the zlib stream at
@@ -573,6 +626,13 @@ pub fn do_lazyload_dbfetch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
     let compressed = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(2))?;
     let hook = hook_arg(cx, args.root(3));
     let raw = read_raw_from_file(cx, file, key)?;
+    // the translation cache's key: the record of one of the tree's own
+    // databases, by its offset, with a checksum of its bytes as stored (they
+    // determine what it decompresses to, and are a third the size)
+    let tkey = record_offset(cx, key).and_then(|off| match file.bind(cx).view() {
+        View::Str(f) if f.len() == 1 => crate::tcache::record_key(f.get(0).bytes(), off, &raw),
+        _ => None,
+    });
     let data = match compressed {
         0 => Some(raw),
         2 | 3 => {
@@ -591,7 +651,7 @@ pub fn do_lazyload_dbfetch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
     cx.scope(|cx, s| {
         let o = s.out(cx);
         let v = o.root();
-        read::unserialize(cx, InStream::memory(data), hook, o)?;
+        read::unserialize_keyed(cx, InStream::memory(data), hook, tkey, o)?;
         if v.bind(cx).sexptype() == PROMSXP {
             let g = s.root(cx, cx.global_env());
             return cx.eval(v, g, out);
@@ -599,6 +659,15 @@ pub fn do_lazyload_dbfetch(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Ro
         out.set(cx, v.bind(cx));
         Ok(())
     })
+}
+
+/// A lazy-load key's offset (`c(offset, length)`, an integer vector, as
+/// [`read_raw_from_file`] takes it).
+fn record_offset(cx: &Cx, key: Root<'_>) -> Option<u64> {
+    match key.bind(cx).view() {
+        View::Int(v) if v.len() == 2 => u64::try_from(v.get(0)).ok(),
+        _ => None,
+    }
 }
 
 /// `lazyLoadDBflush(file)`: forget the cached file.

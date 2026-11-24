@@ -34,11 +34,88 @@ fn layout_header() -> String {
     h
 }
 
+// Recompiled when another checkout built last, not only rerun: this script
+// compiles the layout's sources into itself (the modules above), and
+// checkouts sharing a target directory share its compiled script, which
+// cargo judges fresh by modification time. A checkout whose defs.rs is
+// older than another checkout's build would run that build's script and
+// write that checkout's header (A1's "layout table has another length 48
+// vs 47"). Reading the variable here puts it in the script's own
+// dependencies (rustc's dep-info), so another checkout's value recompiles
+// it. (.cargo/config.toml sets ROBIGO_WORKTREE per checkout.)
+const _: Option<&str> = option_env!("ROBIGO_WORKTREE");
+
+/// The sources compiled into this script, as they were when it was
+/// compiled, against the package's files now: a difference means cargo ran
+/// a script compiled from another checkout's (or an older) layout, whose
+/// header would be wrong. Read from the package's directory at run time
+/// (CARGO_MANIFEST_DIR now: a compiled script outlives its checkout).
+fn check_sources() {
+    let dir = std::env::var("CARGO_MANIFEST_DIR").expect("robigo-heap: cargo sets CARGO_MANIFEST_DIR");
+    for (path, compiled) in
+        [("src/layout/defs.rs", include_str!("src/layout/defs.rs")), ("src/types.rs", include_str!("src/types.rs"))]
+    {
+        let file = std::path::Path::new(&dir).join(path);
+        let now = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("robigo-heap: {}: {e}", file.display()));
+        assert!(
+            now == compiled,
+            "robigo-heap: this build script was compiled from another {path} than {} (a build of another checkout \
+             in the same target directory, reused by cargo): its robigo_layout.h would be wrong. Rebuild with \
+             ROBIGO_WORKTREE set (the checkout's .cargo/config.toml, read when cargo runs inside the checkout), \
+             or `touch crates/robigo-heap/build.rs`.",
+            file.display()
+        );
+    }
+}
+
+/// ROBIGO_WORKTREE must name this checkout: it is what tells cargo that
+/// another checkout built the shared target directory last, so that it
+/// rebuilds this crate, every rt crate above it and their build scripts.
+/// The checkout's .cargo/config.toml sets it, which cargo reads only when
+/// it runs inside the checkout. Run from elsewhere (`--manifest-path`), it
+/// is unset, and a build after another checkout's reuses that checkout's
+/// robigo-heap and its header without any check failing (both sides of
+/// robigo-rtapi's layout check come from the other checkout): measured,
+/// docs/ledger/g3/2026-11-23-shared-target-builds.md. Refused, as is a
+/// value naming another checkout (set by hand for a build outside the
+/// checkout; inside, the config's `force` overrides what the shell
+/// exports). What no build script can refuse: a value set by hand,
+/// outside the checkouts, left the same from one checkout's build to
+/// another's. Nothing cargo sees changes then, so this script does not run
+/// at all (the ledger has the case). The lowest rt
+/// crate with a build script, so every rt build and `cargo test -p
+/// robigo-heap` passes through here.
+fn check_worktree() {
+    let dir = std::env::var("CARGO_MANIFEST_DIR").expect("robigo-heap: cargo sets CARGO_MANIFEST_DIR");
+    let root = std::path::Path::new(&dir).join("../..");
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let cures = format!(
+        "run cargo inside the checkout (its .cargo/config.toml sets the variable), or set \
+         ROBIGO_WORKTREE={}",
+        canon(&root).display()
+    );
+    match std::env::var_os("ROBIGO_WORKTREE") {
+        None => panic!(
+            "robigo-heap: ROBIGO_WORKTREE is unset: cargo was run outside the checkout. In a target directory \
+             another checkout also builds into, this build could link that checkout's crates without a sign. \
+             Cures: {cures}."
+        ),
+        Some(w) if canon(std::path::Path::new(&w)) != canon(&root) => panic!(
+            "robigo-heap: ROBIGO_WORKTREE is {:?}, another checkout than this one ({}). Cures: {cures}.",
+            w,
+            canon(&root).display()
+        ),
+        Some(_) => {}
+    }
+}
+
 fn main() {
     // Rerun when another checkout built last (.cargo/config.toml).
     println!("cargo:rerun-if-env-changed=ROBIGO_WORKTREE");
     println!("cargo:rerun-if-changed=src/types.rs");
     println!("cargo:rerun-if-changed=src/layout/defs.rs");
+    check_worktree();
+    check_sources();
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     let include = out.join("include");
     std::fs::create_dir_all(&include).expect("robigo-heap: creating OUT_DIR/include");

@@ -45,6 +45,13 @@ pub type EvalFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, Root<'b>, Out<'c>) -> RR
 /// forced before a closure's body runs; the result written to `out`.
 pub type ForceAndCallFn = for<'a, 'b, 'c> fn(&mut Cx, Root<'a>, i32, Root<'b>, Out<'c>) -> RResult<()>;
 
+/// `R_forceAndCall(call, 1, env)` of base's lapply/vapply call
+/// `FUN(X[[i]], ...)`, with `X`'s evaluated vector and the index vector
+/// `i` binds: the runtime may give `X[[i]]`'s promise its value directly
+/// when nothing the general force does can be observed.
+pub type ForceAndCallIndexedFn =
+    for<'a, 'b, 'c, 'd, 'e> fn(&mut Cx, Root<'a>, Root<'b>, Root<'c>, Root<'d>, Out<'e>) -> RResult<()>;
+
 /// Call the function `fun` with the arguments in `args` (values, or
 /// promises the callee forces), reporting `call` (`sys.call()`, error
 /// messages) from the caller's environment `env`; the result written to
@@ -72,11 +79,12 @@ pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResu
 /// (`eval`'s `R_Visible`, depth and evaluation count, or `bcEval`'s entry
 /// poll count for byte code), made in place by a force that takes the value
 /// the caller computed early (docs/g3.md §6.2) instead of evaluating:
-/// `bytecode` when the slot's expression is byte code's, `call` when it is a
-/// call (else a symbol). False, with nothing counted, when the evaluation
-/// would poll (run finalizers, take an interrupt) or raise the depth error:
-/// the force then evaluates the expression as usual.
-pub type EarlyForceFn = fn(&mut Cx, bool, bool) -> bool;
+/// `bytecode` when the slot's expression is byte code's, and the
+/// expression's SEXPTYPE (a symbol, a call, or a byte-code object: a
+/// translated call's promise code). False, with nothing counted, when the
+/// evaluation would poll (run finalizers, take an interrupt) or raise the
+/// depth error: the force then evaluates the expression as usual.
+pub type EarlyForceFn = fn(&mut Cx, bool, u8) -> bool;
 
 /// `DispatchOrEval(call, op, generic, args, rho, &ans, dropmissing = 0,
 /// argsevald = 0)`'s evaluation of a special's arguments (the call's) for
@@ -124,6 +132,30 @@ pub struct ErrorCond<'a> {
 /// message. The token returned stands for the exit that leaves, as
 /// [`ErrorFn`]'s does.
 pub type ErrorCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &ErrorCond<'b>) -> RError;
+
+/// A classed warning condition as GNU R's `R_makeWarningCondition` makes it
+/// (errors.c:R_vmakeWarningCondition): the list `(message, call,
+/// fields...)` of class `c(subclass, class, "warning", "condition")`, or
+/// `c(class, "warning", "condition")` without a subclass. The warning
+/// half of [`ErrorCond`].
+#[derive(Clone, Copy, Debug)]
+pub struct WarningCond<'a> {
+    pub class: &'static str,
+    pub subclass: Option<&'static str>,
+    /// The message in the native encoding's bytes, verbatim (the hook cuts
+    /// it at a NUL and at `BUFSIZE`, as `Rvsnprintf_mbcs` into `emsg_buf`
+    /// does: robigo-rt's; the default, with no condition system, cuts it
+    /// at a NUL only, as its warning hook does).
+    pub msg: &'a [u8],
+    /// The fields after `message` and `call`, in order
+    /// (`R_setConditionField`).
+    pub fields: &'a [(&'static str, Root<'a>)],
+}
+
+/// Signal the classed warning `cond` with the call `call` (None: GNU R's
+/// `R_NilValue`): `R_makeWarningCondition` then `R_signalWarningCondition`,
+/// base's `warning(cond)`.
+pub type WarningCondFn = for<'a, 'b> fn(&mut Cx, Option<Root<'a>>, &WarningCond<'b>) -> RResult<()>;
 
 /// Take a user interrupt (`onintr`): signal the `interrupt` condition,
 /// then jump to the top level; `Ok` when a handler invoked the `resume`
@@ -206,15 +238,24 @@ pub struct Hooks {
     /// and `vapply`'s `FUN(X[[i]], ...)`, `mapply`'s) and for
     /// `forceAndCall`. Defaults to an error, as `eval`'s does.
     pub force_and_call: ForceAndCallFn,
+    /// [`ForceAndCallIndexedFn`]; defaults to the general
+    /// [`Hooks::force_and_call`].
+    pub force_and_call_indexed: ForceAndCallIndexedFn,
     pub apply: ApplyFn,
     pub dispatch: DispatchFn,
     pub force: ForceFn,
+    /// `eval(p, rho)` of a promise `p`: eval's `case PROMSXP` (the tick,
+    /// the depth step, `R_BCIntActive = 0`, `forcePromise`). Defaults to
+    /// the installed `force` (with no evaluator, a promise's eval is its
+    /// force).
+    pub eval_promise: ForceFn,
     pub force_arg: ForceArgFn,
     pub early_force: EarlyForceFn,
     pub eval_args: EvalArgsFn,
     pub warning: WarningFn,
     pub error: ErrorFn,
     pub error_condition: ErrorCondFn,
+    pub warning_condition: WarningCondFn,
     pub interrupt: InterruptFn,
     pub exit_value: ExitValueFn,
     pub deparse: DeparseFn,
@@ -231,9 +272,13 @@ impl Default for Hooks {
             eval: no_eval,
             eval_bytecode: no_eval,
             force_and_call: |cx, _, _, _, _| Err(not_yet(cx, "'forceAndCall'")),
+            force_and_call_indexed: |cx, call, env, _, _, out| cx.force_and_call(call, 1, env, out),
             apply: no_apply,
             dispatch: no_dispatch,
             force: no_force,
+            // (no evaluator: eval of a promise is its force, the
+            // installed `force`)
+            eval_promise: |cx, p, out| (cx.iso().hooks.get().force)(cx, p, out),
             force_arg: |cx, f, i, out| cx.force_arg(f, i, out),
             // (no evaluator to count for: an early value is not taken)
             early_force: |_, _, _| false,
@@ -242,6 +287,8 @@ impl Default for Hooks {
             error: |cx, call, msg| cx.record_error_call(call, msg),
             // (no condition system: the message, as `errorcall`'s default)
             error_condition: |cx, call, c| cx.record_error_call(call, c.msg),
+            // (no condition system: the message, as `warningcall`'s)
+            warning_condition: |cx, call, c| (cx.iso().hooks.get().warning)(cx, call, c.msg),
             // (no condition system: straight to the top level)
             interrupt: |cx| Err(cx.interrupt_exit()),
             exit_value: |_, _| {},
@@ -358,6 +405,21 @@ impl Cx {
         (self.iso().hooks.get().force_and_call)(self, call, n, env, out)
     }
 
+    /// lapply's `R_forceAndCall(call, 1, env)` through the hook
+    /// ([`Hooks::force_and_call_indexed`]): `x` the evaluated `X`, `ind` the
+    /// vector `i` binds.
+    #[inline]
+    pub fn force_and_call_indexed(
+        &mut self,
+        call: Root<'_>,
+        env: Root<'_>,
+        x: Root<'_>,
+        ind: Root<'_>,
+        out: Out<'_>,
+    ) -> RResult<()> {
+        (self.iso().hooks.get().force_and_call_indexed)(self, call, env, x, ind, out)
+    }
+
     /// A special's arguments evaluated for its default method, as GNU R's
     /// `DispatchOrEval(..., 0, 0)` evaluates them when the first is no
     /// object, through the hook ([`EvalArgsFn`]): the call's arguments,
@@ -377,6 +439,14 @@ impl Cx {
     #[inline]
     pub fn force(&mut self, prom: Root<'_>, out: Out<'_>) -> RResult<()> {
         (self.iso().hooks.get().force)(self, prom, out)
+    }
+
+    /// `eval(p, rho)` of the promise `p` through the hook: C code's
+    /// evaluation of a promise, a level deeper than [`Cx::force`].
+    // R: eval.c:eval (PROMSXP)
+    #[inline]
+    pub fn eval_promise(&mut self, prom: Root<'_>, out: Out<'_>) -> RResult<()> {
+        (self.iso().hooks.get().eval_promise)(self, prom, out)
     }
 
     /// `eval` of an argument slot's promise through the hook
@@ -417,6 +487,39 @@ impl Cx {
         (self.iso().hooks.get().warning)(self, call, msg.as_bytes())
     }
 
+    /// Signal the classed warning `cond` with the call `call` (`None`:
+    /// `R_NilValue`): GNU R's `R_makeWarningCondition(call, ...)` with its
+    /// fields, signalled by `R_signalWarningCondition` (base's
+    /// `warning(cond)`), through the isolate's hook
+    /// ([`crate::Hooks::warning_condition`]).
+    // R: errors.c:R_makeWarningCondition, R_signalWarningCondition
+    pub fn warning_condition_call(&mut self, call: Option<Root<'_>>, cond: &WarningCond<'_>) -> RResult<()> {
+        let hook = self.iso().hooks.get().warning_condition;
+        hook(self, call, cond)
+    }
+
+    /// GNU R's `R_makePartialMatchWarningCondition(call, argument, formal)`
+    /// signalled by `R_signalWarningCondition`: the `partialMatchWarning`
+    /// "partial argument match of '%s' to '%s'" with the fields `argument`
+    /// and `formal` (symbols, `argument` the supplied tag). Every partial
+    /// match GNU R warns of goes through it: `matchArgs`, `check1arg`,
+    /// `attr()`.
+    // R: errors.c:R_makePartialMatchWarningCondition
+    pub fn partial_match_warning(&mut self, call: Option<Root<'_>>, argument: &[u8], formal: &[u8]) -> RResult<()> {
+        let mut msg = b"partial argument match of '".to_vec();
+        msg.extend_from_slice(argument);
+        msg.extend_from_slice(b"' to '");
+        msg.extend_from_slice(formal);
+        msg.push(b'\'');
+        self.scope(|cx, s| {
+            let a = cx.install_rooted(s, argument)?;
+            let f = cx.install_rooted(s, formal)?;
+            let fields = [("argument", a), ("formal", f)];
+            let cond = WarningCond { class: "partialMatchWarning", subclass: None, msg: &msg, fields: &fields };
+            cx.warning_condition_call(call, &cond)
+        })
+    }
+
     /// [`Cx::warning_call`] of a message in the native encoding's bytes
     /// ([`Cx::error_call_bytes`]).
     #[inline]
@@ -449,6 +552,19 @@ impl Cx {
             // SAFETY: a field of a live record, read in this interval.
             let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
             cx.warning_call_bytes(Some(c), &buf)
+        })
+    }
+
+    /// [`Cx::warning`] under a `CTXT_CCODE` context begun with the call
+    /// R_NilValue ([`Cx::ccode_context_call`]).
+    pub fn warning_in_ccode_context(&mut self, msg: &str) -> RResult<()> {
+        let msg = msg.strip_suffix('\n').unwrap_or(msg);
+        let call = self.ccode_context_call().sexp();
+        self.scope(|cx, s| {
+            // SAFETY: the nil value or a live call of the context state, read
+            // in this interval.
+            let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
+            cx.warning_call(Some(c), msg)
         })
     }
 

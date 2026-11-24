@@ -32,6 +32,7 @@
 #include <string.h>
 #include <robigo_capi.h>
 #include <robigo_layout.h>
+#include <Defn.h> /* robigo-rtcore's: RCNTXT, CTXT_CCODE */
 
 /* GNU R's types, unless this file is being checked against GNU R's own
  * headers (crates/robigo-rtapi/tests/capi.rs compiles it with robigo's
@@ -39,6 +40,7 @@
  * declaration). */
 #ifndef R_INTERNALS_H_
 #define R_NilValue (robigo_cg->R_NilValue)
+#define R_BaseEnv (robigo_cg->R_BaseEnv)
 typedef ptrdiff_t R_xlen_t;
 typedef unsigned int SEXPTYPE;
 typedef int PROTECT_INDEX;
@@ -122,6 +124,8 @@ static inline SEXP seen(SEXP x)
 
 /* the heap's barrier store into a traced field of x (cannot collect) */
 void robigo_rtapi_store(SEXP x, SEXP *slot, SEXP v);
+/* log a frozen object as a root, once (cannot collect) */
+void robigo_rtapi_remember(SEXP x);
 /* errors, with machine entries: they never return */
 __attribute__((noreturn)) void robigo_rtapi_error(const char *msg);
 __attribute__((noreturn)) void robigo_rtapi_errorcall(SEXP call, const char *msg);
@@ -139,6 +143,7 @@ __attribute__((noreturn)) void robigo_rtapi_extptr_error(const char *fun, SEXP x
 /* the protect stack: overflow, unprotect below its bottom, a bad reprotect
  * index */
 __attribute__((noreturn)) void robigo_rtapi_protect_error(void);
+void Rf_begincontext(RCNTXT *, int, SEXP, SEXP, SEXP, SEXP, SEXP);
 __attribute__((noreturn)) void robigo_rtapi_unprotect_error(void);
 __attribute__((noreturn)) void robigo_rtapi_reprotect_error(PROTECT_INDEX i);
 /* a "not implemented yet" error for an accessor's case robigo lacks */
@@ -299,6 +304,20 @@ void *(DATAPTR)(SEXP x)
     chkvec(x);
     if (!RB_IS_ALTREP(x) && RB_TYPE(x) == CHARSXP)
         return RB_DATA(x); /* (a CHARSXP's trailing zero byte) */
+    /* a vector of objects whose payload C now holds: C may write its
+     * elements without the barrier (robigo-heap's freeze.rs). An ordinary
+     * one is marked C's (sticky), so a later freeze leaves it out; a frozen
+     * one not yet logged is a root from now on, traced at every
+     * collection (Sol S1). Not for an empty one: C gets dataptr's
+     * (void *) 1 and can write nothing (an ALTREP's length is its class's,
+     * so it is marked whatever its header says) */
+    if ((RB_TYPE(x) == STRSXP || RB_TYPE(x) == VECSXP || RB_TYPE(x) == EXPRSXP)
+        && (RB_IS_ALTREP(x) || RB_LEN(x) != 0)) {
+        if (!(RB_FLAGS(x) & ROBIGO_FLAG_IMMORTAL))
+            RB_EXTRA(x) |= RB_SEEN_BY_C;
+        else if (RB_FLAGS(x) & (ROBIGO_FLAG_BARRIER | ROBIGO_FLAG_FROZEN))
+            robigo_rtapi_remember(x);
+    }
     return dataptr(x);
 }
 
@@ -677,11 +696,33 @@ SEXP R_WeakRefValue(SEXP w)
 
 /* ---- the protect stack ---------------------------------------------- */
 
+/* R: memory.c:reset_pp_stack */
+static void reset_pp_stack(void *data)
+{
+    int *poldpps = data;
+    robigo_cg->R_PPStackSize = *poldpps;
+}
+
+/* R: memory.c:R_signal_protect_error: the overflow's condition signalled
+ * from a CTXT_CCODE context whose cend restores R_PPStackSize, which the
+ * signal may raise to open the red zone (robigo_rtapi_protect_error): the
+ * cend runs as the exit leaves this context, before any cend above it. */
+__attribute__((noreturn)) static void R_signal_protect_error(void)
+{
+    RCNTXT cntxt;
+    int oldpps = robigo_cg->R_PPStackSize;
+
+    Rf_begincontext(&cntxt, CTXT_CCODE, R_NilValue, R_BaseEnv, R_BaseEnv, R_NilValue, R_NilValue);
+    cntxt.cend = &reset_pp_stack;
+    cntxt.cenddata = &oldpps;
+    robigo_rtapi_protect_error();
+}
+
 SEXP Rf_protect(SEXP s)
 {
     struct robigo_cglobals *g = robigo_cg;
     if (g->R_PPStackTop >= g->R_PPStackSize)
-        robigo_rtapi_protect_error();
+        R_signal_protect_error();
     g->R_PPStack[g->R_PPStackTop++] = s;
     return s;
 }

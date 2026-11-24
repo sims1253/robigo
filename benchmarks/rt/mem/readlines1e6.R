@@ -1,0 +1,6 @@
+# 1e6 lines read by readLines, a CHARSXP per line (connections/readers.rs): it collects inside its loop (E4)
+f <- tempfile()
+writeLines(paste0("l", 1:1000000), f)
+x <- readLines(f)
+cat(length(x), x[1000000], "\n")
+invisible(file.remove(f))

@@ -53,6 +53,9 @@ pub struct Parser<'a> {
     /// Whether the token stream holds a pipe placeholder at all; if not,
     /// `checkForPlaceholder`'s tree walk is skipped.
     saw_placeholder: bool,
+    /// The invalid token that ended the tokens, read when the parser was
+    /// made: parsing can consume it (`bump` replaces a token).
+    lex_error: Option<LexError>,
     pub warnings: Vec<LexWarning>,
     /// Console mode ([`parse_console`]). GNU R's REPL first parses a statement
     /// with `GenerateCode = 0`. Its actions build no values, so the checks
@@ -69,6 +72,16 @@ pub struct Parser<'a> {
     /// The lexing frontier of a trial-parse error raised by an action
     /// (`xxpipebind`), which lies past the error's reported position.
     trial_frontier: Option<usize>,
+    /// The next [`Parser::expr`] is gram.y's `expr` or `expr_or_help`
+    /// rather than `expr_or_assign_or_help`: an argument's value, a
+    /// formal's default, an `if`/`while` condition or a `for` sequence,
+    /// where `=` is not an assignment (`f(NA = 1)` is a syntax error; only a symbol, a string
+    /// or NULL names an argument). Read and cleared on entry, so only that
+    /// expression's own operator loop refuses `=`, and the right side of a
+    /// `?` in it (`expr '?' expr`). Prefixes and constructs (`?x`,
+    /// parentheses, braces, `function`, `if`, the loops) parse
+    /// `expr_or_assign_or_help` and allow it.
+    no_eq_next: bool,
 }
 
 const BP_QUESTION: u8 = 2;
@@ -160,6 +173,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         Err(e) => return ConsoleStatus::Error(e, Vec::new()),
     };
     let mut p = Parser {
+        lex_error: lex_error_of(&toks),
         src: src.text,
         source: src,
         arena,
@@ -172,6 +186,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         defer_codegen: true,
         codegen_err: None,
         trial_frontier: None,
+        no_eq_next: false,
     };
     if matches!(p.toks[p.pos].tok, Tok::Newline) {
         return ConsoleStatus::Null;
@@ -257,15 +272,7 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
         Ok(p) => p,
         Err(e) => return ConnStatus::Error { read_to: e.end },
     };
-    // A lexical error ends the tokens (before the end of input). For a
-    // `raiseLexError` reading stopped where it was raised, inside its
-    // token; any other invalid token has read the character it rejected.
-    let lex_error = match p.toks.len().checked_sub(2).map(|k| &p.toks[k]) {
-        Some(Token { tok: Tok::Invalid(le), span }) => {
-            Some(LexError { at: span.start as usize, raised: (le.style == ErrorStyle::Condition).then_some(le.end) })
-        }
-        _ => None,
-    };
+    let lex_error = p.lex_error();
     match p.toks[p.pos].tok {
         Tok::Newline => return ConnStatus::Null,
         // Nothing but the start of a character the input cuts short, or a
@@ -290,6 +297,19 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
             e if e.incomplete => ConnStatus::More,
             e => ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
         },
+    }
+}
+
+/// The invalid token that ended `toks`, if one did. A lexical error ends
+/// the tokens (before the end of input). For a `raiseLexError` reading
+/// stopped where it was raised, inside its token; any other invalid token
+/// has read the character it rejected.
+fn lex_error_of(toks: &[Token<'_>]) -> Option<LexError> {
+    match toks.len().checked_sub(2).map(|k| &toks[k]) {
+        Some(Token { tok: Tok::Invalid(le), span }) => {
+            Some(LexError { at: span.start as usize, raised: (le.style == ErrorStyle::Condition).then_some(le.end) })
+        }
+        _ => None,
     }
 }
 
@@ -371,12 +391,17 @@ impl<'a> Parser<'a> {
         let (start, end) = (t.span.start as usize, t.span.end as usize);
         let tok = &raw[start..end];
         let la = if lex_error.is_some_and(|le| le.at == start) { invalid_lookahead(tok) } else { lookahead(tok) };
-        let lexed = match la {
+        let mut lexed = match la {
             _ if end >= raw.len() => end,
             Lookahead::None => end,
             Lookahead::Byte => end + 1,
             Lookahead::Char => (end + crate::utf8clen(raw[end])).min(raw.len()),
         };
+        // an invalid token has read the whole character it rejected
+        // (`mbcs_get_next`), not its first byte
+        if lex_error.is_some_and(|le| le.at == start) && start < raw.len() {
+            lexed = lexed.max((start + crate::utf8clen(raw[start])).min(raw.len()));
+        }
         lexed.max(e.end)
     }
 
@@ -403,6 +428,7 @@ impl<'a> Parser<'a> {
         let Lexed { toks, warnings, eof_line_col, .. } = Lexer::new(src).lex()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
         Ok(Parser {
+            lex_error: lex_error_of(&toks),
             src: src.text,
             source: src,
             arena,
@@ -415,6 +441,7 @@ impl<'a> Parser<'a> {
             defer_codegen: false,
             codegen_err: None,
             trial_frontier: None,
+            no_eq_next: false,
         })
     }
 
@@ -441,6 +468,39 @@ impl<'a> Parser<'a> {
         }
         self.codegen_err.get_or_insert((e, frontier));
         Ok(())
+    }
+
+    /// [`Parser::codegen`] of an action whose reduction reads a lookahead
+    /// (the pipe, a repeated formal, an argument's tag): GNU R lexes the
+    /// lookahead first, so its `raiseLexError` fires before the action's
+    /// error. Not for `xxfuncall`, which reduces on `)` without one.
+    fn codegen_after_lookahead(&mut self, e: ParseError) -> Result<(), ParseError> {
+        let frontier = self.lookahead_start();
+        if let Some(le) = self.lookahead_lex_condition() {
+            return Err(le);
+        }
+        self.codegen(e, frontier)
+    }
+
+    /// The lexer's condition in the lookahead token, if it holds one: GNU
+    /// R reads the lookahead before an action that needs it runs, and a
+    /// `raiseLexError` in it fires inside `yylex`, before the action can
+    /// raise its own (`1 |> f(_) "\q"` is unrecognizedEscape). A reduction
+    /// whose lookahead is a good token is unaffected.
+    // R: gram.y:yylex, raiseLexError
+    fn lookahead_lex_condition(&self) -> Option<ParseError> {
+        // (looked at, not moved to: newlines are skipped in parentheses,
+        // as `lookahead_start` does)
+        let mut i = self.pos;
+        if self.cur_ctx() == Ctx::Paren {
+            while matches!(self.toks[i].tok, Tok::Newline) {
+                i += 1;
+            }
+        }
+        match &self.toks[i].tok {
+            Tok::Invalid(le) if le.style == ErrorStyle::Condition => Some((**le).clone()),
+            _ => None,
+        }
     }
 
     fn cur_ctx(&self) -> Ctx {
@@ -584,6 +644,35 @@ impl<'a> Parser<'a> {
         self.program_n(usize::MAX)
     }
 
+    /// The invalid token that ended the tokens, if one did: where it starts,
+    /// and for a `raiseLexError` where reading stopped.
+    fn lex_error(&self) -> Option<LexError> {
+        self.lex_error
+    }
+
+    /// For an error a grammar action raised (it has a frontier: the
+    /// lookahead the action reduced with) or a `raiseLexError`, where GNU
+    /// R's lexer had stopped reading ([`Parser::read_to`]): the bytes after
+    /// it stay unread on a connection (`R_ParseConn`'s `con_getc`). None
+    /// for the grammar's own errors, whose read position the caller has
+    /// from the error token's span.
+    pub fn error_read_to(&self, e: &ParseError) -> Option<usize> {
+        if self.trial_frontier.is_some() || e.style == ErrorStyle::Condition {
+            return Some(self.read_to(e, self.lex_error()));
+        }
+        None
+    }
+
+    /// The start of the last token GNU R's lexer had read when `e` was
+    /// raised: the raise site's frontier for an action's error (the
+    /// lookahead it reduced with, or none: `Parser::codegen`), else the
+    /// rejected token. A token's warnings (NumericValue's) have fired once
+    /// it is read, so those of the tokens starting at or before this one
+    /// precede the error (as the console's [`parse_console`] counts them).
+    pub fn error_frontier(&self, e: &ParseError) -> usize {
+        self.trial_frontier.unwrap_or(e.offset)
+    }
+
     /// End of input consumed by `program_n`, including its terminator.
     pub fn consumed_end(&self) -> usize {
         if matches!(self.toks[self.pos].tok, Tok::Eof) {
@@ -676,6 +765,7 @@ impl<'a> Parser<'a> {
     /// Parse an expression whose operators all bind tighter than `min_bp`.
     fn expr(&mut self, min_bp: u8) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
+        let no_eq = std::mem::take(&mut self.no_eq_next);
         self.skip_newlines();
         let mut lhs = self.prefix()?;
         loop {
@@ -697,6 +787,10 @@ impl<'a> Parser<'a> {
                 break;
             }
             if lbp <= min_bp {
+                break;
+            }
+            if no_eq && lbp == BP_EQ_ASSIGN {
+                // (an argument's value: the caller reports the `=`)
                 break;
             }
             let t = self.bump();
@@ -725,8 +819,7 @@ impl<'a> Parser<'a> {
                         // deferred error leaves a stand-in, so the trial
                         // parse can go on.
                         Err(e) => {
-                            let frontier = self.lookahead_start();
-                            self.codegen(e, frontier)?;
+                            self.codegen_after_lookahead(e)?;
                             Expr::Const(Const::Null, t.span)
                         }
                     }
@@ -738,6 +831,9 @@ impl<'a> Parser<'a> {
                     // gated, so the trial parse raises it once the
                     // lookahead after the RHS is lexed.
                     if !pipebind_enabled() {
+                        if let Some(le) = self.lookahead_lex_condition() {
+                            return Err(le);
+                        }
                         self.trial_frontier = Some(self.lookahead_start());
                         return Err(ParseError::condition(
                             "pipebindDisabled",
@@ -751,6 +847,9 @@ impl<'a> Parser<'a> {
                     call2(arena, "=>", t.span, vec![Arg::positional(lhs), Arg::positional(rhs)], span)
                 }
                 _ => {
+                    // `expr '?' expr`: in an argument, its right side is no
+                    // assignment either
+                    self.no_eq_next = no_eq && t.tok == Tok::Question;
                     let rhs = self.expr(rbp)?;
                     let span = lhs.span().to(rhs.span());
                     let (name, a, b) = match &t.tok {
@@ -944,6 +1043,8 @@ impl<'a> Parser<'a> {
                     let Token { tok: Tok::Sym(s), span: sym_span } = self.bump() else { unreachable!("checked above") };
                     let var = Expr::Sym(sym_name(arena, &s), sym_span);
                     self.expect(Tok::In)?;
+                    // `forcond`'s sequence is `expr_or_help`: no `=`
+                    self.no_eq_next = true;
                     let seq = self.expr(0)?;
                     self.expect(Tok::RParen)?;
                     Ok((var, seq))
@@ -982,6 +1083,8 @@ impl<'a> Parser<'a> {
         self.ctx.push(Ctx::Paren);
         let r = (|| {
             self.expect(Tok::LParen)?;
+            // `ifcond` and `cond` are `'(' expr_or_help ')'`: no `=`
+            self.no_eq_next = true;
             let c = self.expr(0)?;
             self.expect(Tok::RParen)?;
             Ok(c)
@@ -1047,7 +1150,9 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
             let default = if matches!(self.toks[self.pos].tok, Tok::EqAssign) {
                 self.bump();
-                Some(self.expr(BP_EQ_ASSIGN)?)
+                // `SYMBOL EQ_ASSIGN expr_or_help`: `?`, but no `=`
+                self.no_eq_next = true;
+                Some(self.expr(0)?)
             } else {
                 None
             };
@@ -1067,8 +1172,7 @@ impl<'a> Parser<'a> {
                     value: ConditionValue::Str(name.to_string()),
                     fixed_line_col: None,
                 };
-                let frontier = self.lookahead_start();
-                self.codegen(e, frontier)?;
+                self.codegen_after_lookahead(e)?;
             }
             out.push(Formal { name: sym_name(arena, &name), default });
             self.skip_newlines();
@@ -1215,17 +1319,18 @@ impl<'a> Parser<'a> {
                     let arg = if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
                         Arg { name: Some(name), value: None }
                     } else {
-                        Arg { name: Some(name), value: Some(self.expr(BP_EQ_ASSIGN)?) }
+                        self.no_eq_next = true;
+                        Arg { name: Some(name), value: Some(self.expr(0)?) }
                     };
                     // A string tag installs as a symbol (`TagArg`, from
                     // `xxsymsub0`/`xxsymsub1` with GenerateCode on), so the
                     // empty string errors when the argument is reduced.
                     if name.is_empty() {
-                        let frontier = self.lookahead_start();
-                        self.codegen(self.zero_length_name_error(), frontier)?;
+                        self.codegen_after_lookahead(self.zero_length_name_error())?;
                     }
                     arg
                 } else {
+                    self.no_eq_next = true;
                     Arg { name: None, value: Some(self.expr(0)?) }
                 }
             };

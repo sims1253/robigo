@@ -86,15 +86,127 @@ fn bc_eval_inline(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RRes
     check_env(cx, rho.bind(cx).sexp())?;
     let depth = cx.eval_depth();
     let r = cx.scope(|cx, s| {
-        let code = crate::compile::bytecode_code(cx, e)?;
+        let code = crate::compile::bytecode_code(cx, e, rho)?;
         // SAFETY: a fresh or cached code object.
         let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
         let slot = out_slot(&out);
         cx.set_eval_depth(depth - 1);
+        let c = code.bind(cx).sexp();
+        // SAFETY: a rooted code object.
+        if let Some(g) = unsafe { crate::code::single_read(c) } {
+            // SAFETY: rooted code with the mark; an empty out slot.
+            return unsafe { run_single_read(cx, code, g, rho, slot, depth - 1) };
+        }
         // SAFETY: rooted code and environment; an empty out slot.
-        unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+        unsafe { vm::exec(cx, c, rho.bind(cx).sexp(), slot, false, false) }.map(drop)
     });
     cx.set_eval_depth(depth);
+    r
+}
+
+/// The code `code` (rooted) marked [`crate::code::single_read`], run in
+/// `rho` with no activation: what [`vm::exec`] does for it, entered at
+/// evaluation depth `entry`. The depth step (`eval`'s
+/// INCREMENT_EVAL_DEPTH), bcEval's entry poll and the entry safepoint; byte
+/// code active around the read (`R_BCIntActive`, inside whatever `eval_in`
+/// saved); then GETVAR's read (its visibility, the frame slot by the
+/// compiled index through the code's shape, a scalar boxed as `Ret` boxes
+/// it, the slow path at the read's own depth) into `slot`, and the depth
+/// back to `entry`. A forced promise of a plain symbol skips the register
+/// frame, the dispatch loop and the return (~570 instructions).
+///
+/// `code` is rooted, and read from its root only after the entry's poll and
+/// safepoint, either of which can collect (and, under a moving collector,
+/// move it), as `vm::run` reads its code register after them.
+///
+/// # Safety
+/// `code` is a rooted code object of `cx`'s isolate with that mark (`g` its
+/// read), and `slot` an empty value-stack slot of the caller's that stays
+/// live.
+// R: eval.c:bcEval (GETVAR, RETURN)
+#[inline(never)]
+unsafe fn run_single_read(
+    cx: &mut Cx,
+    code: Root<'_>,
+    g: crate::ir::Ins,
+    rho: Root<'_>,
+    slot: std::ptr::NonNull<Slot>,
+    entry: i32,
+) -> RResult<()> {
+    let depth = entry + 1;
+    cx.eval_depth_at(depth)?;
+    let r = (|| {
+        bc_tick(cx)?;
+        cx.safepoint(robigo_heap::Safepoint::Entry)?;
+        cx.bc_activation(true, |cx| {
+            if g.fl & crate::ir::F_VIS != 0 {
+                cx.set_visible(true);
+            }
+            // SAFETY: the caller's contract: rooted code, bound after the
+            // safepoint; its constants and shape are kept by it.
+            let (sym, shape) = unsafe {
+                let v = crate::code::View::of(code.bind(cx).sexp());
+                (v.k(g.e), v.shape)
+            };
+            let rho_raw = rho.bind(cx).sexp();
+            let at = g.f as usize;
+            // GETVAR's fast read (vm's get_var_fast, written to the slot)
+            // SAFETY: an immortal symbol, the rooted environment and the
+            // code's shape, for which the index was compiled.
+            let found = unsafe {
+                if at != 0 { cx.frame_slot_raw(rho_raw, shape, at - 1) } else { None }.unwrap_or_else(|| {
+                    if at == 0 {
+                        cx.var_lookup_skip_raw(sym, rho_raw, shape)
+                    } else {
+                        cx.slot_lookup_raw(sym, rho_raw, shape, at - 1)
+                    }
+                })
+            };
+            let value = match found {
+                RawBinding::Value(v) => {
+                    // SAFETY: a live binding value.
+                    let t = unsafe { v.typ() };
+                    if t == PROMSXP {
+                        // SAFETY: a live promise.
+                        let (pv, tag) = unsafe { (v.car(), v.promise_tag()) };
+                        (pv != cx.unbound().sexp() && tag == 0).then_some(pv)
+                    } else {
+                        (v != cx.missing_arg().sexp() && v != cx.unbound().sexp()).then_some(v)
+                    }
+                }
+                RawBinding::Forced(v) => Some(v),
+                RawBinding::Scalar(x) => {
+                    // `Ret` boxes an unboxed scalar
+                    let s = match x {
+                        robigo_rtcore::Scalar::Real(r) => Slot::real(r),
+                        robigo_rtcore::Scalar::Int(i) => Slot::int(i),
+                        robigo_rtcore::Scalar::Lgl(l) => Slot::logical(l.0),
+                    };
+                    Some(cx.retry_alloc(|cx| vm::box_slot(cx, s))?)
+                }
+                _ => None,
+            };
+            if let Some(v) = value {
+                // SAFETY: a live value, written to the empty slot at once.
+                unsafe { slot.as_ptr().write(Slot::object(v)) };
+                return Ok(());
+            }
+            // the slow path at the read's own depth (vm: act.depth + d)
+            cx.set_eval_depth(depth + g.d as i32);
+            // a formal's first read: its slot forced in place
+            // SAFETY: as above.
+            let thunk =
+                at != 0 && matches!(unsafe { cx.frame_slot_raw(rho_raw, shape, at - 1) }, Some(RawBinding::Thunk(_)));
+            if thunk {
+                // SAFETY: an empty slot of the caller's.
+                return cx.force_arg(rho, at - 1, unsafe { Out::from_raw(slot) });
+            }
+            let place = OutPlace { rho, rho_raw, slot };
+            // SAFETY: an immortal symbol.
+            unsafe { get_var_in::<false, _>(cx, &place, sym, false, true) }
+        })
+    })();
+    cx.set_eval_depth(entry);
     r
 }
 
@@ -146,6 +258,9 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
         cx.set_eval_depth(depthsave);
         return Ok(());
     }
+    // C's `eval` runs it with byte code inactive (`R_BCIntActive = 0`,
+    // saved and restored); byte code's own promise code keeps its flag
+    let bc_saved = if profile == Profile::Bc { None } else { Some(cx.bc_deactivate()) };
     // one level deeper, no protection more (robigo_rtcore's ppacct)
     let r = cx.with_pp_excess(-1, |cx| match t {
         // (a symbol is immortal)
@@ -165,14 +280,21 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
                 let src = s.root(cx, robigo_rtbuiltins::bytecode::expr(cx, e.bind(cx)));
                 return eval(cx, src, rho, out);
             }
-            let code = crate::compile::bytecode_code(cx, e)?;
+            let code = crate::compile::bytecode_code(cx, e, rho)?;
             // SAFETY: a fresh or cached code object.
             let code = s.root(cx, unsafe { Ref::from_sexp(code, cx) });
             let slot = out_slot(&out);
             // (the code object's entry nests the level `eval` raised)
             cx.set_eval_depth(depthsave);
+            let c = code.bind(cx).sexp();
+            // a byte-code promise of a plain symbol: its read, no activation
+            // SAFETY: a rooted code object.
+            if let Some(g) = unsafe { crate::code::single_read(c) } {
+                // SAFETY: rooted code with the mark; an empty out slot.
+                return unsafe { run_single_read(cx, code, g, rho, slot, depthsave) };
+            }
             // SAFETY: rooted code and environment; an empty out slot.
-            unsafe { vm::exec(cx, code.bind(cx).sexp(), rho.bind(cx).sexp(), slot, false, false) }.map(drop)
+            unsafe { vm::exec(cx, c, rho.bind(cx).sexp(), slot, false, false) }.map(drop)
         }),
         DOTSXP => Err(cx.error("'...' used in an incorrect context")),
         _ => {
@@ -180,6 +302,9 @@ fn eval_in(cx: &mut Cx, e: Root<'_>, rho: Root<'_>, profile: Profile, promise: b
             Err(cx.error(&msg))
         }
     });
+    if let Some(saved) = bc_saved {
+        cx.bc_restore(saved);
+    }
     cx.set_eval_depth(depthsave);
     r
 }
@@ -473,8 +598,10 @@ pub unsafe fn keepmiss_missing(cx: &mut Cx, sym: Sexp, rho: Root<'_>) -> RResult
     unsafe { crate::missing::r_is_missing(cx, sym, rho.bind(cx).sexp()) }
 }
 
-/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): [`get_var`], but a
-/// missing argument is R_MissingArg ([`keepmiss_missing`]).
+/// GETVAR_MISSOK (DDVAL_MISSOK for a `..N` symbol): a missing argument is
+/// R_MissingArg ([`keepmiss_missing`]); any other read is
+/// [`get_var_keepmiss`]'s, `get_var`'s with a force past the depth limit
+/// run with byte code inactive (`getvar`'s `forcePromise`).
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
@@ -490,40 +617,139 @@ pub unsafe fn get_var_missok(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sex
     // SAFETY: a live symbol; gp is a header field.
     let dd = unsafe { sym.gp() } & robigo_rtcore::DDVAL != 0;
     // SAFETY: the caller's contract: a live symbol.
-    unsafe { get_var(cx, act, a, sym, dd, bc) }
+    unsafe { get_var_keepmiss(cx, act, a, sym, dd, bc) }
 }
 
-/// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
-/// active bindings, promises to force, GNU R's errors.
+/// Where a variable read takes its environment, puts its value, and keeps
+/// an object rooted while a force runs: a VM activation's registers
+/// ([`ActPlace`]), or a rooted environment and an out slot ([`OutPlace`],
+/// the single-read fast path's, which has no activation).
+pub(crate) trait ReadPlace {
+    /// The environment, raw (rooted by the place).
+    fn rho(&self) -> Sexp;
+    /// The environment, rooted.
+    fn rho_root(&self) -> Root<'_>;
+    /// Where the value goes.
+    fn out(&self) -> Out<'_>;
+    /// `f` with `x` rooted for its run (a frame or promise being forced).
+    ///
+    /// # Safety
+    /// `x` is a live object of `cx`'s isolate, reachable from the place's
+    /// environment.
+    unsafe fn with_root<T>(&self, cx: &mut Cx, x: Sexp, f: impl FnOnce(&mut Cx, Root<'_>) -> T) -> T;
+}
+
+/// A VM activation's read into register `a`: the environment register, the
+/// register's out slot, the scratch register for the forced object.
+pub(crate) struct ActPlace<'a> {
+    pub act: &'a Act,
+    pub a: crate::ir::Reg,
+}
+
+impl ReadPlace for ActPlace<'_> {
+    #[inline(always)]
+    fn rho(&self) -> Sexp {
+        self.act.rho()
+    }
+    #[inline(always)]
+    fn rho_root(&self) -> Root<'_> {
+        self.act.root(crate::ir::R_ENV)
+    }
+    #[inline(always)]
+    fn out(&self) -> Out<'_> {
+        self.act.out(self.a)
+    }
+    #[inline(always)]
+    unsafe fn with_root<T>(&self, cx: &mut Cx, x: Sexp, f: impl FnOnce(&mut Cx, Root<'_>) -> T) -> T {
+        // SAFETY: the caller's contract; the scratch register keeps it.
+        let r = unsafe { self.act.scratch(crate::ir::R_SCRATCH, x) };
+        let v = f(cx, r);
+        self.act.kill(crate::ir::R_SCRATCH, u32::MAX);
+        v
+    }
+}
+
+/// A read with no activation: a rooted environment (and its object, read
+/// once while rooted), an empty out slot, the forced object rooted in a
+/// scope of its own.
+pub(crate) struct OutPlace<'a> {
+    pub rho: Root<'a>,
+    pub rho_raw: Sexp,
+    pub slot: std::ptr::NonNull<robigo_rtcore::Slot>,
+}
+
+impl ReadPlace for OutPlace<'_> {
+    #[inline(always)]
+    fn rho(&self) -> Sexp {
+        self.rho_raw
+    }
+    #[inline(always)]
+    fn rho_root(&self) -> Root<'_> {
+        self.rho
+    }
+    #[inline(always)]
+    fn out(&self) -> Out<'_> {
+        // SAFETY: an empty value-stack slot of the caller's, live for the
+        // read, written once (each path of get_var_in writes it once).
+        unsafe { Out::from_raw(self.slot) }
+    }
+    #[inline(always)]
+    unsafe fn with_root<T>(&self, cx: &mut Cx, x: Sexp, f: impl FnOnce(&mut Cx, Root<'_>) -> T) -> T {
+        cx.scope(|cx, s| {
+            // SAFETY: the caller's contract.
+            let r = s.root(cx, unsafe { Ref::from_sexp(x, cx) });
+            f(cx, r)
+        })
+    }
+}
+
+/// `eval(sym, rho)` into `place` (`..N` when `dd`), the slow path: active
+/// bindings, promises to force, GNU R's errors. One body for GETVAR's reads
+/// and GETVAR_MISSOK's (`KEEPMISS`): the latter read through `getvar`, not
+/// bcEval's inlined force (DO_GETVAR's fast path excludes `keepmiss`), so a
+/// promise it forces is forced as `forcePromise` does, with byte code
+/// inactive where the force's depth step would overflow ([`Cx::force_arg`]'s
+/// inlined-force check reads the flag only there). The `..N` and symbol
+/// paths force deeper inside: at the limit those reads run with byte code
+/// inactive as a whole (`tests/rt/conditions/promise-setup-missok-errors.R`).
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate.
-pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool, bc: bool) -> RResult<()> {
+// R: eval.c:getvar
+#[inline(always)]
+unsafe fn get_var_in<const KEEPMISS: bool, P: ReadPlace>(
+    cx: &mut Cx,
+    place: &P,
+    sym: Sexp,
+    dd: bool,
+    bc: bool,
+) -> RResult<()> {
     // a missing argument's error: byte code's (`getvar`) or the AST
     // interpreter's (`eval`)
     let subclass = if bc { "getvarError" } else { "evalError" };
+    // (a value, an unboxed scalar or a forced slot: the read forces nothing)
+    let mut plain = false;
     if !dd && sym != prims::state(cx).syms.dots {
         // SAFETY: an immortal symbol and the rooted environment.
-        match unsafe { cx.var_lookup_raw(sym, act.rho()) } {
+        match unsafe { cx.var_lookup_raw(sym, place.rho()) } {
             // an argument's first read (the common slow path): its slot
             // forced in place, no promise made
             RawBinding::Thunk(loc) => {
                 // SAFETY: the frame holding the slot, reachable from the
-                // rooted environment; the scratch register keeps it.
-                let f = unsafe { act.scratch(crate::ir::R_SCRATCH, loc.frame()) };
-                let r = cx.force_arg(f, loc.index(), act.out(a));
-                act.kill(crate::ir::R_SCRATCH, u32::MAX);
-                return r;
+                // rooted environment.
+                return unsafe {
+                    place.with_root(cx, loc.frame(), |cx, f| {
+                        forced_as::<KEEPMISS, _>(cx, |cx| cx.force_arg(f, loc.index(), place.out()))
+                    })
+                };
             }
             // a promise object bound to the symbol: forced
             // SAFETY: a live binding value.
             RawBinding::Value(v) if unsafe { v.typ() } == PROMSXP => {
-                // SAFETY: the promise is bound in a rooted frame; the
-                // scratch register keeps it for the force.
-                let p = unsafe { act.scratch(crate::ir::R_SCRATCH, v) };
-                let r = force(cx, p, act.out(a));
-                act.kill(crate::ir::R_SCRATCH, u32::MAX);
-                return r;
+                // SAFETY: the promise is bound in a rooted frame.
+                return unsafe {
+                    place.with_root(cx, v, |cx, p| forced_as::<KEEPMISS, _>(cx, |cx| force(cx, p, place.out())))
+                };
             }
             // byte code reads an active binding twice: bcEval's inlined
             // GETVAR looks the variable up (findVarEX: the binding's function
@@ -538,18 +764,70 @@ pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: 
                     // SAFETY: an immortal symbol.
                     let sr = s.root(cx, unsafe { Ref::from_sexp(sym, cx) });
                     let o = s.out(cx);
-                    cx.find_var(sr, act.root(crate::ir::R_ENV), o)
+                    cx.find_var(sr, place.rho_root(), o)
                 })?;
             }
+            RawBinding::Value(_) | RawBinding::Scalar(_) | RawBinding::Forced(_) => plain = KEEPMISS,
             _ => {}
         }
     }
+    if plain {
+        // SAFETY: the caller's contract: a live symbol.
+        return unsafe { symbol_value_as(cx, sym, place.rho_root(), place.out(), subclass) };
+    }
     if dd {
-        dd_value(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass)
+        forced_as::<KEEPMISS, _>(cx, |cx| dd_value(cx, sym, place.rho_root(), place.out(), subclass))
     } else {
         // SAFETY: the caller's contract: a live symbol.
-        unsafe { symbol_value_as(cx, sym, act.root(crate::ir::R_ENV), act.out(a), subclass) }
+        forced_as::<KEEPMISS, _>(cx, |cx| unsafe { symbol_value_as(cx, sym, place.rho_root(), place.out(), subclass) })
     }
+}
+
+/// GETVAR_MISSOK's read past `keepmiss_missing`: [`get_var_in`] with
+/// `KEEPMISS`. Out of line: `get_var_missok` is inlined into `vm::run`,
+/// which stays as it is (the arm calls this, with these arguments).
+///
+/// # Safety
+/// As [`get_var`].
+// R: eval.c:getvar
+#[inline(never)]
+pub unsafe fn get_var_keepmiss(
+    cx: &mut Cx,
+    act: &Act,
+    a: crate::ir::Reg,
+    sym: Sexp,
+    dd: bool,
+    bc: bool,
+) -> RResult<()> {
+    // SAFETY: the caller's contract.
+    unsafe { get_var_in::<true, _>(cx, &ActPlace { act, a }, sym, dd, bc) }
+}
+
+/// `f`, a read that may force a promise: for a `KEEPMISS` read, with byte
+/// code inactive where the force's depth step would overflow (`getvar`'s
+/// `forcePromise`, not the inlined force's PRSEEN order); else as it is.
+///
+/// The depth test is robigo-rtcore's [`Cx::force_depth_overflows`], the
+/// one the inlined force's own overflow check makes.
+#[inline(always)]
+fn forced_as<const KEEPMISS: bool, T>(cx: &mut Cx, f: impl FnOnce(&mut Cx) -> T) -> T {
+    if KEEPMISS && cx.force_depth_overflows() {
+        let saved = cx.bc_deactivate();
+        let r = f(cx);
+        cx.bc_restore(saved);
+        return r;
+    }
+    f(cx)
+}
+
+/// `eval(sym, rho)` into register `a` (`..N` when `dd`), the slow path:
+/// [`get_var_in`] for GETVAR's reads.
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate.
+pub unsafe fn get_var(cx: &mut Cx, act: &Act, a: crate::ir::Reg, sym: Sexp, dd: bool, bc: bool) -> RResult<()> {
+    // SAFETY: the caller's contract.
+    unsafe { get_var_in::<false, _>(cx, &ActPlace { act, a }, sym, dd, bc) }
 }
 
 /// `eval`'s SYMSXP case: `R_findVar`, then GNU R's errors, a promise
@@ -721,6 +999,25 @@ pub fn force(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
     cx.force_promise(p, out)
 }
 
+/// `eval(p, rho)` of a promise `p` (C code's evaluation of a promise):
+/// eval's `case PROMSXP` alone, without its dispatch on the type:
+/// `R_Visible`, the evaluation count, one level deeper (with
+/// `R_CheckStack`), byte code inactive, `forcePromise`. The isolate's
+/// `eval_promise` hook.
+// R: eval.c:eval (PROMSXP)
+pub fn eval_promise(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.set_visible(true);
+    tick(cx)?;
+    let depthsave = cx.eval_depth();
+    cx.eval_depth_at(depthsave + 1)?;
+    let bc = cx.bc_deactivate();
+    // (one level deeper, no protection more: robigo_rtcore's ppacct)
+    let r = cx.with_pp_excess(-1, |cx| cx.force_promise(p, out));
+    cx.bc_restore(bc);
+    cx.set_eval_depth(depthsave);
+    r
+}
+
 /// `eval(p, rho)` of the promise GNU R's binding in slot `index` of
 /// `frame` holds (the `force_arg` hook: `findFun3` forcing an argument):
 /// `eval`'s evaluation count and depth for the promise, then the slot
@@ -728,11 +1025,36 @@ pub fn force(cx: &mut Cx, p: Root<'_>, out: Out<'_>) -> RResult<()> {
 // R: eval.c:eval (PROMSXP)
 pub fn force_arg_eval(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
     cx.set_visible(true);
-    tick(cx)?;
+    // (the poll, rare, continues in a function of its own: the common
+    // path then keeps nothing alive across a call but the force)
+    let c = cx.evalcount().get() + 1;
+    if c > 1000 {
+        return force_arg_eval_polled(cx, frame, index, out);
+    }
+    cx.evalcount().set(c);
+    force_arg_eval_counted(cx, frame, index, out)
+}
+
+/// [`force_arg_eval`] after a count past 1000: eval's poll, then the rest.
+#[cold]
+#[inline(never)]
+fn force_arg_eval_polled(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
+    poll(cx)?;
+    cx.evalcount().set(0);
+    force_arg_eval_counted(cx, frame, index, out)
+}
+
+/// [`force_arg_eval`] past its evaluation count: one level deeper (with
+/// `R_CheckStack`), byte code inactive, the slot forced.
+#[inline(always)]
+fn force_arg_eval_counted(cx: &mut Cx, frame: Root<'_>, index: usize, out: Out<'_>) -> RResult<()> {
     let depthsave = cx.eval_depth();
     cx.eval_depth_at(depthsave + 1)?;
-    // (one level deeper, no protection more: robigo_rtcore's ppacct)
+    // (one level deeper, no protection more: robigo_rtcore's ppacct;
+    // byte code inactive, as `eval` runs it)
+    let bc = cx.bc_deactivate();
     let r = cx.with_pp_excess(-1, |cx| cx.force_arg(frame, index, out));
+    cx.bc_restore(bc);
     cx.set_eval_depth(depthsave);
     r
 }
@@ -772,7 +1094,20 @@ pub fn do_return_value(
 /// `.Internal(withVisible(x))`, a special: `x` evaluated in `rho`, and
 /// `list(value =, visible =)` with `R_Visible` as that evaluation left it.
 // R: eval.c:do_withVisible
-pub fn do_with_visible(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+/// `args` is GNU R's: None for the call's own arguments, or `applyMethod`'s
+/// promise list (run again on the call over it, `specials::rerun_apart`).
+pub fn do_with_visible(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: run again on the call over it)
+    if args.is_some() {
+        return crate::specials::rerun_apart(cx, call, _op, args, rho, out, do_with_visible);
+    }
     use robigo_rtbuiltins::attrib::{Attr, Attrs};
     use robigo_rtcore::{Char, Encoding, Lgl, RSym};
     let n = call.bind(cx).len().unwrap_or(1).saturating_sub(1);
@@ -803,7 +1138,16 @@ pub fn do_with_visible(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>
 /// promises of its record), from the environment that function was called
 /// from. A special: `rho` is `Recall`'s frame.
 // R: eval.c:do_recall
-pub fn do_recall(cx: &mut Cx, _call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_recall(
+    cx: &mut Cx,
+    _call: Root<'_>,
+    _op: Root<'_>,
+    // (unread: GNU R's do_recall calls again with the closure's own
+    // promargs, never the special's `args`)
+    _args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     use robigo_rtcore::ctxt;
     cx.scope(|cx, s| {
         let outside = "'Recall' called from outside a closure";

@@ -7,8 +7,8 @@
 
 use crate::{
     apply, arith, array, attrib, bind, builtin, bytecode, character, coerce, complex, context, cum, datetime, envir,
-    errors, glob, grep, identical, is, logic, math, options, paste, raw, relop, rng, seq, sort, split, sprintf, subset,
-    summary, sysinfo, sysutils, times, unique, util, version,
+    errors, glob, grep, identical, is, logic, math, maththreads, options, paste, raw, relop, rng, seq, sort, split,
+    sprintf, subset, summary, sysinfo, sysutils, times, unique, util, version,
 };
 use robigo_rtcore::{Args, Cx, Out, RResult, Ref, Root, View};
 
@@ -368,6 +368,8 @@ pub static BUILTINS: &[Builtin] = &[
     row("bindtextdomain", errors::do_bindtextdomain, 0, 11, 2, FUNCALL, External),
     row("interactive", sysutils::do_interactive, 0, 1, 0, FUNCALL, Pure),
     row("Sys.getenv", sysutils::do_getenv, 0, 11, 2, FUNCALL, External),
+    row("tempfile", sysutils::do_tempfile, 0, 11, 3, FUNCALL, External),
+    row("tempdir", sysutils::do_tempdir, 0, 11, 1, FUNCALL, External),
     row("iconv", sysutils::do_iconv, 0, 11, 6, FUNCALL, External),
     row("Sys.setenv", sysutils::do_setenv, 0, 111, 2, FUNCALL, External),
     row("Sys.unsetenv", sysutils::do_unsetenv, 0, 111, 1, FUNCALL, External),
@@ -382,6 +384,10 @@ pub static BUILTINS: &[Builtin] = &[
     op!("which.max", 1, summary::do_first_min, 11, 1, FUNCALL, Pure),
     row("as.POSIXct", datetime::do_as_posixct, 0, 11, 2, FUNCALL, External),
     row("strptime", datetime::do_strptime, 0, 11, 3, FUNCALL, External),
+    row("as.POSIXlt", datetime::do_as_posixlt, 0, 11, 2, FUNCALL, External),
+    row("Date2POSIXlt", datetime::do_d2posixlt, 0, 11, 2, FUNCALL, Pure),
+    row("POSIXlt2Date", datetime::do_posixlt2d, 0, 11, 1, FUNCALL, Pure),
+    row("format.POSIXlt", datetime::do_format_posixlt, 0, 11, 4, FUNCALL, External),
     // times.c
     row("Sys.time", times::do_systime, 0, 11, 0, FUNCALL, External),
     // sys-unix.c
@@ -621,6 +627,9 @@ pub static BUILTINS: &[Builtin] = &[
     // split.c
     row("split", split::do_split, 0, 11, 2, FUNCALL, Pure),
     row("wrap_meta", sort::do_wrap_meta, 0, 11, 3, FUNCALL, Pure),
+    // eval.c (the isolate's math thread counts)
+    row("setNumMathThreads", maththreads::do_setnumthreads, 0, 11, 1, FUNCALL, Env),
+    row("setMaxNumMathThreads", maththreads::do_setmaxnumthreads, 0, 11, 1, FUNCALL, Env),
 ];
 
 /// The row named `name`: among the `.Internal`s (`internal` `Some(true)`)

@@ -12,12 +12,35 @@ use std::sync::OnceLock;
 
 /// The fake binaries, written once before any test spawns one: a binary
 /// written while another thread forks can fail to exec ("text file busy").
+/// A runtime that fails every case at once, and whose boot probe (the
+/// runner's record of what it does not run, ROBIGO_BOOT_VERBOSE) takes 3 s.
+fn slow_probe() -> PathBuf {
+    static P: OnceLock<PathBuf> = OnceLock::new();
+    P.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let p = fakes().0.parent().unwrap().join("slow-probe");
+        std::fs::write(&p, "#!/bin/sh\n[ -n \"$ROBIGO_BOOT_VERBOSE\" ] && sleep 3\nexit 1\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    })
+    .clone()
+}
+
 fn fakes() -> &'static (PathBuf, PathBuf, PathBuf, PathBuf) {
     static FAKES: OnceLock<(PathBuf, PathBuf, PathBuf, PathBuf)> = OnceLock::new();
     FAKES.get_or_init(|| {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("robigo-conformance-fakes-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // in cargo's target directory, so the fakes go with it (`cargo
+        // clean`), not in /tmp: a test process has no exit hook to remove
+        // them, so each run removes the ones of test processes that are gone
+        let parent = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        sweep_fakes(parent);
+        // the pid for the sweep, and a time so that a reused pid never
+        // adopts (or has swept under it) another run's directory
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = parent.join(format!("{FAKES_PREFIX}{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(parent).unwrap();
+        std::fs::create_dir(&dir).unwrap();
         let write = |name: &str, body: &str| {
             let p = dir.join(name);
             std::fs::write(&p, body).unwrap();
@@ -32,6 +55,97 @@ fn fakes() -> &'static (PathBuf, PathBuf, PathBuf, PathBuf) {
         let order = write("order", "#!/bin/sh\necho \"$1\" >> \"$0.log\"\nexec cat \"$1\"\n");
         (cat, stub, slow, order)
     })
+}
+
+const FAKES_PREFIX: &str = "robigo-conformance-fakes-";
+
+/// Removes `parent`'s fakes directories whose test process no longer runs
+/// (`robigo-conformance-fakes-<pid>-<time>` with no `/proc/<pid>`; without
+/// a /proc, none), and only this user's that nothing has touched for a day:
+/// an absent `/proc/<pid>` alone could be another pid namespace's or a
+/// hidepid /proc's process.
+fn sweep_fakes(parent: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(me) = std::fs::metadata("/proc/self") else { return };
+    let day_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) =
+            name.to_str().and_then(|n| n.strip_prefix(FAKES_PREFIX)).map(|r| r.split('-').next().unwrap_or(""))
+        else {
+            continue;
+        };
+        // the cheap checks first: a live pid keeps the directory with no
+        // stat and no walk; then this user's, and the newest write anywhere
+        // in it (not the directory's own mtime: a write to an existing file,
+        // order.log, leaves that unchanged)
+        if pid.parse::<u32>().is_ok()
+            && !Path::new("/proc").join(pid).exists()
+            && e.metadata().is_ok_and(|m| m.uid() == me.uid())
+            && newest(&e.path()) < day_ago
+        {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// The newest modification time of `p` and everything under it, not
+/// following symbolic links; what cannot be read counts as written now (a
+/// fixture whose age is unknown stays).
+fn newest(p: &Path) -> std::time::SystemTime {
+    let now = std::time::SystemTime::now();
+    let Ok(m) = std::fs::symlink_metadata(p) else { return now };
+    let mut t = m.modified().unwrap_or(now);
+    if m.is_dir() {
+        let Ok(entries) = std::fs::read_dir(p) else { return now };
+        for e in entries {
+            let Ok(e) = e else { return now };
+            t = t.max(newest(&e.path()));
+        }
+    }
+    t
+}
+
+#[test]
+fn a_gone_test_process_leaves_no_fakes_behind() {
+    if !Path::new("/proc/self").exists() {
+        return; // no process table: sweep_fakes removes nothing there
+    }
+    // (removed however the test ends: a failed assert must not leak it)
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let parent = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("sweep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&parent);
+    let _guard = Gone(parent.clone());
+    // pid_max is at most 2^22, so this pid never runs
+    let gone = parent.join(format!("{FAKES_PREFIX}4999999-1"));
+    let fresh = parent.join(format!("{FAKES_PREFIX}4999998-1"));
+    let live = parent.join(format!("{FAKES_PREFIX}{}-1", std::process::id()));
+    let other = parent.join("something-else-1");
+    for d in [&gone, &fresh, &live, &other] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("cat"), "x").unwrap();
+    }
+    // every directory but `fresh` last touched two days ago, the live
+    // process's too (so the pid check alone keeps it); `fresh`, of another
+    // gone pid, has a file written today inside an old directory (it may be
+    // another namespace's, still in use)
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
+    for d in [&gone, &fresh, &live, &other] {
+        std::fs::File::open(d.join("cat")).unwrap().set_modified(two_days_ago).unwrap();
+        std::fs::File::open(d).unwrap().set_modified(two_days_ago).unwrap();
+    }
+    std::fs::File::open(fresh.join("cat")).unwrap().set_modified(std::time::SystemTime::now()).unwrap();
+    sweep_fakes(&parent);
+    assert!(!gone.exists());
+    assert!(fresh.exists(), "a directory with a file written today stays");
+    assert!(live.exists(), "a live process's directory stays, however old");
+    assert!(other.exists());
 }
 
 fn cat() -> PathBuf {
@@ -133,6 +247,8 @@ fn opts(column: &Column, bin: PathBuf) -> Options {
         jobs: 2,
         timeout: std::time::Duration::from_secs(20),
         case_timeouts: Default::default(),
+        times: None,
+        slots: None,
         env: Vec::new(),
     }
 }
@@ -320,6 +436,320 @@ fn the_cases_with_a_longer_timeout_start_first() {
     assert_eq!(first(&o), "one.R");
 }
 
+/// `ROBIGO_CONF_TIMES_REPORT`: one line per case run, slowest first, with
+/// the limit it ran under and whether it passed, also when the run fails.
+#[test]
+fn the_times_report_lists_every_case_run_with_its_limit() {
+    let f = rt_tree("times");
+    f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+    let report = f.root().join("times.tsv");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.case_timeouts.insert("tests/rt/smoke/one.R".into(), std::time::Duration::from_secs(30));
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("# secs\tlimit\tstatus\tcase"));
+    let rows: Vec<Vec<&str>> = lines.map(|l| l.split('\t').collect()).collect();
+    assert_eq!(rows.len(), 2, "{text}");
+    let secs: Vec<f64> = rows.iter().map(|r| r[0].parse().unwrap()).collect();
+    assert!(secs[0] >= secs[1], "slowest first: {text}");
+    let by_case: std::collections::BTreeMap<&str, (&str, &str)> = rows.iter().map(|r| (r[3], (r[1], r[2]))).collect();
+    assert_eq!(by_case["tests/rt/smoke/one.R"].0, "30");
+    assert_eq!(by_case["tests/rt/smoke/two.R"].0, "20");
+    assert!(by_case.values().all(|(_, s)| *s == "pass" || *s == "fail"));
+    // a runtime that fails every case still writes it
+    let _ = std::fs::remove_file(&report);
+    let mut o = opts(&RT, stub());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    assert_eq!(text.lines().filter(|l| l.ends_with(".R")).count(), 2, "{text}");
+    assert!(text.lines().skip(1).all(|l| l.split('\t').nth(2) == Some("fail")), "{text}");
+    // a report whose directory does not exist yet: it is made
+    let nested = f.root().join("not").join("yet").join("times.tsv");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(nested.clone());
+    let _ = run(f.root(), &RT, &o);
+    assert!(nested.is_file(), "no report in a new directory");
+}
+
+/// A case's time is its own run: the boot probe the first failure starts
+/// (which the other failing cases wait for) is not counted in any case's.
+#[test]
+fn a_case_time_leaves_out_the_boot_probe() {
+    let f = rt_tree("times-probe");
+    f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+    let report = f.root().join("times.tsv");
+    let mut o = opts(&RT, slow_probe());
+    o.filter = Some("tests/rt/smoke".into());
+    o.times = Some(report.clone());
+    let _ = run(f.root(), &RT, &o);
+    let text = std::fs::read_to_string(&report).unwrap();
+    let secs: Vec<f64> = text.lines().skip(1).map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
+    assert_eq!(secs.len(), 2, "{text}");
+    assert!(secs.iter().all(|s| *s < 2.0), "the 3 s probe counted in a case's time: {text}");
+}
+
+/// A case's slot goes with its process, not with its output pipes: a
+/// descendant that keeps stdout open (a background `sleep`) must not hold
+/// the slot, or one slot would serialize on it (or deadlock on a nested
+/// run). Two cases, one slot, each leaving a 3 s `sleep` on its stdout:
+/// the second starts before the first's sleep ends (the cases' own stamps,
+/// no wall-clock margin).
+#[test]
+fn a_cases_slot_is_released_when_its_process_ends() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-pipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    let f = Fixture::new("slot-pipe");
+    for c in ["one", "two"] {
+        f.case(&format!("tests/rt/smoke/{c}.R"), "x\n").record(
+            "tests/rt",
+            &format!("tests/rt/smoke/{c}.R"),
+            "4.6.2",
+            "1\n",
+        );
+    }
+    let log = f.root().join("stamps");
+    let fake = f.root().join("lingering-fake");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\necho \"$1 start $(date +%s.%N)\" >> {}\necho 1\nsleep 3 &\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut o = opts(&RT, fake);
+    o.filter = Some("tests/rt/smoke".into());
+    o.jobs = 2;
+    o.slots = Some((pool.clone(), 1));
+    let r = run(f.root(), &RT, &o).unwrap();
+    assert_eq!(r.outcomes.len(), 2);
+    let mut starts: Vec<f64> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.split_whitespace().nth(2).unwrap().parse().unwrap())
+        .collect();
+    starts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(starts.len(), 2);
+    assert!(starts[1] - starts[0] < 3.0, "the slot waited for the first case's pipes: {starts:?}");
+    let _ = std::fs::remove_dir_all(&pool);
+}
+
+/// A case starts with SIGINT at its default whatever the runner inherited:
+/// a runner under an ignored SIGINT (a background shell's `cmd &`) once
+/// passed SIG_IGN on, and a case that raises one failed (interrupt.R).
+#[test]
+#[allow(unsafe_code)]
+fn a_case_starts_with_sigint_at_its_default() {
+    use std::os::unix::fs::PermissionsExt;
+    if !Path::new("/proc/self/status").exists() {
+        return; // the fake reads SigIgn there
+    }
+    let f = Fixture::new("sigint");
+    f.case("tests/rt/smoke/sig.R", "x\n").record("tests/rt", "tests/rt/smoke/sig.R", "4.6.2", "0\n");
+    // a runtime that prints whether SIGINT is ignored in it (SigIgn's bit 2)
+    let fake = f.root().join("sigint-fake");
+    std::fs::write(&fake, "#!/bin/sh\nv=$(sed -n 's/^SigIgn:[[:space:]]*//p' /proc/$$/status)\necho $(( 0x$v & 2 ))\n")
+        .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut o = opts(&RT, fake);
+    o.filter = Some("tests/rt/smoke/sig.R".into());
+    // the process's SIGINT ignored for the run, restored on drop (a panic
+    // included: the binary's later tests must not inherit it)
+    struct Restore(libc::sighandler_t);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: signal() only changes this process's disposition.
+            unsafe { libc::signal(libc::SIGINT, self.0) };
+        }
+    }
+    // SAFETY: as above; the other tests' cases go through the same reset.
+    let _restore = Restore(unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) });
+    let r = run(f.root(), &RT, &o).unwrap();
+    assert!(r.outcomes[0].passed(), "the case saw SIGINT ignored: {}", r.outcomes[0].diff);
+}
+
+/// A fake runtime that notes each case's own start and end (`date +%s.%N`)
+/// in `log`, sleeping `secs` in between, then prints the case.
+fn stamping_fake(root: &Path, log: &Path, secs: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let fake = root.join(format!("stamp-fake-{secs}"));
+    let body = format!(
+        "#!/bin/sh\necho \"$1 start $(date +%s.%N)\" >> {log}\nsleep {secs}\necho \"$1 end $(date +%s.%N)\" >> {log}\nexec cat \"$1\"\n",
+        log = log.display()
+    );
+    std::fs::write(&fake, body).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake
+}
+
+/// Each case's (start, end) from a stamping fake's log.
+fn intervals(log: &Path) -> Vec<(f64, f64)> {
+    let text = std::fs::read_to_string(log).unwrap();
+    let mut open = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        let at: f64 = w[2].parse().unwrap();
+        if w[1] == "start" {
+            open.insert(w[0].to_string(), at);
+        } else {
+            out.push((open[w[0]], at));
+        }
+    }
+    out
+}
+
+/// The machine-wide slot pool (`ROBIGO_CONF_SLOTS_DIR`), asserted without a
+/// wall-clock margin: two runs at once, two cases each, one slot. No two
+/// cases' own intervals (stamped by the cases) overlap; with as many slots
+/// as cases they do. Limits are far out of load's reach (60 s).
+#[test]
+fn runs_sharing_a_slot_pool_take_turns() {
+    for (slots, overlap) in [(1, false), (4, true)] {
+        let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-{}-{slots}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&pool);
+        let log = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("stamps-{}-{slots}", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let trees: Vec<Fixture> = (0..2)
+            .map(|k| {
+                let f = rt_tree(&format!("slots-{slots}-{k}"));
+                f.case("tests/rt/smoke/two.R", "2\n").record("tests/rt", "tests/rt/smoke/two.R", "4.6.2", "2\n");
+                f
+            })
+            .collect();
+        std::thread::scope(|s| {
+            for f in &trees {
+                let (pool, log) = (pool.clone(), log.clone());
+                s.spawn(move || {
+                    let mut o = opts(&RT, stamping_fake(f.root(), &log, "1"));
+                    o.filter = Some("tests/rt/smoke".into());
+                    o.jobs = 2;
+                    o.timeout = std::time::Duration::from_secs(60);
+                    o.slots = Some((pool, slots));
+                    let r = run(f.root(), &RT, &o).unwrap();
+                    assert!(
+                        r.outcomes.iter().all(|c| c.passed()),
+                        "{:?}",
+                        r.outcomes.iter().map(|c| &c.diff).collect::<Vec<_>>()
+                    );
+                });
+            }
+        });
+        let mut iv = intervals(&log);
+        assert_eq!(iv.len(), 4);
+        iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let overlaps = iv.windows(2).any(|w| w[1].0 < w[0].1);
+        assert_eq!(overlaps, overlap, "{slots} slot(s): {iv:?}");
+        let _ = std::fs::remove_dir_all(&pool);
+        let _ = std::fs::remove_file(&log);
+    }
+}
+
+/// An existing pool directory that others can write in is refused (a slot
+/// file there could be replaced), not used: the run stops ("not a private
+/// directory", from a worker: the scope re-raises it as its own panic; the
+/// other pool tests show a private one works).
+#[test]
+#[should_panic]
+fn a_pool_directory_others_can_write_in_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    std::fs::create_dir_all(&pool).unwrap();
+    std::fs::set_permissions(&pool, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let f = rt_tree("slots-open");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.slots = Some((pool, 1));
+    let _ = run(f.root(), &RT, &o);
+}
+
+/// A case's clock starts at its slot, not while it waits for one: a run
+/// holds the only slot with a 3 s case; once that case has stamped its
+/// start, a second run's quick case, at a 2 s limit, waits for the slot and
+/// passes, and its reported time leaves the wait out. (The order is made
+/// by the test, not by a race; the slow case's own limit, 60 s, is far out
+/// of load's reach.)
+#[test]
+fn a_cases_clock_starts_when_it_takes_its_slot() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-clock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    let log = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("stamps-clock-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let slow = rt_tree("slots-clock-slow");
+    let quick = rt_tree("slots-clock-quick");
+    let report = quick.root().join("times.tsv");
+    let fake = |f: &Fixture, secs: &str| {
+        let p = f.root().join("clock-fake");
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\necho \"$1 start $(date +%s.%N)\" >> {log}\nsleep {secs}\nexec cat \"$1\"\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    };
+    let mut so = opts(&RT, fake(&slow, "3"));
+    so.filter = Some("tests/rt/smoke".into());
+    so.timeout = std::time::Duration::from_secs(60);
+    so.slots = Some((pool.clone(), 1));
+    let mut qo = opts(&RT, fake(&quick, "0"));
+    qo.filter = Some("tests/rt/smoke".into());
+    qo.timeout = std::time::Duration::from_secs(2);
+    qo.slots = Some((pool.clone(), 1));
+    qo.times = Some(report.clone());
+    // (an owned thread, not a scoped one: a slow run stuck before its start
+    // must not keep the bound below from failing the test, as a scope's
+    // join at the unwind would)
+    let slow_root = slow.root().to_path_buf();
+    let h = std::thread::spawn(move || run(&slow_root, &RT, &so).unwrap());
+    // the slow case holds the slot once it has stamped its start (a bound,
+    // so that a slow run that never starts fails here, saying what it saw,
+    // instead of hanging the test binary)
+    let since = std::time::Instant::now();
+    while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains(" start ")) {
+        assert!(
+            since.elapsed() < std::time::Duration::from_secs(60),
+            "the slow case did not stamp its start in 60 s; its log: {:?}; the slow run finished: {}",
+            std::fs::read_to_string(&log).ok(),
+            h.is_finished()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let asked = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let quick_result = run(quick.root(), &RT, &qo).unwrap();
+    assert!(h.join().unwrap().outcomes.iter().all(|c| c.passed()));
+    assert!(
+        quick_result.outcomes.iter().all(|c| c.passed()),
+        "the wait counted: {:?}",
+        quick_result.outcomes.iter().map(|c| &c.diff).collect::<Vec<_>>()
+    );
+    let starts: Vec<f64> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.split_whitespace().nth(2).unwrap().parse().unwrap())
+        .collect();
+    let quick_started = starts.iter().cloned().fold(f64::MIN, f64::max);
+    let waited = quick_started - asked;
+    let times = std::fs::read_to_string(&report).unwrap();
+    let reported: f64 = times.lines().nth(1).unwrap().split('\t').next().unwrap().parse().unwrap();
+    // it waited for the slot, longer than its 2 s limit, and its time does
+    // not hold that wait
+    assert!(waited > 2.0, "the quick case did not wait for the slot: {waited}");
+    assert!(reported < waited, "the quick case's time ({reported} s) holds its wait ({waited} s)");
+    let _ = std::fs::remove_dir_all(&pool);
+    let _ = std::fs::remove_file(&log);
+}
+
 /// `ROBIGO_CONF_TIMEOUTS` gives the case it names its own timeout. It names
 /// the case by its id, as `check` looks it up: any other name, even a path
 /// to the same file, is refused, since it would never apply.
@@ -473,4 +903,97 @@ fn sha256_matches_sha256sum() {
     assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     let long = vec![b'a'; 1_000];
     assert_eq!(sha256_hex(&long), "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
+}
+
+/// The pool is one pool across implementations: a slot the Python tools
+/// hold (scripts/conf_slots.py, `fcntl.flock`) is held for the runner too
+/// (std's `File::try_lock` is `flock(2)` on Linux), so a one-slot run
+/// waits for it.
+#[test]
+fn a_slot_held_by_the_python_tools_is_held_for_the_runner() {
+    let pool = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("slots-cross-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&pool);
+    std::fs::create_dir_all(&pool).unwrap();
+    std::fs::set_permissions(&pool, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    // the holder holds the only slot until its stdin ends: the test, not a
+    // clock, says when it lets go
+    let mut holder = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import sys; sys.path.insert(0, sys.argv[1]); import conf_slots\n\
+             h = conf_slots.Pool(sys.argv[2], 1).take()\n\
+             print('held', flush=True); sys.stdin.read()",
+        )
+        .arg(&scripts)
+        .arg(&pool)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3 runs scripts/conf_slots.py");
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(holder.stdout.take().unwrap()), &mut line).unwrap();
+    assert_eq!(line.trim(), "held");
+    let f = rt_tree("slots-cross");
+    let mut o = opts(&RT, cat());
+    o.filter = Some("tests/rt/smoke".into());
+    o.slots = Some((pool.clone(), 1));
+    let root = f.root().to_path_buf();
+    let h = std::thread::spawn(move || run(&root, &RT, &o).unwrap());
+    // the order is the proof: while Python holds the slot the run does not
+    // finish (a case alone takes milliseconds)
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let finished_while_held = h.is_finished();
+    drop(holder.stdin.take());
+    assert!(holder.wait().unwrap().success());
+    let r = h.join().unwrap();
+    assert!(!finished_while_held, "the run finished while Python held the only slot");
+    assert!(r.outcomes.iter().all(|c| c.passed()));
+    let _ = std::fs::remove_dir_all(&pool);
+}
+
+/// A case whose crosscheck could write neither its report nor
+/// `<report>.lost` says so only on its stderr: the run fails on it, even for
+/// a case the ratchet does not hold (whose failures otherwise only report).
+#[test]
+fn a_crosscheck_report_that_cannot_be_written_fails_the_run_ratcheted_or_not() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = rt_tree("crosscheck-unwritten");
+    let fake = f.root().join("unwritten-fake");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\necho 'robigo: bc crosscheck: record lost: cannot write the report /x (Permission denied) nor \
+         /x.lost (Permission denied)' >&2\nexec cat \"$1\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut o = opts(&RT, fake);
+    // filtered to a case with no marker: a plain failure would not fail the run
+    o.filter = Some("tests/rt/smoke".into());
+    let err = run(f.root(), &RT, &o).expect_err("an unwritten crosscheck report fails the run");
+    assert!(err.contains("lost a record of the byte-code crosscheck"), "{err}");
+    // each case with the line it printed: the paths and why
+    assert!(
+        err.contains("tests/rt/smoke/one.R: robigo: bc crosscheck: record lost: cannot write the report /x"),
+        "{err}"
+    );
+    // the same case without the line, or with `.lost` made (rt-ci's check
+    // of that file fails the step): a reported failure, not a failed run
+    let r = run(f.root(), &RT, &opts_filtered(cat(), "tests/rt/smoke")).unwrap();
+    assert!(r.outcomes.iter().all(|c| c.report_unwritten.is_none()));
+    let lost_made = f.root().join("lost-made-fake");
+    std::fs::write(
+        &lost_made,
+        "#!/bin/sh\necho 'robigo: bc crosscheck: cannot write the report /x: Permission denied' >&2\nexec cat \"$1\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&lost_made, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = run(f.root(), &RT, &opts_filtered(lost_made, "tests/rt/smoke")).unwrap();
+    assert!(r.outcomes.iter().all(|c| c.report_unwritten.is_none()));
+}
+
+fn opts_filtered(bin: PathBuf, filter: &str) -> Options {
+    let mut o = opts(&RT, bin);
+    o.filter = Some(filter.into());
+    o
 }

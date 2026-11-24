@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import importlib.util
 from pathlib import Path
@@ -139,6 +140,15 @@ class VersionTests(unittest.TestCase):
 class RtRuntimeTests(unittest.TestCase):
     """robigo-rt's column (`run --runtime rt`): its own pin's recordings and
     its own ratchet, never the old runtime's."""
+
+    def setUp(self):
+        # (the fake binary has no tree to make: robigo_rt_path's
+        # rt_trees.ensure, scripts/test-rt-ci.py's test of its own, stays out)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import rt_trees
+        p = patch.object(rt_trees, "ensure", lambda *a, **k: None)
+        p.start()
+        self.addCleanup(p.stop)
 
     def run_rt(self, **kw):
         args = dict(name="fixture", profile=None, update=False, r_version=None, robigo=__file__, filter=None,
@@ -412,6 +422,32 @@ class TierTests(unittest.TestCase):
         with patch.object(corpus.subprocess, "run", side_effect=fake):
             corpus.run_case("fixture", {}, "case", b"1", "robigo", "robigo", "interp")
         self.assertEqual((captured["ROBIGO_COMPILE"], captured["ROBIGO_JIT"]), ("0", "0"))
+
+
+    def test_rt_gets_the_default_packages_its_tree_has(self):
+        # robigo-rt's start reads its tree's etc/Renviron, which names the
+        # default packages the tree has when R_DEFAULT_PACKAGES is unset: the
+        # rt run leaves it unset (an inherited value too), where GNU R and
+        # robigo get the corpus's list (INTERIM(L5))
+        captured = {}
+
+        def fake(cmd, cwd, env, capture_output, timeout):
+            captured.clear()
+            captured.update(env, cmd=cmd)
+            return argparse.Namespace(stdout=b"", stderr=b"", returncode=0)
+
+        conf = {"default_packages": "datasets,utils,grDevices,graphics,stats,methods"}
+        with patch.object(corpus.subprocess, "run", side_effect=fake), \
+             patch.dict(os.environ, {"R_DEFAULT_PACKAGES": "utils"}):
+            corpus.run_case("fixture", conf, "case", b"1", "rt", "/bin/robigo-rt")
+            self.assertNotIn("R_DEFAULT_PACKAGES", captured)
+            self.assertEqual(captured["cmd"][:2], ["/bin/robigo-rt", "--vanilla"])
+            for runtime in ("robigo", "gnur"):
+                corpus.run_case("fixture", conf, "case", b"1", runtime, "/bin/robigo")
+                self.assertEqual(captured["R_DEFAULT_PACKAGES"], conf["default_packages"], runtime)
+        # the run and show pass "rt" for --runtime rt
+        src = Path(corpus.__file__).read_text()
+        self.assertEqual(src.count('"rt" if rt else "robigo"'), 2)
 
 
 class GcNormalization(unittest.TestCase):

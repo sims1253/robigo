@@ -1,0 +1,32 @@
+interpreted <<-
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+compiled <<-
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+Warning in c("<U+4E2D>", "x") <<- 1 :
+  unable to translate '<U+4E2D>' to native encoding
+interpreted <-
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+compiled <-
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  only the first element is used as variable name
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  only the first element is used as variable name
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+interpreted =
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+compiled =
+Warning in f() : unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  only the first element is used as variable name
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in assign(v, 1, envir = vars) :
+  only the first element is used as variable name
+Warning in assign(v, 1, envir = vars) :
+  unable to translate '<U+4E2D>' to native encoding
+Warning in f() : unable to translate '<U+4E2D>' to native encoding

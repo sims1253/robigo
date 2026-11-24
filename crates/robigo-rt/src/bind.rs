@@ -23,9 +23,14 @@ pub fn do_bind<const CBIND: bool>(
     cx: &mut Cx,
     call: Root<'_>,
     _op: Root<'_>,
+    args: Option<Root<'_>>,
     env: Root<'_>,
     out: Out<'_>,
 ) -> RResult<()> {
+    // (applyMethod's promise list: run again on the call over it)
+    if args.is_some() {
+        return crate::specials::rerun_apart(cx, call, _op, args, env, out, do_bind::<CBIND>);
+    }
     let generic: &[u8] = if CBIND { b"cbind" } else { b"rbind" };
     cx.scope(|cx, s| {
         // CAR(args): R_NilValue for no arguments

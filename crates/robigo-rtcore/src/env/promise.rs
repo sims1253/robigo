@@ -398,6 +398,38 @@ impl Cx {
         unsafe { set_prvalue(ps, vs, iso.nil) };
     }
 
+    /// Whether `p` is a promise `forcePromise` would evaluate plainly: not
+    /// evaluated, PRSEEN 0, its code not byte code.
+    pub fn promise_unforced_ast(&self, p: Ref<'_>) -> bool {
+        if p.sexptype() != PROMSXP {
+            return false;
+        }
+        let ps = p.sexp();
+        // SAFETY: a live promise (a `Ref` is live); its header fields read.
+        unsafe {
+            !is_evaluated(self.iso(), ps) && ps.gp() == 0 && ps.extra() & robigo_heap::extra::promise::BYTECODE == 0
+        }
+    }
+
+    /// The end of `forcePromise` for a value the caller computed as the
+    /// promise's code would (`SET_PRVALUE`, `SET_PRSEEN(0)`,
+    /// `SET_PRENV(R_NilValue)`): for a promise [`Cx::promise_unforced_ast`]
+    /// accepts, whose evaluation the caller has shown to be unobservable.
+    pub fn set_promise_forced(&mut self, p: Root<'_>, v: Root<'_>) {
+        let iso = self.iso();
+        let (ps, val) = (p.bind(self).sexp(), v.bind(self).sexp());
+        assert!(
+            self.promise_unforced_ast(p.bind(self)),
+            "robigo: set_promise_forced on a promise not plainly unforced"
+        );
+        // SAFETY: a rooted promise and value, as `force_promise`'s end.
+        unsafe {
+            set_prvalue(ps, val, iso.nil);
+            ps.set_gp(0);
+            ps.set_tag(iso.nil);
+        }
+    }
+
     /// GNU R's `forcePromise(p)`, and the promise's value written to `out`.
     /// The value is not marked: `ENSURE_NAMEDMAX` does nothing under
     /// reference counting (`Defn.h:337-340`).
@@ -408,6 +440,12 @@ impl Cx {
         if unsafe { is_evaluated(self.iso(), p.bind(self).sexp()) } {
             self.promise_value(p, out)?;
             return Ok(());
+        }
+        if self.inline_force_due() {
+            // SAFETY: a rooted promise.
+            if let Some(e) = unsafe { self.inline_promise_overflow(p.bind(self).sexp()) } {
+                return Err(e);
+            }
         }
         self.safepoint(robigo_heap::Safepoint::Entry)?;
         let ps = p.bind(self).sexp();
@@ -475,6 +513,126 @@ impl Cx {
         })
     }
 
+    /// Whether the promise GNU R's binding in slot `index` of the slot
+    /// frame `frame` would hold is unevaluated (`PRVALUE(s) ==
+    /// R_UnboundValue`): a delayed slot, or a slot materialized into a
+    /// promise not yet evaluated. (GetObject evaluates only such a promise.)
+    /// For the slot kinds an argument of the generic's own frame has:
+    /// delayed, forced, a value (a materialized promise), an unboxed
+    /// scalar. An alias (a method's argument, which reads its generic's
+    /// slot) is false: GetObject reads the generic's frame, whose slot is
+    /// never an alias.
+    ///
+    /// Unlike its checked siblings ([`Cx::force_arg`], `arg_promise`,
+    /// `materialize_arg`), its checks are debug assertions: it runs on
+    /// every S3 dispatch of an argument slot, and the force that follows
+    /// it re-checks the frame and slot before anything is forced.
+    ///
+    /// # Safety
+    /// `frame` is a live slot frame of this isolate and `index` is below
+    /// its capacity (the checks [`Cx::force_arg`] makes, debug-asserted
+    /// here: this runs on every S3 dispatch of an argument slot).
+    #[inline]
+    pub unsafe fn arg_unevaluated(&self, frame: Root<'_>, index: usize) -> bool {
+        let f = frame.bind(self).sexp();
+        #[cfg(debug_assertions)]
+        self.iso().check_owns(f);
+        debug_assert!(
+            // SAFETY: a rooted environment.
+            unsafe { f.typ() == ENVSXP && layout::is_slots(f) },
+            "robigo: arg_unevaluated on a non-slot frame"
+        );
+        // SAFETY: as above.
+        debug_assert!(index < unsafe { layout::capacity(f) }, "robigo: arg_unevaluated past the frame's slots");
+        let s = SlotRef { owner: f, index };
+        // SAFETY: the caller's contract: a slot of a live slot frame; a
+        // value slot's `val` is live.
+        unsafe {
+            match s.kind() {
+                DELAYED => true,
+                VALUE => s.val().typ() == PROMSXP && !is_evaluated(self.iso(), s.val()),
+                _ => false,
+            }
+        }
+    }
+
+    /// bcEval's inlined `GETVAR`/`DDVAL` force: a promise bcEval forces in
+    /// place (not evaluated, of byte code, PRSEEN 0) whose evaluation's
+    /// depth step overflows is left PRSEEN 1. `setup_bcframe_prom` marks it
+    /// before `INCREMENT_EVAL_DEPTH` and puts it on the pending stack only
+    /// after, so `R_restore_globals` never marks it interrupted: a later
+    /// force is "promise already under evaluation", not the restart
+    /// warning. Taken while byte code is active (`R_BCIntActive`); the AST
+    /// interpreter's `eval` goes through `forcePromise`. The check is
+    /// on the overflow's side only: the common path pays the depth compare.
+    /// Its depth test must be the same as robigo-rt's `forced_as_getvar`
+    /// (eval.rs), which asks the same question for GETVAR_MISSOK's reads:
+    /// an edit of one is made in the other, until the fold of
+    /// docs/ledger/g3/2026-11-23-eval-promise.md removes that compare.
+    // R: eval.c:DO_GETVAR, eval.c:setup_bcframe_prom
+    #[inline(always)]
+    fn inline_force_due(&self) -> bool {
+        self.force_depth_overflows() && self.iso().contexts().bc_active.get()
+    }
+
+    /// Whether a force's depth step here would overflow the evaluation
+    /// depth limit (`eval_depth >= expressions`): the one test the
+    /// inlined-force overflow above and robigo-rt's GETVAR_MISSOK reads
+    /// (`eval::forced_as`) both make.
+    #[inline(always)]
+    pub fn force_depth_overflows(&self) -> bool {
+        self.eval_depth() >= self.expressions()
+    }
+
+    /// The overflow of bcEval's inlined force of a delayed slot: `None` when
+    /// the slot is not one bcEval forces in place (then `force_arg` forces
+    /// it as `getvar` does). Only a delayed slot reaches it: `force_arg`
+    /// hands a value slot's promise to `force_promise`, which makes its own
+    /// check ([`Cx::inline_promise_overflow`]).
+    ///
+    /// # Safety
+    /// `s` is a delayed slot of a live slot frame of this isolate.
+    #[cold]
+    #[inline(never)]
+    unsafe fn inline_force_overflow(&mut self, s: SlotRef) -> Option<RError> {
+        // SAFETY: the caller's contract.
+        unsafe {
+            debug_assert_eq!(s.kind(), DELAYED);
+            if s.prseen() == 0 && s.has(layout::META_BYTECODE) {
+                set_prseen(s, PRSEEN_EVALUATING);
+                return Some(self.inline_depth_overflow());
+            }
+            None
+        }
+    }
+
+    /// The overflow of bcEval's inlined force of a PROMSXP, `None` when `p`
+    /// is not a promise bcEval forces in place.
+    ///
+    /// # Safety
+    /// `p` is a live promise of this isolate.
+    #[cold]
+    #[inline(never)]
+    unsafe fn inline_promise_overflow(&mut self, p: Sexp) -> Option<RError> {
+        // SAFETY: the caller's contract; PRSEEN is the gp field.
+        unsafe {
+            if is_evaluated(self.iso(), p) || p.gp() != 0 || p.extra() & robigo_heap::extra::promise::BYTECODE == 0 {
+                return None;
+            }
+            p.set_gp(PRSEEN_EVALUATING);
+        }
+        Some(self.inline_depth_overflow())
+    }
+
+    /// `setup_bcframe_prom`'s `INCREMENT_EVAL_DEPTH()` past the limit:
+    /// one level deeper and `handle_eval_depth_overflow`'s error.
+    fn inline_depth_overflow(&mut self) -> RError {
+        match self.eval_depth_enter() {
+            Err(e) => e,
+            Ok(_) => unreachable!("robigo: an inline promise force past the limit that did not overflow"),
+        }
+    }
+
     /// `forcePromise` of the promise GNU R's binding in slot `index` of the
     /// slot frame `frame` would hold, in place (docs/g3.md §6.3, "first
     /// read"): a delayed slot's expression is evaluated in its environment
@@ -512,6 +670,12 @@ impl Cx {
             // (a method's argument, an alias, out of line)
             _ => return self.force_alias(s, out),
         }
+        if self.inline_force_due() {
+            // SAFETY: a delayed slot of a rooted frame.
+            if let Some(e) = unsafe { self.inline_force_overflow(s) } {
+                return Err(e);
+            }
+        }
         // a value the caller computed early (§6.2): present only while no
         // effect has happened since (`note_effect` drops it), so it is the
         // value the expression would have; the force makes the evaluation's
@@ -522,8 +686,8 @@ impl Cx {
         if !early.is_null() {
             self.early_taken(f);
             // SAFETY: a delayed slot's expression is live.
-            let (bc, call) = unsafe { (s.has(layout::META_BYTECODE), s.aux().typ() == LANGSXP) };
-            if (self.iso().hooks.get().early_force)(self, bc, call) {
+            let (bc, kind) = unsafe { (s.has(layout::META_BYTECODE), s.aux().typ()) };
+            if (self.iso().hooks.get().early_force)(self, bc, kind) {
                 let iso = self.iso();
                 // SAFETY: the slot holds the value; it becomes the forced
                 // value (nothing ran since it was read).
@@ -1270,7 +1434,13 @@ pub(crate) unsafe fn retire_arg(iso: &Isolate, s: SlotRef) {
             (s.val(), Sexp::NULL)
         };
         // the slot's words, cleared with their counts kept (nothing
-        // collects before the caller stores over them)
+        // collects before the caller stores over them). Cleared raw, so in
+        // a frozen frame each cleared object is noted, as a barriered store
+        // over it would be (the boot heap's freeze: Sol r2 S9)
+        if f.flags() & robigo_heap::flags::FROZEN != 0 {
+            robigo_heap::note_overwritten(val);
+            robigo_heap::note_overwritten(expr);
+        }
         s.clear_raw_val();
         s.clear_raw_aux();
         // the promise's environment, counted once per promise in GNU R

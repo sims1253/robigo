@@ -73,7 +73,11 @@ pub enum Inline {
 /// A special that is a function over its call: GNU R's `do_*` of a
 /// SPECIALSXP, `PRIMFUN(op)(call, op, CDR(call), rho)`; the arguments are
 /// the call's, unevaluated. `op` is the primitive object.
-pub type SpecialFn = for<'a, 'b, 'c, 'd> fn(&mut Cx, Root<'a>, Root<'b>, Root<'c>, Out<'d>) -> RResult<()>;
+/// A special that is a function over its call: GNU R's `PRIMFUN(op)(call,
+/// op, args, rho)`, `args` None for `CDR(call)` (every call but one) or
+/// `applyMethod`'s promise list, `call` then the method's `newcall`.
+pub type SpecialFn =
+    for<'a, 'b, 'c, 'd, 'e> fn(&mut Cx, Root<'a>, Root<'b>, Option<Root<'e>>, Root<'c>, Out<'d>) -> RResult<()>;
 
 #[derive(Clone, Copy)]
 pub enum Kind {
@@ -158,11 +162,18 @@ static RT_PRIMS: &[PrimDef] = &[
     special_fn("Recall", crate::eval::do_recall, 210, -1),
     special_fn("withVisible", crate::eval::do_with_visible, 10, 1),
     special_fn("forceAndCall", crate::apply::do_force_and_call, 0, -1),
+    special_fn("declare", crate::declare::do_declare, 100, -1),
+    special_fn("Exec", crate::tailcall::do_tailcall::<false>, 200, -1),
+    special_fn("Tailcall", crate::tailcall::do_tailcall::<true>, 200, -1),
+    // coerce.c
+    special_fn("call", crate::call_fn::do_call, 0, -1),
     // bind.c: special .Internals (names.c eval 10)
     special_fn("cbind", crate::bind::do_bind::<true>, 10, -1),
     special_fn("rbind", crate::bind::do_bind::<false>, 10, -1),
     // arithmetic.c
     special_fn("log", crate::specials::do_log, 0, -1),
+    special_fn("round", crate::specials::do_math2::<false>, 0, -1),
+    special_fn("signif", crate::specials::do_math2::<true>, 0, -1),
     // objects.c (S1)
     special_fn("UseMethod", crate::dispatch::do_usemethod, 200, -1),
     special_fn("NextMethod", crate::dispatch::do_nextmethod, 210, -1),
@@ -196,6 +207,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("prmatrix", crate::print::do_prmatrix, Inline::None, 111, 6),
     builtin("deparse", crate::builtin::do_deparse, Inline::None, 11, 5),
     builtin("dput", crate::builtin::do_dput, Inline::None, 111, 3),
+    // main.c: {"quit", do_quit, 0, 111, 3, ...}
+    builtin("quit", crate::repl::do_quit, Inline::None, 111, 3),
     builtin("enableJIT", crate::jit::do_enablejit, Inline::None, 11, 1),
     builtin("compilePKGS", crate::jit::do_compilepkgs, Inline::None, 11, 1),
     builtin("args", crate::builtin::do_args, Inline::None, 11, 1),
@@ -236,11 +249,16 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("getVarsFromFrame", crate::serialize::do_get_vars_from_frame, Inline::None, 11, 3),
     builtin("makeLazy", crate::serialize::saveload::do_makelazy, Inline::None, 111, 5),
     builtin("loadFromConn2", crate::serialize::saveload::do_load_from_conn2, Inline::None, 111, 3),
+    builtin("saveToConn", crate::serialize::saveload::do_save_to_conn, Inline::None, 111, 6),
     builtin("loadInfoFromConn2", crate::serialize::saveload::do_load_info_from_conn2, Inline::None, 11, 1),
     builtin("save.to.file", crate::serialize::saveload::do_savefile, Inline::None, 11, 4),
     builtin("load.from.file", crate::serialize::saveload::do_loadfile, Inline::None, 11, 1),
     // connections.c (L1)
     builtin("close", crate::connections::do_close, Inline::None, 111, 2),
+    builtin("flush", crate::connections::do_flush, Inline::None, 111, 1),
+    builtin("getAllConnections", crate::connections::do_getallconnections, Inline::None, 11, 0),
+    builtin("getConnection", crate::connections::do_getconnection, Inline::None, 11, 1),
+    builtin("sink.number", crate::connections::do_sinknumber, Inline::None, 11, 1),
     builtin("file", crate::connections::do_file, Inline::None, 11, 6),
     builtin("gzfile", crate::connections::do_gzfile::<0>, Inline::None, 11, 4),
     builtin("bzfile", crate::connections::do_gzfile::<1>, Inline::None, 11, 4),
@@ -250,6 +268,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("summary.connection", crate::connections::do_sumconnection, Inline::None, 11, 1),
     // platform.c, sysutils.c (L1's tests' files)
     builtin("file.remove", crate::platform::do_fileremove, Inline::None, 11, 1),
+    builtin("file.rename", crate::platform::do_filerename, Inline::None, 11, 2),
     builtin("Sys.getpid", crate::platform::do_sysgetpid, Inline::None, 11, 0),
     // envir.c's namespaces, version.c (L2)
     builtin("getNamespaceValue", crate::ns::do_get_ns_value, Inline::None, 211, 3),
@@ -265,6 +284,8 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("environmentName", crate::ns::do_envir_name, Inline::None, 11, 1),
     // source.c, connections.c (L2)
     builtin("parse", crate::source::do_parse, Inline::None, 11, 6),
+    builtin("str2lang", crate::source::do_str2lang, Inline::None, 11, 1),
+    builtin("str2expression", crate::source::do_str2expression, Inline::None, 11, 1),
     builtin("stdin", crate::builtin::do_stdin, Inline::None, 11, 0),
     builtin("writeLines", crate::connections::do_writelines, Inline::None, 111, 4),
     builtin("readLines", crate::connections::readers::do_readlines, Inline::None, 11, 6),
@@ -289,6 +310,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("dir.exists", crate::platform::do_direxists, Inline::None, 11, 1),
     builtin("dir.create", crate::platform::do_dircreate, Inline::None, 111, 4),
     builtin("getwd", crate::util::do_getwd, Inline::None, 11, 0),
+    builtin("setwd", crate::util::do_setwd, Inline::None, 111, 1),
     builtin("basename", crate::util::do_basename, Inline::None, 11, 1),
     builtin("dirname", crate::util::do_dirname, Inline::None, 11, 1),
     builtin("normalizePath", crate::util::do_normalizepath, Inline::None, 11, 3),
@@ -518,6 +540,11 @@ pub struct RtState {
     /// `R_compile_pkgs` (`compilePKGS`, `_R_COMPILE_PKGS_`): a logical,
     /// NA included.
     pub compile_pkgs: std::cell::Cell<i32>,
+    /// Whether R starts GNU R's way (`ROBIGO_RT_BOOT` stage0 or rdb,
+    /// [`crate::jit::at_startup`]): the compiler's namespace then comes from
+    /// base's `loadNamespace`, M1's loader making it otherwise
+    /// ([`crate::ns::load_namespace`]).
+    pub gnu_boot: std::cell::Cell<bool>,
     /// GNU R's JIT cache ([`crate::jitcache`]).
     pub jit_cache: std::cell::RefCell<crate::jitcache::Cache>,
     /// Base's shipped bindings of cmp.R's `safeBaseInternals`, by their
@@ -531,11 +558,16 @@ pub struct RtState {
     pub objs: Vec<Global>,
     /// The symbol of each primitive (`install(name)`), by `PRIMOFFSET`.
     pub names: Vec<Sexp>,
-    /// `PRIMOFFSET` by the address of its symbol (the compiler's lookup).
-    pub by_sym: std::collections::HashMap<usize, usize>,
+    /// `PRIMOFFSET` by its symbol (the compiler's lookup).
+    pub by_sym: BySym,
     /// `RunFinalizers`' guard ("Prevent this function from running again
     /// when already in progress").
     pub running_finalizers: std::cell::Cell<bool>,
+    /// `ROBIGO_RETRY_TORTURE=1` held through the start by
+    /// `ROBIGO_TORTURE_AFTER_START=1`, both read at install (a profile's
+    /// `Sys.setenv` changes neither): [`crate::arm_torture_after_start`]
+    /// turns it on.
+    pub retry_held: std::cell::Cell<bool>,
     /// `ROBIGO_MATERIALIZE=1` (docs/g3.md §16): every argument slot is
     /// made the PROMSXP GNU R binds, at call entry.
     pub materialize: std::cell::Cell<bool>,
@@ -544,6 +576,10 @@ pub struct RtState {
     pub inline: std::cell::Cell<bool>,
     /// The calls run inline so far (for tests).
     pub inline_runs: std::cell::Cell<u64>,
+    /// A translated call's promise code (a BCODESXP) is computed early
+    /// (`crate::early::value`): off only in tests, which compare the counts
+    /// a force makes with and without its early value.
+    pub early_bytecode: std::cell::Cell<bool>,
     /// The `<<-` writes of the inline run under way (`crate::inline`).
     pub(crate) inline_writes: crate::inline::WriteLog,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
@@ -556,12 +592,82 @@ pub struct RtState {
     /// `R_ReplaceFunsTable`: each function symbol's assignment function
     /// symbol (`names` to `names<-`), keyed by the symbol's id; the values
     /// are symbols (immortal).
-    pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp>>,
+    /// (Fixed-seed hashing: a lookup costs the same every run. The values
+    /// are symbols, immortal, so the table roots nothing.)
+    pub assign_fns: std::cell::RefCell<std::collections::HashMap<robigo_rtcore::SymId, Sexp, robigo_heap::BuildFx>>,
     /// cmp.R's constant folds of the compile under way ([`crate::fold`]).
     pub folds: crate::fold::Folds,
+    /// The compiles' spare buffers ([`crate::compile`]'s `Scratch`): empty,
+    /// holding no `Sexp`.
+    pub(crate) scratch: crate::compile::Scratch,
+    /// The warnings cmp.R's R code gives in the compile under way (its
+    /// `assign` and `as.name` of a name that does not translate), raised
+    /// once the compile is over ([`crate::cenv::CompileWarnings`]).
+    pub compile_warnings: crate::cenv::CompileWarnings,
+    /// The translation cache's per-isolate state: its writer's capture and
+    /// a verification under way (`crate::tcache`).
+    pub tcache: crate::tcache::State,
     /// INTERIM(L5): the pinned GNU R tree the wide base loader reads its
     /// definitions from on first use ([`crate::base::load`]).
-    pub base_src: std::cell::RefCell<Option<std::path::PathBuf>>,
+    /// (A `OnceCell`, set once by the boot's load: 8 bytes smaller than a
+    /// `RefCell<Option<_>>`, so `RtState` keeps main's size with the
+    /// translation cache's word. A start's instruction count follows the
+    /// heap's layout, which `RtState`'s size is one lever on: see the
+    /// ledger, "A start's count follows the heap's layout" (H, #984).)
+    pub base_src: std::cell::OnceCell<std::path::PathBuf>,
+}
+
+/// How [`BySym::set`] enters a definition whose symbol already has one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Policy {
+    /// The later definition replaces the earlier (the base table's own
+    /// duplicates, as a map built in order keeps the last).
+    Replace,
+    /// As `Replace`, but an `.Internal` never hides a primitive of the same
+    /// name (a later table's internals, `define_builtins`).
+    InternalKeeps,
+}
+
+/// `PRIMOFFSET` by symbol: a table indexed by the symbol's id (dense per
+/// heap; the primitives' names are among the first symbols made), so a
+/// lookup is a bounds check and a load, with no hashing and no dependence
+/// on where the symbol lives.
+#[derive(Clone, Default)]
+pub struct BySym(Vec<u32>);
+
+/// [`BySym`]'s empty entry.
+const NO_PRIM: u32 = u32::MAX;
+
+impl BySym {
+    /// The primitive named by `x`, if `x` is a symbol that names one.
+    ///
+    /// # Safety
+    /// `x` is a live object.
+    #[inline]
+    pub unsafe fn get(&self, x: Sexp) -> Option<usize> {
+        // SAFETY: the caller's contract; a symbol's id is read only from a
+        // symbol.
+        unsafe {
+            if x.typ() != SYMSXP {
+                return None;
+            }
+            let o = *self.0.get(x.sym_id() as usize)?;
+            (o != NO_PRIM).then_some(o as usize)
+        }
+    }
+
+    /// Enter `off` for the symbol whose id is `id`, as `policy` says for
+    /// a definition that is an `.Internal` (`internal`) or not.
+    pub fn set(&mut self, id: u32, off: usize, policy: Policy, internal: bool) {
+        let i = id as usize;
+        if self.0.len() <= i {
+            self.0.resize(i + 1, NO_PRIM);
+        }
+        let keep = policy == Policy::InternalKeeps && internal && self.0[i] != NO_PRIM;
+        if !keep {
+            self.0[i] = u32::try_from(off).expect("robigo: a primitive offset past u32");
+        }
+    }
 }
 
 impl RtState {
@@ -628,7 +734,13 @@ pub fn prim_name(cx: &Cx, op: Ref<'_>) -> Option<&'static str> {
 /// Make the primitive objects of `defs` and bind them: a primitive in the
 /// base environment, an `.Internal` as its symbol's INTERNAL (names.c's
 /// `R_initFunTab`/`mkPRIMSXP`).
-pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Global>, Vec<Sexp>) {
+pub(crate) fn make_prims(
+    cx: &mut Cx,
+    defs: &[PrimDef],
+    first: usize,
+    by_sym: &mut BySym,
+    policy: Policy,
+) -> (Vec<Global>, Vec<Sexp>) {
     let mut objs = Vec::with_capacity(defs.len());
     let mut names = Vec::with_capacity(defs.len());
     for (i, d) in defs.iter().enumerate() {
@@ -671,6 +783,9 @@ pub(crate) fn make_prims(cx: &mut Cx, defs: &[PrimDef], first: usize) -> (Vec<Gl
                 cx.set_symvalue(sr, v);
             });
         }
+        // the compiler's lookup by symbol
+        // SAFETY: an immortal symbol of this heap.
+        unsafe { by_sym.set(sym.sym_id(), first + i, policy, d.internal()) };
         objs.push(g);
         names.push(sym);
     }

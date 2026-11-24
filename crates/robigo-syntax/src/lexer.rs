@@ -201,6 +201,11 @@ pub struct Lexer<'a> {
     /// Where an identifier stopped because the bytes of an invalid
     /// character ran out (`SymbolValue`'s `mbcs_get_next` returned -1).
     after_ident: usize,
+    /// Just past the last character an escape's digit loop looked at and
+    /// rejected: GNU R's `xxgetc` read it before `xxungetc` pushed it back
+    /// into the lexer's buffer, so a connection has consumed it, and a
+    /// `raiseLexError` right after it has read that far (see `lex_err`).
+    rejected: usize,
     pos: usize,
     /// Warnings produced while lexing, e.g. for `1.5L`.
     pub warnings: Vec<LexWarning>,
@@ -285,6 +290,7 @@ impl<'a> Lexer<'a> {
             source,
             has_invalid,
             after_ident: usize::MAX,
+            rejected: 0,
             pos: 0,
             warnings: Vec::new(),
             eof_in_comment: false,
@@ -383,7 +389,24 @@ impl<'a> Lexer<'a> {
     /// reported with a `(<input>:<line>:<col>)` suffix.
     fn lex_err(&mut self, subclass: &'static str, message: impl Into<String>) -> ParseError {
         let at = self.pos.saturating_sub(1);
-        ParseError::condition(subclass, message, at, self.pos.max(at + 1), None)
+        // (where reading stopped: a character an escape's loop rejected
+        // just now included; an earlier one lies behind `pos`)
+        let mut e = ParseError::condition(subclass, message, at, self.pos.max(at + 1).max(self.rejected), None);
+        // raiseLexError's position is xxlineno/xxcolno after the last byte
+        // read (and not pushed back): a tab advances to the next multiple
+        // of 8, a newline starts the next line at column 0
+        // R: gram.y:raiseLexError, xxgetc, xxungetc
+        e.fixed_line_col = Some(self.source.r_line_col(self.pos));
+        e
+    }
+
+    /// The character at `pos`, which an escape's digit loop rejects (its
+    /// first byte is read and pushed back: [`Lexer::rejected`]; `xxgetc`
+    /// reads a byte).
+    fn reject_next(&mut self) {
+        if self.peek_char().is_some() {
+            self.rejected = self.pos + 1;
+        }
     }
 
     /// Tokenize the whole source. GNU R interleaves lexing with parsing:
@@ -510,9 +533,10 @@ impl<'a> Lexer<'a> {
                 }
                 Tok::Sym(name)
             }
-            'r' | 'R' if matches!(self.peek_char_at(1), Some('"') | Some('\'')) && self.raw_string_ahead() => {
-                Tok::Str(self.raw_string(start)?)
-            }
+            // a raw string at any `r"` or `r'`: a delimiter that is not one
+            // of `([{|` is raw_string's invalidRawLiteral
+            // R: gram.y:token (`if (c == 'r' || c == 'R')`), RawStringValue
+            'r' | 'R' if matches!(self.peek_char_at(1), Some('"') | Some('\'')) => Tok::Str(self.raw_string(start)?),
             c if is_ident_start(c) => self.ident()?,
             // The pipe placeholder: always, even before identifier
             // characters (gram.y: `if (c == '_') return Placeholder(c);`).
@@ -524,15 +548,6 @@ impl<'a> Lexer<'a> {
             _ => self.operator(start)?,
         };
         Ok(Token { tok, span: Span::new(start, self.pos) })
-    }
-
-    fn raw_string_ahead(&self) -> bool {
-        // r"---( ... )---": after the quote, optional dashes then an opener.
-        let mut i = self.pos + 2;
-        while self.byte_at(i) == b'-' {
-            i += 1;
-        }
-        matches!(self.byte_at(i), b'(' | b'[' | b'{' | b'|')
     }
 
     fn raw_string(&mut self, start: usize) -> Result<StrTok<'a>, ParseError> {
@@ -549,8 +564,20 @@ impl<'a> Lexer<'a> {
             b'{' => b'}',
             b'|' => b'|',
             _ => {
+                let delim = self.pos;
                 self.pos += 1; // the offending delimiter is consumed
-                return Err(self.lex_err("invalidRawLiteral", "malformed raw string literal"));
+                let mut e = self.lex_err("invalidRawLiteral", "malformed raw string literal");
+                // raiseLexError's position is xxlineno/xxcolno after the
+                // delimiter was read: a newline starts the next line at
+                // column 0, a tab advances to the next multiple of 8; past
+                // the end, the lexer's virtual newline
+                // R: gram.y:RawStringValue, raiseLexError, xxgetc
+                e.fixed_line_col = Some(if delim < self.bytes.len() {
+                    self.source.r_line_col(delim + 1)
+                } else {
+                    (self.source.r_line_col(self.bytes.len()).0 + 1, 0)
+                });
+                return Err(e);
             }
         };
         self.pos += 1;
@@ -1044,7 +1071,10 @@ impl<'a> Lexer<'a> {
                             v = v * 8 + d.to_digit(8).unwrap();
                             self.pos += 1;
                         }
-                        _ => break,
+                        _ => {
+                            self.reject_next();
+                            break;
+                        }
                     }
                 }
                 if v == 0 {
@@ -1069,7 +1099,10 @@ impl<'a> Lexer<'a> {
                             self.pos += 1;
                             n += 1;
                         }
-                        None => break,
+                        None => {
+                            self.reject_next();
+                            break;
+                        }
                     }
                 }
                 if n == 0 {
@@ -1108,7 +1141,10 @@ impl<'a> Lexer<'a> {
                             self.pos += 1;
                             n += 1;
                         }
-                        None => break,
+                        None => {
+                            self.reject_next();
+                            break;
+                        }
                     }
                 }
                 if n == 0 {
@@ -1120,13 +1156,40 @@ impl<'a> Lexer<'a> {
                 }
                 if braced {
                     if self.peek_char() != Some('}') {
-                        if e == 'u' {
+                        // GNU R reads the byte that is not `}` (xxgetc, not
+                        // pushed back): it is consumed, and the error's
+                        // position is after it
+                        // R: gram.y:StringValue (`if (c != '}')`)
+                        let at = self.pos;
+                        if let Some(c) = self.peek_char() {
+                            self.pos += c.len_utf8();
+                        }
+                        let msg = if e == 'u' {
                             // GNU R formats this with an uninitialized
                             // `(line %d)` argument; the value is not
                             // reproducible. Report the deterministic part.
-                            return Err(self.lex_err("invalidUnicode", "invalid \\u{xxxx} sequence"));
+                            "invalid \\u{xxxx} sequence"
+                        } else {
+                            "invalid \\U{xxxxxxxx} sequence"
+                        };
+                        let mut err = self.lex_err("invalidUnicode", msg);
+                        // (one byte of the character is read: the position
+                        // is the character's, the read stops after its byte)
+                        if at < self.pos {
+                            err.offset = at;
+                            err.end = at + 1;
                         }
-                        return Err(self.lex_err("invalidUnicode", "invalid \\U{xxxxxxxx} sequence"));
+                        // the position after the rejected byte was read, as
+                        // xxgetc leaves it: a tab advances to the next
+                        // multiple of 8, a newline starts the next line at
+                        // column 0; past the end, the virtual newline
+                        // R: gram.y:xxgetc
+                        err.fixed_line_col = Some(if at < self.bytes.len() {
+                            self.source.r_line_col(at + 1)
+                        } else {
+                            (self.source.r_line_col(self.bytes.len()).0 + 1, 0)
+                        });
+                        return Err(err);
                     }
                     self.pos += 1;
                 }

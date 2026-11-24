@@ -35,6 +35,7 @@ and a scratch directory as working, home and temporary directory.
 """
 import argparse
 import concurrent.futures
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -49,6 +50,11 @@ import time
 import tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from scratch import keep as keep_dir, remove as remove_dir, scratch_dir  # noqa: E402
+import conf_slots  # noqa: E402
+import rt_trees  # noqa: E402
+
 HERE = os.path.join(ROOT, "scripts", "builtin-diff")
 GEN, DRIVER, RENDER = (os.path.join(HERE, f) for f in ("gen.R", "driver.R", "render.R"))
 ROWS = os.path.join(ROOT, "tests", "builtin-diff", "rows.toml")
@@ -203,6 +209,40 @@ class Unusable(Exception):
     pass
 
 
+# robigo-rt's boot, which the harness always sets (ROBIGO_RT_BOOT), so that
+# no list depends on a binary's default: "interim" is M1's loader
+# (ROBIGO_RT_BOOT=m1), "stage0" base from source, "rdb" base from base.rdb
+# (also the binary's default since L5's flip). The known
+# lists are made under DEFAULT_BOOT; the default-boot flip changed it to
+# "rdb" in the same commit as the lists it regenerated.
+BOOTS = ("interim", "stage0", "rdb")
+DEFAULT_BOOT = "rdb"
+
+
+def boot_env(boot):
+    """The environment that selects `boot` in robigo-rt."""
+    return {"ROBIGO_RT_BOOT": "m1" if boot == "interim" else boot}
+
+
+# The machine-wide slot pool every driver process takes a slot of (the
+# conformance runner's, ROBIGO_CONF_SLOTS_DIR; set by main, None: no pool)
+POOL = None
+
+
+def slot_pool(env=None):
+    """The pool this run shares, by rt-ci.py's rule (conf_slots.default_dir:
+    the caller's ROBIGO_CONF_SLOTS_DIR wins, empty means none, CI has none);
+    None without one. Exits on a pool that cannot be used."""
+    env = dict(os.environ if env is None else env)
+    d = conf_slots.default_dir(env)
+    if d is not None:
+        env["ROBIGO_CONF_SLOTS_DIR"] = d
+    try:
+        return conf_slots.from_env(env)
+    except conf_slots.PoolError as e:
+        sys.exit(f"builtin-diff: {e}")
+
+
 def one_run(cmd, e, cwd, out, start, ncases, timeout):
     """One driver process from case `start` on: the next case without a
     record, whether it was killed for a hang, its stderr and exit status.
@@ -214,19 +254,30 @@ def one_run(cmd, e, cwd, out, start, ncases, timeout):
     started = os.path.join(out, "started")
     if os.path.exists(started):
         os.remove(started)
-    err = tempfile.TemporaryFile()
-    sout = open(os.path.join(out, f"stdout.{start}"), "wb")
-    p = subprocess.Popen(cmd, env=e, cwd=cwd, stdout=sout, stderr=err, preexec_fn=cap)
-    nxt, since = start, time.monotonic()
-    timed_out = False
-    while p.poll() is None:
-        time.sleep(0.05)
-        while nxt <= ncases and have(nxt):
-            nxt, since = nxt + 1, time.monotonic()
-        if time.monotonic() - since > timeout:
-            p.kill()
-            p.wait()
-            timed_out = True
+    # the process holds a slot of the machine-wide pool (POOL) from before
+    # its start until it has ended, and its first case's clock starts once
+    # the slot is taken: the wait for one is no case's time. (The slot
+    # first: a take that fails has opened nothing.)
+    with (POOL.take(who=f"builtin-diff's driver from case {start}") if POOL else contextlib.nullcontext()):
+        err = tempfile.TemporaryFile()
+        sout = open(os.path.join(out, f"stdout.{start}"), "wb")
+        nxt, since = start, time.monotonic()
+        p = subprocess.Popen(cmd, env=e, cwd=cwd, stdout=sout, stderr=err, preexec_fn=cap)
+        timed_out = False
+        try:
+            while p.poll() is None:
+                time.sleep(0.05)
+                while nxt <= ncases and have(nxt):
+                    nxt, since = nxt + 1, time.monotonic()
+                if time.monotonic() - since > timeout:
+                    p.kill()
+                    p.wait()
+                    timed_out = True
+        finally:
+            # (an interrupt: the driver ends before its slot is given back)
+            if p.poll() is None:
+                p.kill()
+                p.wait()
     while nxt <= ncases and have(nxt):
         nxt += 1
     sout.close()
@@ -326,18 +377,47 @@ def run_isolated(cmd, env, batch, out, ncases, key, rsrc=None, timeout=CASE_TIME
     root = case_root(key)
     # the lock file stays: removing it would let a waiting run lock a file
     # that a third run no longer sees
-    with open(root + ".lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(root + ".lock", "a+") as lock:
+        lock_row(lock, root + ".lock")
         try:
             return run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout)
         finally:
             remove_tree(root)
 
 
+def lock_row(lock, path, first=5.0, every=60.0, step=0.2):
+    """Take `lock` (the open lock file at `path`) exclusive, waiting as long
+    as another run of the row holds it. While it waits it says so on stderr
+    after `first` seconds and then every `every`, naming the last recorded
+    holder: each holder writes its pid into the file once it has the lock,
+    so in a handoff the file can still name the previous one (or none)."""
+    waited, said = 0.0, None
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            pass
+        if waited >= first and (said is None or waited - said >= every):
+            lock.seek(0)
+            holder = lock.read().strip() or "none yet"
+            print(f"builtin-diff: waiting {waited:.0f} s for {path}, held by another run of this row "
+                  f"(last recorded holder: pid {holder})",
+                  file=sys.stderr, flush=True)
+            said = waited
+        time.sleep(step)
+        waited += step
+    lock.seek(0)
+    lock.truncate()
+    lock.write(str(os.getpid()))
+    lock.flush()
+
+
 def run_cases(cmd, env, batch, out, ncases, root, rsrc, timeout):
     """run_isolated's cases, in `root`, which its caller holds."""
     lost = {}
-    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL") if k in env}
+    base = {k: env[k] for k in (*ENV, "R_ENABLE_JIT", "A4_LABEL", "ROBIGO_TRANSLATION_CACHE", "ROBIGO_RT_CHECKOUT",
+                                "ROBIGO_RT_BOOT") if k in env}
     for i in range(1, ncases + 1):
         remove_tree(root)
         cwd, home, tmp = (os.path.join(root, x) for x in ("case", "home", "tmp"))
@@ -376,6 +456,84 @@ def split_stdout(path, out):
         if end > m.end():
             with open(os.path.join(out, f"{int(m.group(1)):06d}.out"), "wb") as f:
                 f.write(data[m.end():end])
+
+
+def seal_big(out):
+    """Replace each big value's sidecar the driver wrote (`<id>.big<k>.rds`,
+    its saveRDS version 2 bytes) by `<id>.big<k>.sha256`: a record keeps a
+    big value's summary, and the comparison its digest (driver.R,
+    A4_BIG_BYTES)."""
+    try:
+        names = [n for n in os.listdir(out) if re.fullmatch(r"\d{6}\.big\d+\.rds", n)]
+    except FileNotFoundError:
+        return
+    for n in names:
+        p = os.path.join(out, n)
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        with open(p[:-4] + ".sha256", "w") as f:
+            f.write(h.hexdigest() + "\n")
+        os.remove(p)
+    _INDEX.pop(out, None)
+
+
+def _big_index(d):
+    """A records directory's big values, indexed once per run (the records
+    are written, and sealed, before anything compares them): case stem ->
+    (the k's of its `.want` marks, {k: the `.sha256` file's path})."""
+    try:
+        return _INDEX[d]
+    except KeyError:
+        pass
+    idx = {}
+    try:
+        names = os.listdir(d)
+    except FileNotFoundError:
+        names = []
+    for n in names:
+        m = re.fullmatch(r"(\d{6})\.big(\d+)\.(want|sha256)", n)
+        if m:
+            want, dig = idx.setdefault(m.group(1), (set(), {}))
+            if m.group(3) == "want":
+                want.add(int(m.group(2)))
+            else:
+                dig[int(m.group(2))] = os.path.join(d, n)
+    _INDEX[d] = idx
+    return idx
+
+
+_INDEX = {}
+
+
+def big_digests(rds):
+    """A record's big values, by their k: (the k's the driver wrote a
+    summary for (`<id>.big<k>.want`), {k: the digest seal_big wrote})."""
+    d, base = os.path.split(rds)
+    want, paths = _big_index(d).get(base[:-4], (set(), {}))
+    dig = {}
+    for k, p in paths.items():
+        with open(p) as f:
+            dig[k] = f.read().strip()
+    return frozenset(want), dig
+
+
+def same_record(a, b):
+    """Two cases' records alike: their bytes, their big values' digests
+    (each summary the driver marked, `.want`, with its digest on both
+    sides: a missing one never passes), what they printed and the files
+    they made."""
+    with open(a, "rb") as f1, open(b, "rb") as f2:
+        ab = f1.read()
+        if ab != f2.read():
+            return False
+    (wa, da), (wb, db) = big_digests(a), big_digests(b)
+    # the same summaries on both sides, each with its digest there (one
+    # missing on either side, or both, never passes), and the same digests
+    if wa != wb or set(da) != wa or set(db) != wb:
+        return False
+    return da == db and printed(a) == printed(b) and made(a) == made(b)
 
 
 def made(rds):
@@ -437,7 +595,7 @@ def cmd_oracle(a):
     todo = [(r, j) for r in rows for j in r.jits if not have_oracle(a.data, r, a.seed, j)]
     if not todo:
         return 0
-    work = tempfile.mkdtemp(prefix="a4-oracle-")
+    work = scratch_dir("a4-oracle-")
     spec = os.path.join(work, "spec.R")
     gens = {}
     for r, j in todo:
@@ -458,7 +616,7 @@ def cmd_oracle(a):
         os.makedirs(d)
         for f in ("batch.rds", "cases.tsv"):
             shutil.copy(os.path.join(gen_out, r.name, f), d)
-        scratch = tempfile.mkdtemp(prefix="a4-scratch-")
+        scratch = scratch_dir("a4-scratch-")
         n = len(read_cases(d))
         env = {**os.environ, **ENV, "R_ENABLE_JIT": JIT[j], "A4_LABEL": "GNU R"}
         cmd = [*prefix, "Rscript", "--vanilla", DRIVER]
@@ -466,8 +624,11 @@ def cmd_oracle(a):
 
         def go(out):
             if r.isolated:
-                return run_isolated(cmd, env, batch, out, n, r.key(a.seed, j))
-            return run_batch(cmd, env, batch, out, n, scratch)
+                lost = run_isolated(cmd, env, batch, out, n, r.key(a.seed, j))
+            else:
+                lost = run_batch(cmd, env, batch, out, n, scratch)
+            seal_big(out)
+            return lost
         lost = go(os.path.join(d, "records"))
         # a second run: a case whose two records differ (GNU R reading memory
         # it should not, on an input its wrapper never passes; a clock or a
@@ -478,10 +639,9 @@ def cmd_oracle(a):
             if i in lost:
                 continue
             a_, b_ = (os.path.join(x, f"{i:06d}.rds") for x in (os.path.join(d, "records"), again))
-            if i in lost2 or not os.path.exists(b_) or open(a_, "rb").read() != open(b_, "rb").read() \
-                    or printed(a_) != printed(b_) or made(a_) != made(b_):
+            if i in lost2 or not os.path.exists(b_) or not same_record(a_, b_):
                 lost[i] = "unstable"
-        shutil.rmtree(scratch, ignore_errors=True)
+        remove_dir(scratch)
         with open(os.path.join(d, "done"), "w") as f:
             json.dump({"lost": lost}, f)
         return r.variant(j), n, len(lost)
@@ -489,7 +649,7 @@ def cmd_oracle(a):
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         for v, n, nl in ex.map(one, todo):
             print(f"oracle: {v}: {n} cases, {nl} lost", flush=True)
-    shutil.rmtree(work, ignore_errors=True)
+    remove_dir(work)
     return 0
 
 
@@ -506,6 +666,7 @@ def ensure_oracle(a, rows):
     cmd = ["docker", "run", "--rm", "--network", "none", "--memory", f"{a.jobs * 2 + 1}g",
            "--security-opt", "seccomp=unconfined", "-u", f"{os.getuid()}:{os.getgid()}",
            "-v", f"{ROOT}:{ROOT}:ro", "-v", f"{src}:{src}:ro", "-v", f"{a.data}:{a.data}", "-e", "HOME=/tmp",
+           "-e", "ROBIGO_CONF_SLOTS_DIR=",
            "-e", f"ROBIGO_BUILTIN_DIFF_ORACLE={IMAGE}",
            IMAGE, "python3", os.path.join(ROOT, "scripts", "builtin-diff.py"), "oracle",
            "--data", a.data, "--seed", str(a.seed), "--jobs", str(a.jobs), "--r-src", src, *missing]
@@ -525,11 +686,23 @@ def classify(o, r, lost_o, lost_r, i):
     if i in lost_r or not os.path.exists(r):
         return lost_r.get(i, "crash")
     rb = open(r, "rb").read()
-    if ob == rb and printed(o) == printed(r) and made(o) == made(r):
+    if same_record(o, r):
         return "pass"
     if NOT_YET in rb:
         return "not-implemented"
     return "mismatch"
+
+
+def rt_env(a, **extra):
+    """The environment of every robigo-rt run here, the compared runs and
+    --timing's start alike, with `extra` over it: the caller's without
+    R_HOME, and the translation cache off for every binary, the plain and
+    the planted one alike (they start the same way whichever wrote the
+    tree's .rtc; the diff is about builtins, not starts), and the boot named
+    (boot_env)."""
+    env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
+    env.update(ENV, A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, ROBIGO_TRANSLATION_CACHE="0", **boot_env(a.boot), **extra)
+    return env
 
 
 def run_rt(a, row, jit, rt_bin, prefix):
@@ -537,10 +710,9 @@ def run_rt(a, row, jit, rt_bin, prefix):
     cases = read_cases(d)
     with open(os.path.join(d, "done")) as f:
         lost_o = {int(k): v for k, v in json.load(f)["lost"].items()}
-    scratch = tempfile.mkdtemp(prefix="a4-rt-")
+    scratch = scratch_dir("a4-rt-")
     out = os.path.join(scratch, "records")
-    env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-    env.update(ENV, R_ENABLE_JIT=JIT[jit], A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc)
+    env = rt_env(a, R_ENABLE_JIT=JIT[jit])
     work = os.path.join(scratch, "cwd")
     os.makedirs(work)
     t0 = time.monotonic()
@@ -550,6 +722,7 @@ def run_rt(a, row, jit, rt_bin, prefix):
     else:
         lost_r = run_batch([*prefix, rt_bin, "--vanilla", DRIVER], env, os.path.join(d, "batch.rds"), out,
                            len(cases), work)
+    seal_big(out)
     timed("robigo-rt: the driver over the batch", t0)
     t0 = time.monotonic()
     res = {}
@@ -573,13 +746,24 @@ def rscript():
 
 
 def diff_fields(pairs):
-    """render(), with "stdout" for the pairs whose records are equal (what
-    differs is what the case printed)."""
+    """render(), with "digest" for the pairs whose records are equal but a
+    big value's digest is not (their summaries agree: what differs is past
+    the first and last elements), else "stdout" (what the case printed),
+    else "files"."""
     out = render(pairs)
     for i, o, x in pairs:
         with open(o, "rb") as f1, open(x, "rb") as f2:
             if f1.read() == f2.read():
-                if printed(o) != printed(x):
+                bo, bx = big_digests(o), big_digests(x)
+                # (a mark without its digest, or a digest without its mark,
+                # on either side: what same_record refused)
+                gaps = [f"missing {sorted(w - set(d))}, unexpected {sorted(set(d) - w)}" for w, d in (bo, bx)]
+                if bo != bx or any(w != set(d) for w, d in (bo, bx)):
+                    # (each digest's first 12 hex digits: enough to tell
+                    # them apart in a report line)
+                    short = lambda d: {k: v[:12] for k, v in sorted(d.items())}
+                    out[i] = ("digest", f"{short(bo[1])} ({gaps[0]})"[:150], f"{short(bx[1])} ({gaps[1]})"[:150])
+                elif printed(o) != printed(x):
                     out[i] = ("stdout", repr(printed(o)[:150]), repr(printed(x)[:150]))
                 else:
                     out[i] = ("files", json.dumps(made(o))[:150], json.dumps(made(x))[:150])
@@ -700,6 +884,9 @@ def report(r, known, show):
 
 
 def cmd_run(a):
+    if a.boot != DEFAULT_BOOT and (a.regen_known or a.update):
+        sys.exit(f"builtin-diff: the known lists are {DEFAULT_BOOT}'s (DEFAULT_BOOT): --boot {a.boot} cannot "
+                 "rewrite them (the default-boot flip changes DEFAULT_BOOT in the commit that regenerates them)")
     doc, _ = load_rows()
     nc, reg = names_c(r_source()), registry()
     names = a.only or sorted(doc)
@@ -711,6 +898,7 @@ def cmd_run(a):
     ensure_oracle(a, rows)
     timed("GNU R's side (cache misses only)", t0)
     rt_bin = a.robigo_rt or default_rt()
+    rt_trees.ensure(rt_bin)    # (its database tree, for the rdb boot)
     a.rsrc = r_source()
     prefix = ["unshare", "-rn"] if unshare_works() else []
     jobs = [(r, j) for r in rows for j in r.jits]
@@ -719,9 +907,8 @@ def cmd_run(a):
         t0 = time.monotonic()
         d = oracle_dir(a.data, rows[0], a.seed, rows[0].jits[0])
         with tempfile.TemporaryDirectory() as tmp:
-            env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
-            env.update(ENV, R_ENABLE_JIT="0", A4_LABEL="robigo-rt", ROBIGO_RSRC=a.rsrc, A4_BATCH=os.path.join(d, "batch.rds"),
-                       A4_OUT=tmp, A4_FROM="999999", HOME=tmp, TMPDIR=tmp)
+            env = rt_env(a, R_ENABLE_JIT="0", A4_BATCH=os.path.join(d, "batch.rds"), A4_OUT=tmp, A4_FROM="999999",
+                         HOME=tmp, TMPDIR=tmp)
             subprocess.run([rt_bin, "--vanilla", DRIVER], env=env, cwd=tmp, preexec_fn=cap)
         print(f"timing: robigo-rt's start with {rows[0].name}'s batch: {time.monotonic() - t0:.2f} s")
     t_all = time.monotonic()
@@ -729,26 +916,34 @@ def cmd_run(a):
     try:
         with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
             results = list(ex.map(lambda rj: run_rt(a, rj[0], rj[1], rt_bin, prefix), jobs))
-    except Unusable as e:
+    except (Unusable, conf_slots.PoolError) as e:
+        # (a pool that stops working mid-run ends it as cleanly as one that
+        # cannot be used at the start)
         print(f"builtin-diff: {e}", file=sys.stderr)
         return 3
     for r in results:
         variant = r["row"].variant(r["jit"])
         key = r["row"].key(a.seed, r["jit"])
-        known = read_known(variant, key) if a.seed == 0 and not a.regen_known else None
+        # (the known lists are DEFAULT_BOOT's: under another boot every
+        # failure is reported, none is known, and no list is written)
+        lists = a.seed == 0 and a.boot == DEFAULT_BOOT
+        known = read_known(variant, key) if lists and not a.regen_known else None
         new, fails = report(r, known, a.show)
         rel = os.path.relpath(known_path(variant), ROOT)
-        if a.seed == 0 and (a.regen_known or (a.update and known is None)):
+        if lists and (a.regen_known or (a.update and known is None)):
             # a new row starts with the failures it has (or a builtin-diff: PR rewrites them)
             write_known(variant, key, r, fails)
             print(f"  wrote {rel} ({len(fails)} failures)")
+            if a.keep:
+                keep_dir(r["scratch"])
+                print(f"  robigo-rt's records: {r['rt']}")
             continue
         if a.update and known is not None and known - set(fails):
             # the ratchet only shrinks: fixed cases leave, new ones never enter
             write_known(variant, key, r, known & set(fails))
             print(f"  {rel}: {len(known - set(fails))} fixed, removed")
-        if a.seed != 0:
-            new = fails     # no known list applies to another seed
+        if a.seed != 0 or not lists:
+            new = fails     # no known list applies to another seed, or another boot
         elif known is None:
             print(f"  no {rel}: a new row's list is written by --update")
             new = fails
@@ -757,8 +952,9 @@ def cmd_run(a):
         if getattr(a, "reuse", None) is not None and r["row"].name in PLANT_ROWS and r["jit"] == "off":
             a.reuse[r["row"].name] = r    # the plant check's runs on this binary (ci)
         elif not a.keep:
-            shutil.rmtree(r["scratch"], ignore_errors=True)
+            remove_dir(r["scratch"])
         else:
+            keep_dir(r["scratch"])
             print(f"  robigo-rt's records: {r['rt']}")
     if a.timing:
         n = sum(len(r["cases"]) for r in results)
@@ -774,8 +970,23 @@ def cmd_run(a):
     return status
 
 
+def cargo_target():
+    """cargo's target directory for this checkout, as rt-ci.py resolves it
+    (CARGO_TARGET_DIR, the configs' build.target-dir, else ROOT/target): the
+    tree rt-ci wrote and the binary here must be the same build's."""
+    try:
+        p = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"],
+                           cwd=ROOT, stdout=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        sys.exit("builtin-diff: no cargo on PATH: cannot find the target directory "
+                 "(put cargo on PATH, or name the binary: --robigo-rt BIN)")
+    if p.returncode != 0:
+        sys.exit("builtin-diff: cargo metadata failed: cannot find the target directory")
+    return json.loads(p.stdout)["target_directory"]
+
+
 def default_rt():
-    p = os.path.join(os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target")), "release", "robigo-rt")
+    p = os.path.join(cargo_target(), "release", "robigo-rt")
     if not os.path.exists(p):
         sys.exit(f"builtin-diff: no robigo-rt at {p} (cargo build --release -p robigo-rtapi --bin robigo-rt, "
                  "or --robigo-rt BIN)")
@@ -789,6 +1000,7 @@ def cmd_show(a):
     jit = "on" if a.jit else "off"
     ensure_oracle(a, [row])
     rt_bin = a.robigo_rt or default_rt()
+    rt_trees.ensure(rt_bin)
     a.rsrc = r_source()
     r = run_rt(a, row, jit, rt_bin, ["unshare", "-rn"] if unshare_works() else [])
     kind, call = {i: (k, c) for i, k, c in r["cases"]}[a.id]
@@ -797,7 +1009,7 @@ def cmd_show(a):
     rs = rscript()
     if rs:
         subprocess.run([*rs, RENDER, "--full", o, x])
-    shutil.rmtree(r["scratch"], ignore_errors=True)
+    remove_dir(r["scratch"])
     return 0
 
 
@@ -829,6 +1041,9 @@ def cmd_plant(a):
     ensure_oracle(a, rows)
     prefix = ["unshare", "-rn"] if unshare_works() else []
     base_rt = a.robigo_rt or default_rt()
+    # (the plain binary's tree, which the planted one boots too: the cases
+    # name no boot, so rdb, the default; ci's run made it already)
+    rt_trees.ensure(base_rt)
     a.rsrc = r_source()
     ok = True
     try:
@@ -859,8 +1074,10 @@ def cmd_plant(a):
             print(f"{'ok  ' if good else 'FAIL'} {row.name}: {msg}")
             ok &= good
             for r in (base, plant):
-                shutil.rmtree(r["scratch"], ignore_errors=True)
-    except Unusable as e:
+                remove_dir(r["scratch"])
+    except (Unusable, conf_slots.PoolError) as e:
+        # (a pool that stops working mid-run ends it as cleanly as one that
+        # cannot be used at the start)
         print(f"builtin-diff: {e}", file=sys.stderr)
         return 3
     return 0 if ok else 1
@@ -914,7 +1131,7 @@ PLANT_FEATURE = "robigo-rtbuiltins/diff-plant"
 def cmd_ci(a):
     """rt-ci.py's step: every row against the release binary the steps before
     built, then the plant check with a build of robigo-rt with the plants."""
-    target = os.environ.get("CARGO_TARGET_DIR", os.path.join(ROOT, "target"))
+    target = cargo_target()
     work = os.path.join(ROOT, ".robigo", "builtin-diff")
     os.makedirs(work, exist_ok=True)
     rel = os.path.join(target, "release", "robigo-rt")
@@ -946,6 +1163,8 @@ def main(argv):
         p.add_argument("--jobs", type=int, default=4)
         p.add_argument("--robigo-rt", help="the robigo-rt binary (default: the release build)")
         p.add_argument("--no-docker", action="store_true", help="fail instead of making GNU R's side")
+        p.add_argument("--boot", choices=BOOTS, default=DEFAULT_BOOT,
+                       help=f"robigo-rt's boot, set explicitly for every case (default {DEFAULT_BOOT})")
     p = sub.add_parser("run")
     common(p)
     p.add_argument("--only", action="append", help="this builtin's row (repeatable)")
@@ -975,6 +1194,11 @@ def main(argv):
     a = ap.parse_args(argv)
     if hasattr(a, "data"):
         a.data = os.path.abspath(a.data)
+    # (`oracle` runs GNU R's side in its container, unpooled: the
+    # container's own /tmp would be a pool of its own)
+    if a.cmd not in ("check-rows", "key", "oracle"):
+        global POOL
+        POOL = slot_pool()
     return {"run": cmd_run, "show": cmd_show, "plant": cmd_plant, "check-rows": cmd_check_rows,
             "oracle": cmd_oracle, "key": cmd_key, "ci": cmd_ci}[a.cmd](a)
 

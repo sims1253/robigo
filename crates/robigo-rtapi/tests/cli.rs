@@ -9,7 +9,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// The input files, by name.
 fn inputs() -> Vec<(&'static str, Vec<u8>)> {
@@ -34,11 +37,25 @@ fn inputs() -> Vec<(&'static str, Vec<u8>)> {
         ("optna.R", b"options(echo = NA)\n3\n".to_vec()),
         ("last.R", b".Last <- function() cat(\"bye\\n\")\n1\n".to_vec()),
         ("stdin.R", b"1 + 1\n".to_vec()),
+        // --interactive against -f and -e, in either order
+        ("fi-file.R", b"cat(\"file\", interactive(), \"\\n\")\nstop(\"boom\")\ncat(\"after file\\n\")\n".to_vec()),
+        ("fi-stdin.R", b"cat(\"stdin\", interactive(), \"\\n\")\nstop(\"boom2\")\ncat(\"after stdin\\n\")\n".to_vec()),
+        // the interactive console (`R --no-readline --interactive`): the
+        // prompts, no echo, an error that does not end the session, warnings
+        // interactive: the line taken up to its first NUL (Rf_ReplIteration)
+        ("interactive-nul.R", b"1;\x00junk\n2\n".to_vec()),
+        // interactive: the error's traceback saved (jump_to_top_ex, R_Interactive)
+        ("interactive-tb.R", b"options(keep.source = FALSE)\nf <- function() stop(\"boom\")\nf()\ntraceback()\n".to_vec()),
+        ("interactive.R", b"1 + 1\ninteractive()\nx <- 2; x * 3\nstop(\"boom\")\nx\nf <- function(a) {\n  a + 1\n}\nf(1)\nwarning(\"careful\")\nlog(-1)\n\"after\"\n".to_vec()),
     ]
 }
 
 /// What GNU R 4.6.2 does: (name, arguments, stdin, stdout, stderr, status).
 type Case = (&'static str, Vec<&'static str>, Option<&'static str>, Vec<u8>, &'static [u8], i32);
+
+/// `PrintGreeting` as GNU R 4.6.2 prints it on x86_64 Linux (setup_Rmainloop,
+/// R without `--quiet`), recorded in the oracle image.
+const GREETING: &[u8] = b"\nR version 4.6.2 (2026-10-29) -- \"Diversified Portfolio\"\nCopyright (C) 2026 The R Foundation for Statistical Computing\nPlatform: x86_64-pc-linux-gnu\n\nR is free software and comes with ABSOLUTELY NO WARRANTY.\nYou are welcome to redistribute it under certain conditions.\nType 'license()' or 'licence()' for distribution details.\n\nR is a collaborative project with many contributors.\nType 'contributors()' for more information and\n'citation()' on how to cite R or R packages in publications.\n\nType 'demo()' for some demos, 'help()' for on-line help, or\n'help.start()' for an HTML browser interface to help.\nType 'q()' to quit R.\n\n";
 
 fn cases(long_src: &[u8]) -> Vec<Case> {
     const ECHO: &[u8] = b"> x <- 1; y <- 2\n> x +\n+   y\n[1] 3\n> # a comment\n> \n> f <- function() {\n+   1\n+ }\n> f()\n[1] 1\n> print(\"a\"); 3\n[1] \"a\"\n[1] 3\n> \n";
@@ -46,7 +63,7 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
     // the first 4095 bytes, then the rest of the line after a continuation prompt
     let first = long_src.iter().position(|&b| b == b'\n').unwrap() + 1;
     let long = [b"> ", &long_src[..4095], b"+ ", &long_src[4095..first], b"> length(x)\n[1] 2100\n> \n"].concat();
-    vec![
+    let mut v: Vec<Case> = vec![
         ("echo", q("echo.R"), None, ECHO.to_vec(), b"", 0),
         ("nonl", q("nonl.R"), None, b"> cat(\"no newline\")\nno newline> \n".to_vec(), b"", 0),
         ("crlf", q("crlf.R"), None, b"> x <- 1\n> x\n[1] 1\n> \n".to_vec(), b"", 0),
@@ -76,6 +93,66 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             0,
         ),
         ("file-eq", vec!["--vanilla", "--quiet", "--file=echo.R"], None, ECHO.to_vec(), b"", 0),
+        (
+            "interactive-nul",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive-nul.R"),
+            b"> [1] 1\n> [1] 2\n> \n".to_vec(),
+            b"",
+            0,
+        ),
+        (
+            "interactive-tb",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive-tb.R"),
+            b"> > > > 2: stop(\"boom\")\n1: f()\n> \n".to_vec(),
+            b"Error in f() : boom\n",
+            0,
+        ),
+        (
+            "interactive",
+            vec!["--no-readline", "--interactive", "--no-save", "--quiet"],
+            Some("interactive.R"),
+            b"> [1] 2\n> [1] TRUE\n> [1] 6\n> > [1] 2\n> + + > [1] 2\n> > [1] NaN\n> [1] \"after\"\n> \n".to_vec(),
+            b"Error: boom\nWarning message:\ncareful \nWarning message:\nIn log(-1) : NaNs produced\n",
+            0,
+        ),
+        // --interactive ends the unix front end's own options: a -f or -e
+        // after it is not seen, and R reads stdin interactively; one before
+        // it makes R not interactive (system.c: R_Interactive && ...).
+        // R_common_command_line's options count wherever they stand.
+        (
+            "interactive-then-f",
+            vec!["--no-save", "--no-readline", "--quiet", "--interactive", "-f", "fi-file.R"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
+        (
+            "f-then-interactive",
+            vec!["--no-save", "--no-readline", "--quiet", "-f", "fi-file.R", "--interactive"],
+            Some("fi-stdin.R"),
+            b"> cat(\"file\", interactive(), \"\\n\")\nfile FALSE \n> stop(\"boom\")\n".to_vec(),
+            b"Error: boom\nExecution halted\n",
+            1,
+        ),
+        (
+            "interactive-then-e",
+            vec!["--no-save", "--no-readline", "--quiet", "--interactive", "-e", "1"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
+        (
+            "interactive-then-quiet",
+            vec!["--no-save", "--no-readline", "--interactive", "--quiet"],
+            Some("fi-stdin.R"),
+            b"> stdin TRUE \n> > after stdin\n> \n".to_vec(),
+            b"Error: boom2\n",
+            0,
+        ),
         (
             "file-stdin",
             vec!["--vanilla", "--quiet", "--file=-"],
@@ -158,7 +235,32 @@ fn cases(long_src: &[u8]) -> Vec<Case> {
             b"",
             2,
         ),
-    ]
+    ];
+    // R without --quiet: the greeting first (the -f file's, and stdin's),
+    // recorded on x86_64 Linux with glibc (version.rs's platform(), and the
+    // recorded Platform line)
+    if cfg!(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")) {
+        let greet: [Case; 2] = [
+            (
+                "greeting-f",
+                vec!["--vanilla", "--no-save", "-f", "stdin.R"],
+                None,
+                [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
+                b"",
+                0,
+            ),
+            (
+                "greeting-stdin",
+                vec!["--vanilla", "--no-save"],
+                Some("stdin.R"),
+                [GREETING, b"> 1 + 1\n[1] 2\n> \n"].concat(),
+                b"",
+                0,
+            ),
+        ];
+        v.extend(greet);
+    }
+    v
 }
 
 /// `robigo-rt ARGS` in `dir`: (stdout, stderr, status). The child inherits
@@ -172,13 +274,12 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32
 
 /// [`run`] with `env` set on top of its environment.
 fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.args(args).current_dir(dir).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
     // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
@@ -239,8 +340,6 @@ fn the_command_line_and_transcript_are_gnu_rs() {
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
-/// R's start-up greeting (`PrintGreeting`, R without `--quiet`) is not
-/// ported: robigo-rt says so rather than printing another.
 /// A locale the C library does not have: setup_Rmainloop's deferred
 /// warnings, one per category, "During startup - " (GNU R 4.6.2's, on the
 /// oracle), and the C locale; quiet when neither LANG nor LC_ALL is set.
@@ -277,25 +376,11 @@ fn a_c_locale_refuses_non_ascii_outside_strings_whatever_n() {
     }
 }
 
-#[test]
-fn the_greeting_is_refused() {
-    let dir: PathBuf = std::env::temp_dir().join(format!("robigo-rt-cli-greeting-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("one.R"), b"1\n").unwrap();
-    let (out, err, status) = run(&dir, &["--vanilla", "--no-save", "-f", "one.R"], None);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!((out, status), (Vec::new(), 2));
-    assert_eq!(
-        String::from_utf8_lossy(&err),
-        "robigo-rt: R's start-up greeting (R without --quiet) is not implemented yet\n"
-    );
-}
-
 /// Without a save action, R on stdin stops at once: it does not wait for
 /// the input to end (a pipe left open).
 #[test]
 fn the_save_check_does_not_wait_for_stdin() {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.arg("--quiet").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("run robigo-rt");
     // (stdin stays open until the child has exited)
@@ -320,19 +405,75 @@ fn the_save_check_does_not_wait_for_stdin() {
     );
 }
 
-/// `options(keep.source = TRUE)` would have the console keep source
-/// references (gram.c's R_Parse1Buffer), which robigo-rt cannot yet: it is
-/// refused, where GNU R accepts it (so no oracle case). `R_KEEP_PKG_SOURCE=yes`
-/// starts `keep.source.pkgs` TRUE, as options.c's InitOptions does
-/// (`keep.source` is Common.R's `interactive()`).
+/// Interactive R's default save action asks at the end ("Save workspace
+/// image? [y/n/c]: "), which is the session's clean-up and not ported yet:
+/// without --no-save (or --vanilla) robigo-rt says so and starts nothing.
 #[test]
-fn keep_source_true_is_refused_and_keep_pkg_source_read() {
-    let expr = "cat(tryCatch(options(keep.source = TRUE), error = conditionMessage), getOption('keep.source'), '\\n')";
-    let (out, err, status) = run(&std::env::temp_dir(), &["--vanilla", "-e", expr], None);
+fn interactive_r_without_a_save_action_is_refused() {
+    let (out, err, status) = run(&std::env::temp_dir(), &["--interactive", "--quiet"], None);
+    assert_eq!((out, status), (Vec::new(), 2));
     assert_eq!(
-        String::from_utf8_lossy(&out),
-        "robigo: options(keep.source = TRUE) (source references) is not implemented yet FALSE \n"
+        String::from_utf8_lossy(&err),
+        "robigo-rt: interactive R without --no-save or --vanilla (the 'Save workspace image?' question) is not implemented yet\n"
     );
+}
+
+/// The console reads stdin as the session goes, a line at a time as
+/// `fgets` does: a statement's value shows while the pipe is still open
+/// (an R that read all of stdin first would wait for its end), in the
+/// interactive console and in R reading stdin as a script alike.
+#[test]
+fn the_console_answers_before_stdin_ends() {
+    use std::io::{Read, Write};
+    for args in [&["--vanilla", "--quiet"][..], &["--no-readline", "--interactive", "--vanilla", "--quiet"][..]] {
+        let mut cmd = db_tree::rt_command();
+        cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = cmd.spawn().expect("run robigo-rt");
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"1 + 1\n").unwrap();
+        stdin.flush().unwrap();
+        // read stdout until the value shows, with the pipe still open
+        let mut stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut got = Vec::new();
+            let mut b = [0u8; 256];
+            while let Ok(n) = stdout.read(&mut b) {
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&b[..n]);
+                if got.windows(6).any(|w| w == b"[1] 2\n") {
+                    let _ = tx.send(got);
+                    return;
+                }
+            }
+            // (the sender dropped here ends the wait at once: no value)
+        });
+        let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+        drop(stdin);
+        if got.is_err() {
+            // (a console that never answered may never end either)
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+        assert!(got.is_ok(), "{args:?}: no value before stdin ended");
+    }
+}
+
+/// `options(keep.source = TRUE)` is accepted (options.c: a logical of
+/// length one, else "invalid value for 'keep.source'"), and the console
+/// keeps source references from the next statement on (R_Parse1Buffer).
+/// `R_KEEP_PKG_SOURCE=yes` starts `keep.source.pkgs` TRUE, as options.c's
+/// InitOptions does (`keep.source` is Common.R's `interactive()`), and
+/// sys.source then keeps them (loadNamespace's path).
+#[test]
+fn keep_source_true_is_accepted_and_keep_pkg_source_read() {
+    let expr = "options(keep.source = TRUE); f <- function(x)  x # k\nf; cat(getOption('keep.source'), '\n')";
+    let (out, err, status) = run(&std::env::temp_dir(), &["--vanilla", "-e", expr], None);
+    // (the srcref ends at the body: the comment after it is not the
+    // function's; GNU R 4.6.2's output)
+    assert_eq!(String::from_utf8_lossy(&out), "function(x)  x\nTRUE \n");
     assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
     let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\\n')";
     for (v, want) in [("yes", "FALSE TRUE \n"), ("no", "FALSE FALSE \n"), ("YES", "FALSE FALSE \n")] {
@@ -340,19 +481,20 @@ fn keep_source_true_is_refused_and_keep_pkg_source_read() {
             run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);
         assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (want, 0), "R_KEEP_PKG_SOURCE={v}");
     }
-    // so sys.source (loadNamespace's) refuses where it sets the option, by
-    // design: the refusal at the point of use
+    // sys.source(keep.source = getOption("keep.source.pkgs")): the
+    // function it defines keeps its source
     let dir = std::env::temp_dir();
     let f = dir.join(format!("robigo-rt-cli-keep-pkg-source-{}.R", std::process::id()));
-    std::fs::write(&f, "x <- 1\n").unwrap();
-    let expr =
-        format!("cat(tryCatch(sys.source('{}', envir = new.env()), error = conditionMessage), '\\n')", f.display());
+    std::fs::write(&f, "g <- function(y)   y  # kept\n").unwrap();
+    let expr = format!(
+        "e <- new.env(); sys.source('{}', envir = e, keep.source = getOption('keep.source.pkgs')); e$g",
+        f.display()
+    );
     let (out, _, status) = run_env(&dir, &["--vanilla", "-e", &expr], None, &[("R_KEEP_PKG_SOURCE", "yes")]);
     let _ = std::fs::remove_file(&f);
-    assert_eq!(
-        (String::from_utf8_lossy(&out).as_ref(), status),
-        ("robigo: options(keep.source = TRUE) (source references) is not implemented yet \n", 0)
-    );
+    // (then its environment's line, an address)
+    let out = String::from_utf8_lossy(&out);
+    assert!(out.starts_with("function(y)   y\n<environment: 0x") && status == 0, "{out:?} {status}");
 }
 
 /// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error
@@ -364,4 +506,39 @@ fn an_empty_r_translations_is_fatal() {
     assert_eq!(String::from_utf8_lossy(&out), "Fatal error: allocation failure in BindDomain\n");
     assert_eq!(String::from_utf8_lossy(&err), "");
     assert_eq!(status, 2);
+}
+
+/// R_CleanTempDir at every orderly end (repl.rs `clean_up_tail`): with
+/// `TMPDIR` a fresh directory, nothing is left in it after the end of `-e`,
+/// `quit()`, an error at the top level (the halt) or BindDomain's suicide;
+/// and an exit finalizer, which runs first, still sees the directory. (A
+/// panic or an abort removes nothing, as in GNU R.)
+#[test]
+fn the_session_temp_dir_is_removed_at_every_orderly_end() {
+    let fin = "e <- new.env(); reg.finalizer(e, function(e) cat('fin', dir.exists(tempdir()), '\\n'), onexit = TRUE)";
+    let cases: [(&str, &[&str], &[(&str, &str)]); 5] = [
+        ("the end", &["--vanilla", "-e", "cat(dir.exists(tempdir()), '\\n')"], &[]),
+        ("quit()", &["--vanilla", "-e", "invisible(tempdir()); quit('no', 3)"], &[]),
+        ("an error", &["--vanilla", "-e", "invisible(tempdir()); stop('x')"], &[]),
+        ("BindDomain's suicide", &["--vanilla", "-e", "1"], &[("R_TRANSLATIONS", "")]),
+        ("an exit finalizer", &["--vanilla", "-e", fin], &[]),
+    ];
+    for (k, (what, args, env)) in cases.iter().enumerate() {
+        let tmp = std::env::temp_dir().join(format!("robigo-tmpdir-test-{}-{k}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let t = tmp.to_str().unwrap().to_owned();
+        let mut env: Vec<(&str, &str)> = env.to_vec();
+        env.push(("TMPDIR", &t));
+        let (out, err, status) = run_env(&std::env::temp_dir(), args, None, &env);
+        let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().map(|e| e.file_name()).collect();
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (out, err) = (String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+        assert!(left.is_empty(), "{what}: {left:?} left in TMPDIR (status {status}; stdout {out:?}; stderr {err:?})");
+        if *what == "an exit finalizer" {
+            assert!(out.contains("fin TRUE"), "{what}: the finalizer did not see the directory: {out:?} {err:?}");
+        }
+        if *what == "the end" {
+            assert!(out.contains("TRUE"), "{what}: no session directory: {out:?} {err:?}");
+        }
+    }
 }

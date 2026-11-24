@@ -473,8 +473,14 @@ pub fn topenv<'g>(cx: &'g Cx, target: Option<Ref<'g>>, envir: Ref<'g>) -> Ref<'g
     cx.global_env()
 }
 
-/// How many shapes [`passed_by_shape`] remembers.
+/// How many shapes [`passed_by_shape`] remembers. The list stops adding when
+/// full (releasing a global takes `&mut Cx`, which `topenv` has not): the
+/// first long shapes a session meets, its boot's first, stay, and a long
+/// shape met later is searched for and read at every call.
 const TOPENV_SHAPES: usize = 16;
+
+/// The longest shape [`passed_by_shape`] reads rather than remembers.
+const TOPENV_SHORT_SHAPE: usize = 8;
 
 /// Whether `topenv` passes over `env` for its shape: a slot frame with no
 /// overflow block and no attributes, whose shape has neither
@@ -487,12 +493,18 @@ fn passed_by_shape(cx: &Cx, env: Ref<'_>) -> bool {
     if overflow || env.attrib().is_some_and(|a| a.sexptype() != NILSXP) {
         return false;
     }
+    let sy = syms(cx);
+    let lacks = |shape| shape_lacks(shape, |x| x == sy.package_name || x == sy.namespace);
+    // (a short shape is read at once: fewer words than a search of the
+    // remembered ones, which a boot may have filled with its own)
+    if shape.as_vector::<Ref<'_>>().is_some_and(|v| v.len() <= TOPENV_SHORT_SHAPE) {
+        return lacks(shape);
+    }
     let st = &prims::state(cx).cond;
     if st.topenv_shapes.borrow().iter().any(|g| g.bind(cx).sexp() == shape.sexp()) {
         return true;
     }
-    let sy = syms(cx);
-    if !shape_lacks(shape, |x| x == sy.package_name || x == sy.namespace) {
+    if !lacks(shape) {
         return false;
     }
     let mut l = st.topenv_shapes.borrow_mut();
@@ -1005,13 +1017,34 @@ fn memo_put(cx: &mut Cx, method: Root<'_>, top: Root<'_>, def: Root<'_>, rec: Re
 
 /// `do_usemethod(call, op, args, env)`: `UseMethod(generic, object)`.
 // R: objects.c:do_usemethod
-pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _out: Out<'_>) -> RResult<()> {
+pub fn do_usemethod(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    env: Root<'_>,
+    _out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: the call over it, run again. Kept inline
+    // here, not specials::rerun_apart: the out-of-line call shifts this
+    // function's register allocation, +6 instructions on every S3 dispatch;
+    // the recursion must pass None)
+    if args.is_some() {
+        return cx.scope(|cx, s| {
+            let ac = match crate::specials::arg_call(cx, s, call, args)? {
+                Some(a) => a,
+                None => call,
+            };
+            do_usemethod(cx, ac, _op, None, env, _out)
+        });
+    }
     cx.scope(|cx, s| {
         let arg_list = match usemethod_positional(cx, s, call) {
             Some(a) => a,
             None => {
                 let sy = syms(cx);
-                crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?
+                let v = crate::args::match_builtin_args(cx, s, call, &[sy.f_generic, sy.f_object])?;
+                [v[0], v[1]]
             }
         };
         let missing = cx.missing_arg().sexp();
@@ -1026,8 +1059,9 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         let g = generic.bind(cx);
         let gname = match g.as_vector::<Char<'_>>().filter(|v| g.sexptype() == STRSXP && v.len() == 1) {
             // translateChar(STRING_ELT(generic, 0)): an ASCII name is its own
-            Some(v) if v.get(0).is_ascii() => v.get(0).bytes().to_vec(),
-            Some(_) => class_elt_slow(cx, generic, 0)?,
+            // (on the stack: GNU R reads the CHARSXP in place)
+            Some(v) if v.get(0).is_ascii() => robigo_rtcore::NameBuf::new(v.get(0).bytes()),
+            Some(_) => robigo_rtcore::NameBuf::from(class_elt_slow(cx, generic, 0)?),
             None => return Err(cx.error_call(Some(call), "'generic' argument must be a character string")),
         };
         // the environments dispatch needs: callenv where the generic was
@@ -1049,7 +1083,7 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         }
         let ans = s.out(cx).root();
         let o = ans.reset(cx);
-        if cx.with_pp_excess(3, |cx| usemethod(cx, &gname, obj, call, env, callenv, defenv, cptr, None, o))? {
+        if cx.with_pp_excess(3, |cx| usemethod(cx, &gname[..], obj, call, env, callenv, defenv, cptr, None, o))? {
             return Err(cx.find_context(ctxt::RETURN, env, Some(ans)));
         }
         // no method found
@@ -1057,7 +1091,7 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
         let o = klass.reset(cx);
         data_class2(cx, obj, o)?;
         let nclass = klass.bind(cx).len().unwrap_or(0);
-        let gs = String::from_utf8_lossy(&gname).into_owned();
+        let gs = String::from_utf8_lossy(&gname[..]).into_owned();
         if nclass == 0 {
             let m = format!("illegal class of length 0 when using method for '{gs}'");
             return Err(cx.error_call(Some(call), &m));
@@ -1073,24 +1107,25 @@ pub fn do_usemethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, _
 /// `generic` and `object` by position, with nothing to warn of. None for
 /// any other call (the general matching then runs, with its errors).
 // R: match.c:matchArgs_NR
-fn usemethod_positional<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>) -> Option<Vec<Root<'s>>> {
+fn usemethod_positional<'s>(cx: &Cx, s: Scope<'s>, call: Root<'_>) -> Option<[Root<'s>; 2]> {
     let dots = prims::state(cx).syms.dots;
     let mut a = call.bind(cx).as_cons()?.cdr();
-    let mut vals = Vec::with_capacity(2);
+    // (a fixed pair, not a Vec: GNU R's matched arguments are no
+    // allocation of the C heap)
+    let mut vals = [cx.missing_arg(); 2];
+    let mut n = 0;
     while let Some(c) = a.as_cons() {
-        if vals.len() == 2 || c.tag().sexptype() != NILSXP || c.car().sexp() == dots {
+        if n == 2 || c.tag().sexptype() != NILSXP || c.car().sexp() == dots {
             return None;
         }
-        vals.push(c.car());
+        vals[n] = c.car();
+        n += 1;
         a = c.cdr();
     }
-    if vals.is_empty() {
+    if n == 0 {
         return None;
     }
-    if vals.len() == 1 {
-        vals.push(cx.missing_arg());
-    }
-    Some(vals.into_iter().map(|v| s.root(cx, v)).collect())
+    Some([s.root(cx, vals[0]), s.root(cx, vals[1])])
 }
 
 /// do_usemethod's class text: the class, or `c('a', 'b', ...)` within
@@ -1226,7 +1261,14 @@ fn get_object(cx: &mut Cx, cptr: ContextId, out: Out<'_>) -> RResult<()> {
                 // SAFETY: the generic's frame, live (its record roots it).
                 let f = s.root(cx, unsafe { Ref::from_sexp(frame, cx) });
                 let o = res.reset(cx);
-                cx.force_arg(f, index, o)?;
+                // R: if (PRVALUE(s) == R_UnboundValue) s = eval(s, R_BaseEnv)
+                // SAFETY: GenericArg::Slot is a formal's slot of the
+                // generic's own slot frame (generic_args), of this isolate.
+                if unsafe { cx.arg_unevaluated(f, index) } {
+                    crate::eval::force_arg_eval(cx, f, index, o)?;
+                } else {
+                    cx.force_arg(f, index, o)?;
+                }
             }
             Some(GenericArg::Obj(v)) => {
                 // SAFETY: a promargs element, live (the record roots it).
@@ -2319,7 +2361,18 @@ fn equal_s3_signature(sig: &[u8], left: &[u8], right: &[u8]) -> bool {
 /// `do_nextmethod(call, op, args, env)`: `.Internal(NextMethod(generic,
 /// object, ...))`.
 // R: objects.c:do_nextmethod
-pub fn do_nextmethod(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, env: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_nextmethod(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    env: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: run again on the call over it)
+    if args.is_some() {
+        return crate::specials::rerun_apart(cx, call, _op, args, env, out, do_nextmethod);
+    }
     let unbound = cx.unbound().sexp();
     cx.scope(|cx, s| {
         let me = cx.global_context().id();
@@ -3131,8 +3184,9 @@ fn primitive_named<'g>(cx: &'g Cx, name: &str) -> Ref<'g> {
         return st.objs[off].bind(cx);
     }
     let Ok(sym) = cx.install(name.as_bytes()) else { return cx.nil() };
-    match st.by_sym.get(&(sym.as_ref().sexp().as_ptr() as usize)) {
-        Some(&off) => {
+    // SAFETY: an installed symbol.
+    match unsafe { st.by_sym.get(sym.as_ref().sexp()) } {
+        Some(off) => {
             st.cond.prim_names.borrow_mut().push((name.to_owned(), off));
             st.objs[off].bind(cx)
         }

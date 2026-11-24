@@ -20,6 +20,8 @@
 #                             texmf/tex/latex/* (no zoneinfo: the oracle's
 #                             configure uses the system's; install-sources2's
 #                             .rds files are made by R, L4's build)
+#   etc/Renviron              etc/Makefile.in's: Renviron.in with configure's
+#                             values on the oracle image (and its Debian line)
 #   include/Rmath.h           src/include/Makefile's Rmath.h: config.status's
 #                             Rmath.h0 from Rmath.h0.in (@PACKAGE_VERSION@, and
 #                             @RMATH_HAVE_WORKING_LOG1P@ as configure finds it
@@ -37,6 +39,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=${1:-.robigo/rt-home}
+# (no trailing slash or /.: the lock is the tree's sibling)
+while [ "$out" != / ] && { [ "${out%/}" != "$out" ] || [ "${out%/.}" != "$out" ]; }; do
+  out=${out%/}
+  out=${out%/.}
+done
+[ -n "$out" ] || out=/
+# one build of the tree at a time (another's rm and mv would interleave
+# with this one's, or swap the tree under scripts/rt-home-db.sh's copy)
+mkdir -p "$(dirname "$out")"
+exec 8> "$out.lock"
+flock 8
 src=$(scripts/r-src.sh)
 version=4.6.2
 # configure's WHICH on the oracle image (Sys.which's body there)
@@ -103,6 +116,31 @@ for g in "${share_globs[@]}"; do
   done
   cp -p "${files[@]}" "$tmp/share/${g%/*}/"
 done
+# R: etc/Makefile.in's Renviron, config.status's etc/Renviron from
+# Renviron.in, with configure's values on the oracle image; then the line
+# Debian's line (set_R_LIBS_USER_and_SITE_in_Renviron.patch), written and
+# then checked as this one string
+libs_site="R_LIBS_SITE=\${R_LIBS_SITE:-'/usr/local/lib/R/site-library:%S'}"
+# Debian's set_R_LIBS_USER_and_SITE_in_Renviron.patch changes, as the image
+# reproduces it (.github/ci-image/oracle.Dockerfile)
+mkdir -p "$tmp/etc"
+sed -e 's|@configure_input@|etc/Renviron.  Generated from Renviron.in by configure.|' \
+  -e 's|@R_PLATFORM@|x86_64-pc-linux-gnu|' -e 's|@R_PAPERSIZE@|letter|' -e 's|@R_PRINTCMD@|/usr/bin/lpr|' \
+  -e 's|@R_RD4PDF@|times,inconsolata,hyper|' -e 's|@TEXI2DVICMD@|texi2dvi|' -e 's|@R_GZIPCMD@|/bin/gzip -n|' \
+  -e 's|@R_UNZIPCMD@|/usr/bin/unzip|' -e 's|@R_ZIPCMD@|/usr/bin/zip|' -e 's|@R_BZIPCMD@|/bin/bzip2|' \
+  -e 's|@R_BROWSER@|xdg-open|' -e 's|@PAGER@|/usr/bin/pager|' -e 's|@R_PDFVIEWER@|/usr/bin/xdg-open|' \
+  -e 's|@LN_S@|ln -s|' -e 's|@MAKE@|make|' -e 's|@SED@|/bin/sed|' -e 's|@TAR@|/bin/tar|' \
+  -e 's|@STRIP_SHARED_LIB@|strip --strip-unneeded|' -e 's|@STRIP_STATIC_LIB@|strip --strip-debug|' \
+  -e "s|^R_LIBS_SITE=.*|$libs_site|" \
+  "$src/etc/Renviron.in" > "$tmp/etc/Renviron"
+# every configure token substituted and Debian's line in place, or the
+# file is not the oracle's
+if grep -qE '@[A-Za-z_]+@' "$tmp/etc/Renviron"; then
+  grep -oE '@[A-Za-z_]+@' "$tmp/etc/Renviron" | sed 's/^/rt-home.sh: etc\/Renviron keeps /' >&2
+  exit 1
+fi
+grep -qxF "$libs_site" "$tmp/etc/Renviron" ||
+  { echo "rt-home.sh: Renviron.in's R_LIBS_SITE line is not where rt-home.sh expects it" >&2; exit 1; }
 mkdir -p "$tmp/include"
 sed -e "s/@PACKAGE_VERSION@/$version/" -e "s/@RMATH_HAVE_WORKING_LOG1P@/# define HAVE_WORKING_LOG1P 1/" \
   "$src/src/include/Rmath.h0.in" > "$tmp/include/Rmath.h"

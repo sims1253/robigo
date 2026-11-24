@@ -815,27 +815,23 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                     if decided {
                         pc = i.target();
                     }
-                    x
+                    Some(x)
                 } else {
-                    let x1 = act.get(i.a).as_int().unwrap();
-                    // R: logic.c:do_logic2
-                    if i.c == 1 {
-                        if x1 == ops::NA_LOGICAL {
-                            if x == ops::NA_LOGICAL || x != 0 { ops::NA_LOGICAL } else { x }
-                        } else {
-                            x
-                        }
-                    } else if x1 == ops::NA_LOGICAL {
-                        if x == ops::NA_LOGICAL || x == 0 { ops::NA_LOGICAL } else { x }
-                    } else {
-                        x
-                    }
+                    // R: eval.c:bcEval's AND2ND/OR2ND: the second operand's
+                    // value replaces the first's where it decides (`&&`:
+                    // FALSE or NA; `||`: not FALSE), and the first's stays
+                    // otherwise, unread: what AND1ST left there, or in
+                    // byte code from elsewhere whatever is there (#976)
+                    let decides = if i.c == 1 { x == 0 || x == ops::NA_LOGICAL } else { x != 0 };
+                    decides.then_some(x)
                 };
                 if i.op == Op::AndOr2 && i.fl & F_CLR_B != 0 {
                     act.kill(i.b, pc as u32 - 1);
                 }
-                // SAFETY: an unboxed value.
-                unsafe { act.set(i.a, Slot::logical(r)) };
+                if let Some(r) = r {
+                    // SAFETY: an unboxed value.
+                    unsafe { act.set(i.a, Slot::logical(r)) };
+                }
                 // R_Visible = TRUE whatever the flag, as bcEval's AND1ST,
                 // AND2ND, OR1ST and OR2ND set it (the AST's do_logic2 is
                 // visible too); the IR's F_VIS says where it is observed. A
@@ -844,7 +840,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 cx.set_visible(true);
             }
             Op::MkClosure => {
-                mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;
+                mk_closure(cx, act, i)?;
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
@@ -1510,11 +1506,37 @@ pub fn inherits(cx: &Cx, x: Ref<'_>, what: &[u8]) -> bool {
     false
 }
 
+/// MkClosure's srcref (keep.source = TRUE): the new closure in register
+/// `a` gets the "srcref" attribute `consts[ks]` when that is not NULL, as
+/// do_function and MAKECLOSURE set it. The very constant, no copy (the
+/// translation cache replays it from the record's own pool).
+// R: eval.c:do_function, MAKECLOSURE
+#[cold]
+#[inline(never)]
+fn closure_srcref(cx: &mut Cx, act: &Act, a: Reg, ks: u16) -> RResult<()> {
+    cx.retry_alloc(|cx| {
+        // SAFETY: the closure is rooted in register `a`, the srcref is a
+        // constant of the rooted code; a fresh closure has no attributes.
+        unsafe {
+            let srcref = View::of(act.obj(R_CODE)).k(ks);
+            if srcref == cx.nil().sexp() {
+                return Ok(());
+            }
+            let sym = cx.install(b"srcref")?.as_ref().sexp();
+            let node = cx.alloc_node_raw(LISTSXP, srcref, cx.nil().sexp(), sym)?;
+            act.obj(a).set_attrib(node);
+            Ok(())
+        }
+    })
+}
+
 /// `mkCLOSXP(formals, body, rho)` into register `a`, the formals and body
 /// the code's constants `kf` and `kb` (read afresh on each attempt: a
 /// refused allocation collects).
 // R: dstruct.c:mkCLOSXP
-fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, installed: bool) -> RResult<()> {
+fn mk_closure(cx: &mut Cx, act: &Act, i: Ins) -> RResult<()> {
+    // (the instruction whole: its fields read here, not at the call)
+    let (a, kf, kb, kc, ks, installed) = (i.a, i.e, i.f, i.c, i.b, i.g == 1);
     // SAFETY: the rooted code object's constant.
     let body = unsafe { View::of(act.obj(R_CODE)).k(kb) };
     // SAFETY: as above.
@@ -1538,6 +1560,9 @@ fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, install
             x.set_extra(x.extra() | robigo_heap::extra::closure::BYTECODE);
         }
         act.set(a, Slot::object(x));
+    }
+    if ks != 0 {
+        closure_srcref(cx, act, a, ks)?;
     }
     if installed && crate::prims::state(cx).forced != Some(Profile::Eval) {
         // base's installed byte code: compiled as base's build compiled it

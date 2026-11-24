@@ -7,9 +7,10 @@
 //! glibc is the only target robigo-rtcore builds for (`clib.rs`'s
 //! `compile_error!`). Elsewhere (robigo-heap alone, on another unix) the
 //! first `Core::new` registers them. There a fork racing that first
-//! registration on another thread is not covered: a second thread's heap
-//! may take the arena's lock before the first thread's `pthread_atfork`
-//! returns.
+//! registration on another thread is not covered: when two threads' first
+//! `Core::new`s race, the swap's loser returns before the winner's
+//! `pthread_atfork` has returned (or failed), so the loser's heap may take
+//! the arena's lock while no handlers are registered yet.
 //!
 //! **The process's locks and their order**, the one place it is written:
 //! 0. `FORK` (here): held by a fork's handlers from `prepare` to `parent` /
@@ -18,8 +19,20 @@
 //!    held while an isolate starts or ends and for a whole `Sys.setenv` /
 //!    `Sys.unsetenv`;
 //! 2. `ENV` (robigo-rtcore `clib.rs`): the process environment's lock,
-//!    shared for a C call that reads the environment, exclusive for a
-//!    write;
+//!    shared for a C call that reads the environment (`dyn.load`'s
+//!    `dlopen` and `dyn.unload`'s `dlclose` included, across the
+//!    library's initializers and finalizers: `clib::with_env_shared`),
+//!    exclusive for a write. glibc's loader locks come after it, since
+//!    those calls take them with `ENV` held: code run under a loader lock
+//!    (an initializer or finalizer, a `dl_iterate_phdr` callback, a TLS
+//!    initializer) takes no `ENV` and does not fork, or it waits for `ENV`
+//!    while the `dlopen` holding `ENV` waits for the loader lock. glibc's
+//!    own calls keep the order (glibc 2.41's and master's sources): `fork`
+//!    takes no loader lock (posix/fork.c: the atfork `prepare` handlers,
+//!    then NSS's, stdio's and malloc's locks; the child re-initializes
+//!    `dl_load_lock`), `posix_spawn` and `system` clone with `CLONE_VFORK`
+//!    without either, and `__cxa_thread_atexit_impl` takes the loader lock
+//!    but never `ENV`;
 //! 3. the symbol arena's lock (`arena.rs`);
 //! 4. std's stdout lock, then std's stderr lock: held by a thread while it
 //!    writes (an isolate's console, a warning, a panic's message). Without
@@ -50,6 +63,21 @@
 //!   robigo-rt does not spawn through it, and when an embedder does,
 //!   `prepare` waits for nothing that waits on std's lock.
 //!
+//! **A forked child never starts a thread**, and runs on the forking thread
+//! alone until it execs or exits. A fork copies std's internal locks too,
+//! and none of the handlers here can reach them: std's thread-start lock
+//! (`thread_info::set_current_info`, Rust 1.100), taken by every thread
+//! while it starts and ends, may be held at the fork by another thread of
+//! the parent, and the child's first `std::thread::spawn` then waits on it
+//! forever. The rt crates start no thread outside their tests (robigo-rt's
+//! `isolate_state.rs`, `the_runtime_starts_no_threads`), so a child of a
+//! robigo-rt process (`mcfork`'s, `system()`'s before its exec) has none to
+//! start. GNU R's `mcfork` children are single-threaded the same way (a
+//! forked R starts no thread of its own); native code a package loads may
+//! start some (OpenMP), and is not safe after a fork in GNU R either. The
+//! fork tests run each in a process of their own for the same reason
+//! (robigo-rtcore's `fork_tests.rs`, `isolated`).
+//!
 //! **std's stdin lock** is not one of them: a thread reading the console
 //! holds it for as long as the read blocks, and a fork would wait for the
 //! input. A child forked while another thread reads std's stdin must not
@@ -65,7 +93,13 @@
 //!
 //! **What `prepare` waits for.** It blocks until every holder releases.
 //! - A reader holding `ENV` shared for a C call (`localtime`, the locale
-//!   calls) finishes that call first.
+//!   calls, a `dlopen` with its library's initializers) finishes that call
+//!   first. An initializer that forks on that same thread would wait on
+//!   its own hold, which deadlocks, as a fork from a thread holding a
+//!   loader lock that the `dlopen` waits for would (`clib::with_env_shared`
+//!   says why nothing of robigo's in it can take `FORK` or
+//!   `LIVE_ISOLATES`: every C API export refuses a call made outside a
+//!   native entry).
 //! - A thread writing to std's stdout or stderr finishes that write first.
 //!   A write blocked on a full pipe holds the fork until the pipe's reader
 //!   drains it, so the reader must not be waiting on this fork.
@@ -80,7 +114,7 @@
 #![cfg_attr(miri, allow(dead_code))]
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 /// The embedder's locks: take them, release them (functions of no
 /// arguments), in the order above; null until [`set_fork_locks`]. Plain
@@ -104,8 +138,10 @@ unsafe impl Sync for ForkLock {}
 static FORK: ForkLock = ForkLock(UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER));
 
 /// How many forks have entered `prepare`: a test's evidence that a fork
-/// reached the handlers while it held a lock.
-static PREPARES: AtomicU64 = AtomicU64::new(0);
+/// reached the handlers while it held a lock (test-support only: the hooks
+/// never ship).
+#[cfg(feature = "test-support")]
+static PREPARES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 
@@ -226,6 +262,7 @@ extern "C" fn prepare() {
     // SAFETY: the static mutex, initialized; released by `release` in the
     // parent, or in the child by the same (forking) thread's copy.
     unsafe { libc::pthread_mutex_lock(FORK.0.get()) };
+    #[cfg(feature = "test-support")]
     PREPARES.fetch_add(1, Ordering::SeqCst);
     let take = EMBEDDER_TAKE.load(Ordering::SeqCst);
     if !take.is_null() {
@@ -289,8 +326,9 @@ pub(crate) fn register() {
         // pthread_atfork takes them; `release` serves parent and child.
         let r = unsafe { libc::pthread_atfork(Some(prepare), Some(release), Some(release)) };
         if r != 0 {
-            // not registered: a later caller (the next `Core::new`) tries
-            // again
+            // not registered. On the `Core::new` path a later `Core::new`
+            // tries again; on the constructor's path the panic aborts the
+            // process before `main` (a panic cannot unwind out of it)
             REGISTERED.store(false, Ordering::SeqCst);
             panic!("robigo: pthread_atfork failed ({r})");
         }

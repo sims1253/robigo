@@ -1,0 +1,64 @@
+[[1]]
+[1] "zero-length component [[1]] in non-empty \"POSIXlt\" structure"
+
+[[2]]
+NULL
+
+[[1]]
+[1] "zero-length component [[1]] in non-empty \"POSIXlt\" structure"
+
+[[2]]
+NULL
+
+[[1]]
+[1] "output string exceeded 2048 bytes"
+
+[[2]]
+NULL
+
+[[1]]
+[1] "invalid 'format' argument"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+
+[[1]]
+[1] "invalid 'tz' value"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+
+[[1]]
+[1] "a valid \"POSIXlt\" object is a list of at least 9 elements"
+
+[[2]]
+doTryCatch(return(expr), name, parentenv, handler)
+
+[[1]]
+[1] "translating strings with \"bytes\" encoding is not allowed"
+
+[[2]]
+NULL
+
+[[1]]
+[1] "translating strings with \"bytes\" encoding is not allowed"
+
+[[2]]
+NULL
+
+[1] NA
+[[1]]
+[1] "translating strings with \"bytes\" encoding is not allowed"
+
+[[2]]
+NULL
+
+[[1]]
+[1] "W"
+
+[[2]]
+[1] "NAs introduced by coercion"
+
+[[3]]
+doTryCatch(return(expr), name, parentenv, handler)
+

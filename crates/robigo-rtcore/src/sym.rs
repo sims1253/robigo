@@ -334,6 +334,17 @@ pub(crate) struct SymCells {
 }
 
 impl SymCells {
+    /// The base values and `.Internal`s, for the freeze's roots: not the
+    /// global caches (`EnvState::trace_freeze_roots`).
+    pub(crate) fn trace_freeze_values<V: robigo_heap::Visitor + ?Sized>(&mut self, v: &mut V) {
+        for c in &mut self.cells {
+            v.edge(&mut c.value);
+        }
+        for x in &mut self.internals {
+            v.edge(x);
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn get(&self, id: SymId) -> SymCell {
         self.cells.get(id.0 as usize).copied().unwrap_or(SymCell::EMPTY)
@@ -366,6 +377,10 @@ impl SymCells {
         if i >= self.internals.len() {
             self.internals.resize(i + 1, Sexp::NULL);
         }
+        // a freeze root (the boot heap's freeze): a frozen value replaced
+        // leaves the frozen graph
+        // SAFETY: the table's values are null or live.
+        unsafe { robigo_heap::note_overwritten(self.internals[i]) };
         self.internals[i] = x;
     }
 

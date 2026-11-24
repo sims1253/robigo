@@ -238,12 +238,14 @@ mod console;
 mod context;
 mod env;
 mod exit;
+mod fill;
 mod frames;
 mod fresh;
 mod handle;
 mod hooks;
 mod isolate;
 mod limits;
+mod namebuf;
 mod native;
 mod outcome;
 mod ppacct;
@@ -252,12 +254,22 @@ mod records;
 mod root;
 mod sym;
 mod sys;
+#[cfg(not(miri))]
+pub use sys::map_file_readonly;
+/// Under Miri, which cannot map files: the file read whole, kept.
+#[cfg(miri)]
+pub fn map_file_readonly(path: &std::path::Path) -> Option<&'static [u8]> {
+    let b = std::fs::read(path).ok()?;
+    (!b.is_empty()).then(|| &*Box::leak(b.into_boxed_slice()))
+}
 mod vstack;
 // R1b: collection points and in-place writes
 mod collect;
 mod edit;
 #[cfg(all(test, not(miri)))]
 mod fork_tests;
+#[cfg(all(test, not(miri)))]
+mod freeze_tests;
 
 pub use capi::{
     CGlobals, CParseState, PARSE_CONTEXT_SIZE, PARSE_ERROR_SIZE, PP_REDZONE, PPSTACK_SIZE, R_MB_CUR_MAX, mbcslocale,
@@ -273,6 +285,7 @@ pub use env::{
     SetVarTarget, SlotInit, bytecode_expr,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
+pub use fill::{Fill, FillPass};
 pub use frames::{Frame, WalkError};
 pub use fresh::{DDVAL, EMBEDDED_NUL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{
@@ -280,13 +293,16 @@ pub use handle::{
 };
 pub use hooks::{
     ApplyFn, DeparseFn, DispatchFn, Dispatched, ErrorCond, ErrorCondFn, EvalFn, ForceArgFn, ForceFn, Generic, Hooks,
-    InterruptFn, MAX_WARNINGS, WarningFn, c_str_bytes,
+    InterruptFn, MAX_WARNINGS, WarningCond, WarningCondFn, WarningFn, c_str_bytes,
 };
 pub use isolate::{
     Capability, CodeSource, Cx, Isolate, Locale, Options, OwnedIsolate, Reentry, ReportOptions, enter_raw,
     live_isolate_count,
 };
-pub use limits::{CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_MSG, note_sigint};
+pub use limits::{
+    CStackInfo, EXPR_SO, EXPR_SO_MSG, EvalDepth, NODE_SO, NODE_SO_MSG, PROT_SO, PROT_SO_MSG, note_sigint,
+};
+pub use namebuf::NameBuf;
 pub use native::{Landing, NATIVE_MAX_ARGS, Native6, enter_export, enter_leaf, enter_leaf_mut};
 pub use outcome::{Built, Diag};
 pub use ppacct::PpSave;

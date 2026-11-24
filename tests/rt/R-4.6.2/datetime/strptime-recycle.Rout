@@ -1,0 +1,91 @@
+$year
+[1] 124  NA 124 124 124  NA
+
+$mon
+[1]  0 NA  6  6  0 NA
+
+$mday
+[1] 15 NA 15 15 15 NA
+
+$hour
+[1] 10 NA 10  0 10 NA
+
+$isdst
+[1]  0 -1  1  1  0 -1
+
+$zone
+[1] "CET"  ""     "CEST" "CEST" "CET"  ""    
+
+$gmtoff
+[1] NA NA NA NA NA NA
+
+$year
+[1] 124  NA 124  NA 124  NA
+
+$mon
+[1]  0 NA  6 NA  0 NA
+
+$mday
+[1] 15 NA 15 NA 15 NA
+
+$hour
+[1] 10 NA 10 NA 10 NA
+
+$isdst
+[1]  0 -1  0 -1  0 -1
+
+$zone
+[1] "UTC" "UTC" "UTC" "UTC" "UTC" "UTC"
+
+$gmtoff
+[1] 0 0 0 0 0 0
+
+$year
+[1] 124 124 124
+
+$mon
+[1] 0 6 0
+
+$mday
+[1] 15 15 15
+
+$hour
+[1] 0 0 0
+
+$isdst
+[1] 0 1 0
+
+$zone
+[1] "EST" "EDT" "EST"
+
+$gmtoff
+[1] NA NA NA
+
+$year
+[1] NA
+
+$mon
+[1] NA
+
+$mday
+[1] NA
+
+$hour
+[1] NA
+
+$isdst
+[1] -1
+
+$zone
+[1] "UTC"
+
+$gmtoff
+[1] 0
+
+[1] "invalid multibyte input string"
+[1] "invalid multibyte format string"
+[1] "invalid multibyte input string"
+[1] "invalid multibyte input string"
+[1] "invalid multibyte format string"
+[1] "input string is too long"
+[1] "format string is too long"

@@ -22,7 +22,7 @@ pub mod parser;
 pub use lexer::is_valid_name;
 
 pub use arena::Arena;
-pub use ast::{Arg, ConditionValue, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span};
+pub use ast::{Arg, ConditionValue, Const, ErrorExpr, ErrorStyle, Expr, Formal, ParseError, Span, StrMark};
 pub use parser::{
     ConnStatus, ConsoleStatus, parse_conn_statement, parse_console, parse_program, parse_program_with_warnings,
 };
@@ -63,6 +63,11 @@ impl<'a> Source<'a> {
     /// continuation bytes as columns too.
     pub fn known_to_be_utf8(self, known: bool) -> Self {
         Source { known_to_be_utf8: known, ..self }
+    }
+
+    /// Whether this parse is known to be UTF-8 ([`Source::known_to_be_utf8`]).
+    pub fn is_known_utf8(&self) -> bool {
+        self.known_to_be_utf8
     }
 
     /// The source byte at `i`, when `text` has [`INVALID_BYTE`] there in
@@ -307,11 +312,21 @@ pub fn condition_message<'a>(src: impl Into<Source<'a>>, srcname: &str, e: &Pars
 /// starts with `<file>:<line>:<col>:` and is followed by the context lines
 /// and a caret.
 pub fn format_parse_error<'a>(src: impl Into<Source<'a>>, srcname: &str, e: &ParseError) -> String {
+    format_parse_error_since(src, srcname, e, 0)
+}
+
+/// [`format_parse_error`] with the context lines only from the bytes read
+/// since `start`: `R_Parse1File` (R_ReplFile's, a profile's) resets the
+/// context at each statement (`ParseContextInit`), so its error shows the
+/// failing statement's text alone. The line numbers are the file's.
+// R: gram.y:R_Parse1File, source.c:parseError
+pub fn format_parse_error_since<'a>(src: impl Into<Source<'a>>, srcname: &str, e: &ParseError, start: usize) -> String {
     let src = src.into();
     let (line, col) = error_line_col(src, e);
     let prefix = if srcname.is_empty() { String::new() } else { format!("{srcname}:") };
     let mut msg = format!("{}{}:{}: {}", prefix, line, col, e.message);
-    let context = parse_context(src.raw, e.end);
+    let start = start.min(e.end).min(src.raw.len());
+    let context = parse_context(&src.raw[start..], e.end - start);
     let ctx_line = parse_context_line(src.text, e.end);
     match context.len() {
         0 => {}

@@ -34,6 +34,28 @@ fn version_string() -> String {
     format!("R version {MAJOR}.{MINOR} ({YEAR}-{MONTH}-{DAY})")
 }
 
+/// `PrintVersion_part_1`: the version string with its nickname, the
+/// copyright line and the platform, each line ended ("R version 4.6.2
+/// (2026-10-29) -- \"Diversified Portfolio\"\nCopyright (C) 2026 The R
+/// Foundation for Statistical Computing\nPlatform: x86_64-pc-linux-gnu\n");
+/// None on a platform robigo-rt does not describe (as `R.version`).
+// R: version.c:PrintVersion_part_1
+pub fn print_version_part_1() -> Option<String> {
+    let (_, _, plat) = platform()?;
+    let mut s = version_string();
+    if !NICK.is_empty() {
+        s.push_str(&format!(" -- \"{NICK}\""));
+    }
+    s.push_str(&format!("\nCopyright (C) {YEAR} The R Foundation for Statistical Computing\n"));
+    s.push_str(&format!("Platform: {plat}"));
+    // (no R_ARCH; a 64-bit build has no " (32-bit)")
+    if size_of::<*const u8>() != 8 {
+        s.push_str(&format!(" ({}-bit)", 8 * size_of::<*const u8>()));
+    }
+    s.push('\n');
+    Some(s)
+}
+
 /// `.Internal(Version())`: a list of the build's strings (unix: 14).
 // R: version.c:do_version
 pub fn do_version(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {

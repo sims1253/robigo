@@ -301,10 +301,20 @@ def shard_of(case_id, n):
 # ------------------------------------------------------------- running
 
 def run_case(name, conf, case_id, src, runtime, robigo=None, tier=None):
-    """Run one case; returns (stdout, stderr, status) as bytes/int."""
+    """Run one case; returns (stdout, stderr, status) as bytes/int.
+    `runtime` is "gnur", "robigo" or "rt" (robigo-rt, run as robigo is)."""
     mode = MODES[conf.get("mode", "script")]
     env = dict(os.environ, **BASE_ENV)
-    env["R_DEFAULT_PACKAGES"] = conf.get("default_packages", "NULL")
+    if runtime == "rt":
+        # INTERIM(L5): robigo-rt is asked for the default packages its tree
+        # has, which its etc/Renviron names when R_DEFAULT_PACKAGES is unset
+        # (scripts/rt-home-db.sh: none today). The corpus's list, GNU R's
+        # recording's, would warn once per package the tree lacks ("During
+        # startup - "); M1's loader ran no profile and attached none either.
+        # When the tree has a package, the corpus asks for it
+        env.pop("R_DEFAULT_PACKAGES", None)
+    else:
+        env["R_DEFAULT_PACKAGES"] = conf.get("default_packages", "NULL")
     env["R_LIBS_USER"] = os.path.join(STATE, "empty-lib")
     os.makedirs(env["R_LIBS_USER"], exist_ok=True)
     for k, v in conf.get("env", {}).items():
@@ -331,7 +341,7 @@ def run_case(name, conf, case_id, src, runtime, robigo=None, tier=None):
         # R's tempdir() goes here too, so it is removed with the case even
         # when the process is killed on a timeout.
         env["TMPDIR"] = tmp
-        cmd = [a.format(file=file, robigo=robigo or "") for a in mode[runtime]]
+        cmd = [a.format(file=file, robigo=robigo or "") for a in mode["robigo" if runtime == "rt" else runtime]]
         try:
             p = subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, timeout=conf.get("timeout", 60))
             return p.stdout, p.stderr, p.returncode
@@ -466,7 +476,18 @@ def add_passing(name, ids, runtime="robigo"):
 
 def robigo_rt_path(arg):
     """robigo-rt: `--robigo`, else $ROBIGO_RT_BIN, else the release build in
-    cargo's target directory (as scripts/rt-overshoot.py finds it)."""
+    cargo's target directory (as scripts/rt-overshoot.py finds it), with
+    base's database tree written by that binary (scripts/rt_trees.py: the
+    cases name no boot, which boots rdb once it is the default)."""
+    p = _robigo_rt_binary(arg)
+    if os.path.exists(p):
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import rt_trees
+        rt_trees.ensure(p, ROOT)
+    return p
+
+
+def _robigo_rt_binary(arg):
     if arg:
         return os.path.abspath(arg)
     if os.environ.get("ROBIGO_RT_BIN"):
@@ -816,7 +837,7 @@ def cmd_run(a):
     def one(c):
         cid, src = c
         t = time.time()
-        o, e, s = run_case(a.name, conf, cid, src, "robigo", robigo, a.tier)
+        o, e, s = run_case(a.name, conf, cid, src, "rt" if rt else "robigo", robigo, a.tier)
         kinds = classify(exp[cid], o, e, s)
         r = {"id": cid, "pass": not kinds, "differs": kinds, "secs": round(time.time() - t, 3)}
         if rt and kinds and (b := blocked(e)):
@@ -887,7 +908,7 @@ def cmd_show(a):
     src = cases[a.id]
     exp = load_expected(a.name, expected_file(conf, version)).get(a.id)
     print("== source\n" + src.decode("utf-8", "replace"))
-    o, e, s = run_case(a.name, conf, a.id, src, "robigo", robigo_rt_path(a.robigo) if rt else robigo_path(a.robigo),
+    o, e, s = run_case(a.name, conf, a.id, src, "rt" if rt else "robigo", robigo_rt_path(a.robigo) if rt else robigo_path(a.robigo),
                        a.tier)
     if exp:
         for label, key, want, got in (("stdout", "out", dec(exp["out"]), o), ("stderr", "err", dec(exp["err"]), e)):

@@ -21,7 +21,7 @@ fn session() -> (OwnedIsolate, Loaded) {
 fn run(cx: &mut Cx, src: &str) -> (String, String, bool) {
     let (c, out, err) = robigo_rtcore::Console::capture();
     let old = cx.replace_console(c);
-    let ok = run_console(cx, src.as_bytes());
+    let ok = run_console(cx, &mut robigo_rt::repl::Input::Bytes(src.as_bytes()));
     cx.replace_console(old);
     (String::from_utf8(out.take()).unwrap(), String::from_utf8(err.take()).unwrap(), ok)
 }
@@ -47,14 +47,15 @@ fn the_wide_base_binds_every_name_lazily_m1_s_bound_among_them() {
     assert!(w.find(".AutoloadEnv").is_none());
     // the forms, in their order (Common.R's: attach, then .AutoloadEnv,
     // then .Autoloaded in it)
+    // (their text as the loader evaluates it: configure's substitutions made)
     let dir = robigo_rt::base::source_dir().unwrap_or_else(|e| panic!("{e}"));
-    let common = std::fs::read(dir.join("src/library/profile/Common.R")).unwrap();
     let texts: Vec<String> = w
         .boot
         .iter()
         .map(|f| {
             assert_eq!(f.src, "profile/Common.R");
-            String::from_utf8_lossy(&common[f.start..f.end]).into_owned()
+            let t = robigo_rt::base::form_text(&dir.join("src/library"), *f).unwrap_or_else(|e| panic!("{e}"));
+            String::from_utf8_lossy(&t).into_owned()
         })
         .collect();
     assert_eq!(
@@ -253,6 +254,25 @@ fn r_parse_vector_statuses() {
         vr.bind(cx).as_vector::<f64>().unwrap().get(0)
     });
     assert_eq!(out, 42.0);
+}
+
+/// gram.y's classed parse errors are signalled from inside the parse, as
+/// raiseParseError/raiseLexError signal them: R_ParseVector's caller gets
+/// the error, not a status.
+#[test]
+fn r_parse_vector_signals_parse_error_conditions() {
+    let mut iso = OwnedIsolate::new();
+    let cx = iso.cx();
+    robigo_rt::install(cx);
+    for src in ["function(a, a) 1", "1 |> f(_)", "\"\\q\""] {
+        let r = cx.scope(|cx, s| {
+            let o = s.out(cx);
+            parse_bytes(cx, src.as_bytes(), -1, o).map(|r| r.0)
+        });
+        assert!(r.is_err(), "{src}: {r:?}");
+    }
+    // a grammar error is still a status
+    assert_eq!(strings(cx, &["x y"], -1).0, ParseStatus::Error);
 }
 
 /// The lexer's warnings of the tokens R_Parse reads: none past the n-th

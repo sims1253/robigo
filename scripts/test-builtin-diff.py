@@ -2,20 +2,25 @@
 """Tests of scripts/builtin-diff.py's harness, with no R: the rows' sources,
 the case classes, the batch runner's crash, hang and start handling, and the
 known/ ratchet's key check."""
+import fcntl
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import unittest.mock
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("bd", os.path.join(HERE, "builtin-diff.py"))
 bd = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bd)
+conf_slots = bd.conf_slots
 
 
 class Sources(unittest.TestCase):
@@ -112,6 +117,64 @@ class Classes(unittest.TestCase):
         self.f("r.files", b'[["a4plant", "file", 420, 0, "e3b0"]]')
         self.assertEqual(bd.classify(o, r, {}, {}, 1), "mismatch")
 
+    def test_a_big_value_is_compared_by_its_digest(self):
+        # driver.R records a value over A4_BIG_BYTES as its summary, writes
+        # the value to <id>.big<k>.rds and marks the summary <id>.big<k>.want;
+        # seal_big replaces the value by its sha256, and the comparison
+        # needs the same marks on both sides, each with its digest
+        go, rt = (os.path.join(self.d, x) for x in ("o", "r"))
+        for d in (go, rt):
+            os.makedirs(d)
+            with open(os.path.join(d, "000951.rds"), "wb") as f:
+                f.write(b"summary: character, 100000, and an ordinary string a4_big")
+            with open(os.path.join(d, "000951.big1.rds"), "wb") as f:
+                f.write(b"one gigabyte")
+            open(os.path.join(d, "000951.big1.want"), "w").close()
+        bd.seal_big(go)
+        bd.seal_big(rt)
+        self.assertEqual(sorted(os.listdir(go)), ["000951.big1.sha256", "000951.big1.want", "000951.rds"])
+        o, r = os.path.join(go, "000951.rds"), os.path.join(rt, "000951.rds")
+
+        def cls():
+            bd._INDEX.clear()           # (the files change between the checks)
+            return bd.classify(o, r, {}, {}, 951)
+        self.assertEqual(cls(), "pass")
+        # the same summary, another value past its first and last elements
+        with open(os.path.join(rt, "000951.big1.sha256"), "w") as f:
+            f.write("0" * 64 + "\n")
+        self.assertEqual(cls(), "mismatch")
+        bd._INDEX.clear()
+        with unittest.mock.patch.object(bd, "render", return_value={}):
+            field = bd.diff_fields([(951, o, r)])[951][0]
+        self.assertEqual(field, "digest")
+        # the digest missing on one side, then on both
+        os.remove(os.path.join(rt, "000951.big1.sha256"))
+        self.assertEqual(cls(), "mismatch")
+        os.remove(os.path.join(go, "000951.big1.sha256"))
+        self.assertEqual(cls(), "mismatch")
+        # a summary for k = 1 with only a k = 2 digest on both sides
+        for d in (go, rt):
+            with open(os.path.join(d, "000951.big2.sha256"), "w") as f:
+                f.write("1" * 64 + "\n")
+        self.assertEqual(cls(), "mismatch")
+        bd._INDEX.clear()
+        with unittest.mock.patch.object(bd, "render", return_value={}):
+            field, gnur, rt_ = bd.diff_fields([(951, o, r)])[951]
+        self.assertEqual(field, "digest")
+        self.assertIn("missing [1], unexpected [2]", gnur)
+        # and a case's marks and digests never mix with another case's
+        with open(os.path.join(go, "000095.rds"), "wb") as f:
+            f.write(b"x")
+        bd._INDEX.clear()
+        self.assertEqual(bd.big_digests(os.path.join(go, "000095.rds")), (frozenset(), {}))
+        # a record that merely holds the string "a4_big" needs no digest
+        for d in (go, rt):
+            with open(os.path.join(d, "000096.rds"), "wb") as f:
+                f.write(b"a4_big")
+        bd._INDEX.clear()
+        self.assertEqual(bd.classify(os.path.join(go, "000096.rds"), os.path.join(rt, "000096.rds"), {}, {}, 96),
+                         "pass")
+
     def test_tree_lists_files_dirs_and_links(self):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "sub"))
@@ -162,7 +225,22 @@ FAKE = textwrap.dedent("""\
         sys.stderr.write("Error: driver unusable on fake: withVisible\\n"); sys.exit(1)
     if os.environ.get("NOSTART"):
         sys.stderr.write("cannot boot\\n"); sys.exit(1)
+    # (a start that takes half the case limit, as robigo-rt's boot and the
+    # batch's readRDS can)
+    time.sleep(float(os.environ.get("START_DELAY", "0")))
     open(os.path.join(out, "started"), "w").close()
+    # the boot the harness set (robigo-rt's ROBIGO_RT_BOOT)
+    open(os.path.join(out, "boot"), "w").write(os.environ.get("ROBIGO_RT_BOOT", "unset"))
+    if os.environ.get("SLOT_FILE"):
+        # whether the slot is held while this process runs
+        import fcntl
+        with open(os.environ["SLOT_FILE"], "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = "free"
+            except BlockingIOError:
+                held = "held"
+        open(os.path.join(out, "slot"), "w").write(held)
     for i in range(start, min(int(os.environ["N"]), int(os.environ.get("A4_TO", "999999"))) + 1):
         if i == int(os.environ.get("CRASH_AT", "0")):
             sys.stderr.write("thread 'main' panicked\\n"); os._exit(101)
@@ -236,6 +314,76 @@ class Batches(unittest.TestCase):
             self.assertEqual([x[0] for x in files], [".", f"made-{i}"])
             self.assertEqual(files[1][3], len("clean"))
 
+    def test_every_binary_starts_with_the_translation_cache_off(self):
+        # the plain and the planted binary start alike whichever build wrote
+        # the tree's .rtc (another build's is a silent miss, robigo-rtapi's
+        # boot_db test of a stale build ID): run_rt turns the cache off for
+        # every binary, in a batch row and in an External row's clean
+        # environment (the case's own process sees it)
+        import types
+        seen = {}
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "done"), "w") as f:
+            f.write('{"lost": {}}')
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write("import os, sys\nout = os.environ['A4_OUT']\nos.makedirs(out, exist_ok=True)\n"
+                    "open(os.path.join(out, 'started'), 'w').close()\n"
+                    "open(os.path.join(out, 'cache'), 'w').write(os.environ.get('ROBIGO_TRANSLATION_CACHE', 'unset'))\n")
+        def batch(cmd, env, batch, out, n, scratch, **k):
+            seen["batch"] = env.get("ROBIGO_TRANSLATION_CACHE")
+            return {}
+        def isolated(cmd, env, batch, out, n, key, **k):
+            real_isolated([sys.executable, drv], env, batch, out, 1, "test-tcache")
+            with open(os.path.join(out, "cache")) as f:
+                seen["isolated"] = f.read()
+            return {}
+        real_isolated = bd.run_isolated
+        a = types.SimpleNamespace(data=d, seed=0, rsrc="x", boot=bd.DEFAULT_BOOT)
+        for iso in (False, True):
+            row = types.SimpleNamespace(isolated=iso, key=lambda seed, j: "k")
+            with unittest.mock.patch.object(bd, "oracle_dir", return_value=d), \
+                    unittest.mock.patch.object(bd, "read_cases", return_value=[]), \
+                    unittest.mock.patch.object(bd, "run_batch", batch), \
+                    unittest.mock.patch.object(bd, "run_isolated", isolated), \
+                    unittest.mock.patch.object(bd, "seal_big", lambda out: None):
+                r = bd.run_rt(a, row, "off", "rt", [])
+            remove = r.get("scratch")
+            if remove:
+                shutil.rmtree(remove, ignore_errors=True)
+        self.assertEqual(seen, {"batch": "0", "isolated": "0"})
+
+    def test_the_harness_always_sets_the_boot(self):
+        # every boot by name, M1's loader ("interim") as `m1` (an empty
+        # value is the rdb boot since L5's flip): nothing depends on a
+        # binary's default
+        self.assertEqual(bd.boot_env("interim"), {"ROBIGO_RT_BOOT": "m1"})
+        self.assertEqual(bd.boot_env("rdb"), {"ROBIGO_RT_BOOT": "rdb"})
+        self.assertIn(bd.DEFAULT_BOOT, bd.BOOTS)
+        # an External row's cases run in an environment made from nothing:
+        # the boot is in it
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        drv = os.path.join(d, "fake.py")
+        with open(drv, "w") as f:
+            f.write(FAKE)
+        out = os.path.join(d, "out")
+        env = {**os.environ, **bd.boot_env("rdb"), "A4_LABEL": "x", "N": "1"}
+        with unittest.mock.patch.object(bd, "ENV", {**bd.ENV, "N": "1"}):
+            self.assertEqual(bd.run_isolated([sys.executable, drv], env, "batch", out, 1, "test-boot"), {})
+        with open(os.path.join(out, "boot")) as f:
+            self.assertEqual(f.read(), "rdb")
+
+    def test_another_boot_cannot_rewrite_the_known_lists(self):
+        import types
+        other = next(b for b in bd.BOOTS if b != bd.DEFAULT_BOOT)
+        for flag in ("regen_known", "update"):
+            a = types.SimpleNamespace(boot=other, regen_known=flag == "regen_known", update=flag == "update")
+            with self.assertRaises(SystemExit) as e:
+                bd.cmd_run(a)
+            self.assertIn("DEFAULT_BOOT", str(e.exception))
+
     def test_two_runs_of_one_external_row_at_once_both_pass(self):
         # as two checkouts' `ci` runs on one machine: the row's case
         # directory is one path for both (case_root), and neither run may
@@ -264,8 +412,15 @@ class Batches(unittest.TestCase):
         outs = [os.path.join(d, f"out{k}") for k in (1, 2)]
         ps = [subprocess.Popen([sys.executable, run, o], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
               for o in outs]
-        for p, o in zip(ps, outs):
-            sout, serr = p.communicate(timeout=120)
+        try:
+            results = [p.communicate(timeout=120) for p in ps]
+        finally:
+            # (a run that hangs must not keep holding the row's lock)
+            for p in ps:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+        for p, o, (sout, serr) in zip(ps, outs, results):
             self.assertEqual(p.returncode, 0, serr)
             self.assertEqual(json.loads(sout), {}, f"{o}: cases lost")
             for i in range(1, 5):
@@ -273,6 +428,29 @@ class Batches(unittest.TestCase):
                     self.assertEqual([x[0] for x in json.load(f)], [".", f"made-{i}"])
         self.assertFalse(os.path.lexists(bd.case_root(key)))
         os.remove(bd.case_root(key) + ".lock")
+
+    def test_a_run_waiting_for_the_rows_lock_names_its_holder(self):
+        import io
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "row.lock")
+        with open(path, "a+") as held:
+            bd.lock_row(held, path)
+            with open(path, "a+") as waiting, unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                slept = []
+
+                def sleep(s):
+                    # the holder lets go after the waiter's third wait
+                    slept.append(s)
+                    if len(slept) == 3:
+                        fcntl.flock(held, fcntl.LOCK_UN)
+                with unittest.mock.patch.object(bd.time, "sleep", sleep):
+                    bd.lock_row(waiting, path, first=0.0, every=60.0, step=1.0)
+                self.assertEqual(len(slept), 3)
+                self.assertIn(f"waiting 0 s for {path}, held by another run of this row "
+                              f"(last recorded holder: pid {os.getpid()})", err.getvalue())
+                self.assertEqual(err.getvalue().count("waiting"), 1, "it repeats sparsely")
+            with open(path) as f:
+                self.assertEqual(f.read(), str(os.getpid()))
 
     def test_the_case_directory_is_removed_when_a_run_fails(self):
         d = tempfile.mkdtemp()
@@ -322,6 +500,133 @@ class Batches(unittest.TestCase):
         self.assertIn("cannot boot", str(e.exception))
 
 
+class SlotPool(unittest.TestCase):
+    """builtin-diff's driver processes share the conformance runner's
+    machine-wide slot pool (scripts/conf_slots.py)."""
+
+    def pool(self, n=1):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        pool = conf_slots.Pool(d, n)
+        patch = unittest.mock.patch.object(bd, "POOL", pool)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return pool
+
+    def test_a_driver_holds_a_slot_while_it_runs(self):
+        pool = self.pool()
+        slot = os.path.join(pool.dir, "slot-0")
+        lost, recs, out = Batches.run_fake(self, 2, SLOT_FILE=slot)
+        self.assertEqual((lost, len(recs)), ({}, 2))
+        with open(os.path.join(out, "slot")) as f:
+            self.assertEqual(f.read(), "held")
+        # and gives it back when it has ended (a probe that does not wait:
+        # a leaked slot fails here at once)
+        with open(slot, "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.fail("the driver's slot is still held after it ended")
+
+    def test_a_cases_clock_starts_when_its_driver_takes_its_slot(self):
+        # the only slot is someone else's for 2.5 s, past the 1 s limit
+        # run_fake gives each case, and the driver's start takes half of
+        # it: the wait is no case's time
+        pool = self.pool()
+        other = pool.take()
+        timer = threading.Timer(2.5, other.release)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        t0 = time.monotonic()
+        lost, recs, _ = Batches.run_fake(self, 2, START_DELAY=0.5)
+        self.assertGreaterEqual(time.monotonic() - t0, 2.4)
+        self.assertEqual((lost, len(recs)), ({}, 2))
+
+    def test_a_hang_still_times_out_once_its_slot_is_taken(self):
+        self.pool()
+        lost, recs, _ = Batches.run_fake(self, 3, HANG_AT=2)
+        self.assertEqual((lost, len(recs)), ({2: "timeout"}, 2))
+
+    def test_a_pool_directory_removed_mid_run_is_made_again(self):
+        # (/tmp/robigo-conf-slots-<uid> is in a place that gets cleaned)
+        pool = self.pool()
+        with pool.take() as held:
+            self.assertEqual(held.count, 1)
+        shutil.rmtree(pool.dir)
+        with pool.take() as held:
+            self.assertEqual(held.count, 1)
+        self.assertEqual(os.stat(pool.dir).st_mode & 0o777, 0o700)
+        # one that cannot be made again is the pool's error, naming it
+        shutil.rmtree(pool.dir)
+        open(pool.dir, "w").close()
+        self.addCleanup(lambda: os.path.isfile(pool.dir) and os.remove(pool.dir))
+        with self.assertRaises(conf_slots.PoolError) as e:
+            pool.take()
+        self.assertIn(pool.dir, str(e.exception))
+
+    def test_a_slot_held_by_flock_1_is_held_for_the_pool(self):
+        # the other side of the pool: the Rust runner's File::try_lock is
+        # flock(2) (std's sys/fs/unix.rs on Linux), as flock(1) is, and as
+        # the foreman's gate-slot.sh is; a slot one holds, the other waits for.
+        # The holder lets go when its stdin ends: the order is the proof
+        if not shutil.which("flock"):
+            self.skipTest("no flock(1)")
+        pool = self.pool()
+        slot = os.path.join(pool.dir, "slot-0")
+        holder = subprocess.Popen(["flock", "-x", slot, "sh", "-c", "echo held; cat > /dev/null"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(lambda: holder.stdin.closed or holder.stdin.close())
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        took = threading.Event()
+        def take():
+            with pool.take():
+                took.set()
+        t = threading.Thread(target=take)
+        t.start()
+        self.assertFalse(took.wait(2.0), "Pool.take did not wait for flock(1)'s slot")
+        holder.stdin.close()
+        self.assertTrue(took.wait(60), "Pool.take did not get the slot once flock(1) let go")
+        t.join()
+
+    def test_a_take_that_fails_mid_run_ends_the_run_cleanly(self):
+        # a pool that stops working while builtin-diff runs is its PoolError,
+        # caught where a driver's refusal is (no traceback)
+        pool = self.pool()
+        shutil.rmtree(pool.dir)
+        open(pool.dir, "w").close()
+        self.addCleanup(lambda: os.path.isfile(pool.dir) and os.remove(pool.dir))
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        out = os.path.join(d, "out")
+        os.makedirs(out)
+        with self.assertRaises(conf_slots.PoolError):
+            bd.one_run([sys.executable, "-c", "pass"], dict(os.environ), d, out, 1, 1, 1.0)
+        # nothing was opened for the run that could not start
+        self.assertEqual(os.listdir(out), [])
+
+    def test_the_pool_follows_rt_cis_rule(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # the caller's directory wins, empty means none, CI has none
+        self.assertIsNone(bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": ""}))
+        self.assertIsNone(bd.slot_pool({"GITHUB_ACTIONS": "true"}))
+        mine = os.path.join(d, "mine")
+        pool = bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": mine, "ROBIGO_CONF_SLOTS": "3"})
+        self.assertEqual((pool.dir, pool.n), (mine, 3))
+        # otherwise the user's machine-wide one, as rt-ci.py's
+        pool = bd.slot_pool({"XDG_RUNTIME_DIR": d})
+        self.assertEqual((pool.dir, pool.n), (os.path.join(d, "robigo-conf-slots"), len(os.sched_getaffinity(0))))
+        # a pool that cannot be used stops the run
+        os.chmod(mine, 0o755)
+        with self.assertRaises(SystemExit) as e:
+            bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": mine})
+        self.assertIn("not a private directory", str(e.exception))
+        with self.assertRaises(SystemExit) as e:
+            bd.slot_pool({"ROBIGO_CONF_SLOTS_DIR": mine + "2", "ROBIGO_CONF_SLOTS": "0"})
+        self.assertIn("not a positive number", str(e.exception))
+
+
 class Known(unittest.TestCase):
     def test_a_list_for_another_key_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
@@ -337,6 +642,29 @@ class Known(unittest.TestCase):
                 self.assertIsNone(bd.read_known("y", "abc"))
             finally:
                 bd.KNOWN = old
+
+
+class RtRuns(unittest.TestCase):
+    def test_every_robigo_rt_run_starts_with_the_cache_off(self):
+        # the compared runs and --timing's start: one environment, so the
+        # start timed is a compared run's (no warm .rtc beside cache-off runs)
+        a = unittest.mock.Mock(rsrc="/src", boot="rdb")
+        with unittest.mock.patch.dict(os.environ, {"R_HOME": "/usr/lib/R", "ROBIGO_TRANSLATION_CACHE": "1"}):
+            env = bd.rt_env(a, R_ENABLE_JIT="3")
+        self.assertNotIn("R_HOME", env)
+        self.assertEqual((env["ROBIGO_TRANSLATION_CACHE"], env["R_ENABLE_JIT"], env["ROBIGO_RSRC"], env["ROBIGO_RT_BOOT"]),
+                         ("0", "3", "/src", "rdb"))
+        src = open(os.path.join(HERE, "builtin-diff.py")).read()
+        self.assertEqual(src.count("= rt_env(a, "), 2)  # run_rt and --timing's start
+
+    def test_no_cargo_says_what_to_do(self):
+        def missing(*a, **k):
+            raise FileNotFoundError(2, "No such file or directory", "cargo")
+        with unittest.mock.patch.object(bd.subprocess, "run", missing):
+            with self.assertRaises(SystemExit) as e:
+                bd.cargo_target()
+        self.assertIn("no cargo on PATH", str(e.exception.code))
+        self.assertIn("--robigo-rt BIN", str(e.exception.code))
 
 
 if __name__ == "__main__":

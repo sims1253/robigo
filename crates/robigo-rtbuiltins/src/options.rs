@@ -9,7 +9,7 @@
 //! values, as `.Platform`'s are (robigo-rt has no installation of its own).
 //!
 //! Options robigo-rt does not honor yet ([`UNHONORED`]: `verbose` and
-//! the partial-match warnings) cannot be set: GNU R's checks of the value
+//! `warnPartialMatchDollar`) cannot be set: GNU R's checks of the value
 //! run, then "not implemented yet". `width`, `digits`, `max.print` and
 //! `deparse.cutoff` are read where GNU R reads them (robigo-rt's
 //! `PrintInit`).
@@ -281,9 +281,22 @@ pub fn do_get_option(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 
 /// The list with `name` set to `value` (`SetOption`: replaced in place,
 /// or appended), or removed for None; and the old value.
+///
+/// INTERIM(B): a new list, not SetOption's in-place `SETCAR`. The in-place
+/// port is unblocked: with the boot freeze's frozen-reachability pass a
+/// frozen cell written in place or removed is noted, and what it held thaws
+/// (docs/ledger/g3/2026-11-23-h-frozen-pass.md).
 // R: options.c:SetOption
 fn set_option<'g>(cx: &'g Cx, l: Ref<'g>, name: &[u8], value: Option<Ref<'g>>) -> Result<(Ref<'g>, Ref<'g>), NeedGc> {
-    let mut items: Vec<(Sym<'g>, Ref<'g>)> = Vec::new();
+    // sized once: the list's length, and one more for a new option (grown
+    // from empty it reallocated as the start set its ~60 options)
+    let mut len = 0;
+    let mut c = l.as_cons();
+    while let Some(cell) = c {
+        len += 1;
+        c = cell.cdr().as_cons();
+    }
+    let mut items: Vec<(Sym<'g>, Ref<'g>)> = Vec::with_capacity(len + 1);
     let mut c = l.as_cons();
     while let Some(cell) = c {
         items.push((cell.tag().as_sym().expect("robigo: a tagged option"), cell.car()));
@@ -348,7 +361,7 @@ const MANDATORY: &[&str] = &[
 /// Options GNU R reads (or mirrors in C state) where robigo-rt does not
 /// yet: setting one would be accepted without effect, so it is refused
 /// (after GNU R's own checks of the value).
-const UNHONORED: &[&str] = &["verbose", "warnPartialMatchDollar", "warnPartialMatchAttr"];
+const UNHONORED: &[&str] = &["verbose", "warnPartialMatchDollar"];
 
 /// `.Internal(options(...))`: the sorted list with no arguments; else, per
 /// argument, a query (an unnamed string) or an assignment (`name =
@@ -417,17 +430,6 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                     if v.is_some() && UNHONORED.contains(&std::str::from_utf8(nm).unwrap_or("")) {
                         let msg = format!("options({} = )", String::from_utf8_lossy(nm));
                         return Err(not_yet(cx, Some(call), &msg));
-                    }
-                    // keep.source: C reads it only where the console parses
-                    // (R_Parse1Buffer keeps source references when it is
-                    // TRUE, which robigo-rt's console cannot yet) and in
-                    // edit(); parse, source and sys.source read it in R.
-                    // FALSE is honoured as it is; TRUE is refused.
-                    if nm.as_slice() == b"keep.source"
-                        && let Some(k) = v
-                        && crate::util::as_logical(cx, k.bind(cx)) == 1
-                    {
-                        return Err(not_yet(cx, Some(call), "options(keep.source = TRUE) (source references)"));
                     }
                     if v.is_none() && MANDATORY.contains(&std::str::from_utf8(nm).unwrap_or("")) {
                         let msg = format!("option '{}' cannot be deleted", String::from_utf8_lossy(nm));
@@ -683,17 +685,18 @@ fn check_option<'s>(
             }
             s.root(cx, argi.bind(cx))
         }
-        b"catch.script.errors"
-        | b"warnPartialMatchDollar"
-        | b"warnPartialMatchAttr"
-        | b"browserNLdisabled"
-        | b"CBoundsCheck" => {
+        b"catch.script.errors" | b"warnPartialMatchDollar" | b"browserNLdisabled" | b"CBoundsCheck" => {
             tf(cx)?;
             s.root(cx, argi.bind(cx))
         }
         b"warnPartialMatchArgs" => {
             let on = tf(cx)?;
             cx.set_warn_partial_match_args(on);
+            s.root(cx, argi.bind(cx))
+        }
+        b"warnPartialMatchAttr" => {
+            let on = tf(cx)?;
+            cx.set_warn_partial_match_attr(on);
             s.root(cx, argi.bind(cx))
         }
         b"showNCalls" => {

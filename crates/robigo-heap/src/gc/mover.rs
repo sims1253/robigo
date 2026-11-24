@@ -54,11 +54,12 @@ pub const POISON_TYPE: u8 = 0xDB;
 
 /// Under `ROBIGO_GC_MOVE=young:N`: a moving collection copied this object
 /// (it is the copy), so the young collections leave it where it is. Fresh
-/// objects have it clear. The header's free flag bit
-/// ([`flags::SPARE`]), which only the moving collector sets; a copy made
-/// by any later code path that copies flags keeps it, which only means the
-/// copy waits for a full collection to move.
-pub(super) const OLD: u8 = flags::SPARE;
+/// objects have it clear. The header bit the boot heap's freeze uses as
+/// [`flags::FROZEN`]: the moving modes never run with a freeze (the freeze
+/// is off under them, and they cannot start after one), so the two never
+/// meet. A copy made by any later code path that copies flags keeps it,
+/// which only means the copy waits for a full collection to move.
+pub(super) const OLD: u8 = flags::FROZEN;
 
 /// `ROBIGO_GC_MOVE`: off (unset, empty or `0`), `Some(0)` for `1` (every
 /// collection moves everything), `Some(n)` for `young:n` (every n-th moving
@@ -164,6 +165,20 @@ impl Core {
     /// is on, so such an object would move under C. Turn it on before
     /// anything is handed to C.
     pub unsafe fn set_gc_move(&mut self, on: bool) {
+        // (after the boot boundary: its pinned freeze roots are not
+        // forwarded, Sol step 2 r2 S6)
+        assert!(
+            !on || (!self.boundary_drawn() && self.frozen.is_empty()),
+            "robigo: the moving collector cannot start after the boot heap's freeze"
+        );
+        if !on && self.gc_move {
+            // OLD is the bit the boot heap's freeze uses as FROZEN: a heap
+            // that stops moving keeps none of it (Sol r1 S3)
+            self.for_each_live_object(|p| {
+                // SAFETY: a live object's header is readable and writable.
+                unsafe { *p.add(header::OFF_FLAGS) &= !OLD };
+            });
+        }
         self.gc_move = on;
         self.young.full_every = 0;
     }
@@ -178,6 +193,10 @@ impl Core {
     /// # Panics
     /// If `every` is 0.
     pub unsafe fn set_gc_move_young(&mut self, every: u32) {
+        assert!(
+            !self.boundary_drawn() && self.frozen.is_empty(),
+            "robigo: the moving collector cannot start after the boot heap's freeze"
+        );
         assert!(every >= 1, "robigo: a young moving policy needs a full collection every N >= 1");
         self.gc_move = true;
         self.young.full_every = every;
@@ -193,7 +212,9 @@ impl Core {
     /// counts the moving collections. Not while the pin report watches: its
     /// scan is the full collection's.
     pub(super) fn young_collection(&mut self) -> bool {
-        if !self.gc_move {
+        // (before the moves are armed nothing moves, and no collection
+        // counts towards young:N's full ones)
+        if !self.gc_move || !self.moves_armed {
             return false;
         }
         let y = &mut *self.young;
@@ -346,7 +367,8 @@ impl Core {
             let b = (p.0 as usize & !(BLOCK - 1)) as *mut Block;
             let q = if (*b).magic == 0x524f4249474f4241 {
                 let size = SIZES[(*b).class as usize];
-                let q = self.heap.alloc_or_abort(size);
+                let cells = self.charge_copy(p.0);
+                let q = self.heap.alloc_or_abort(size, cells);
                 std::ptr::copy_nonoverlapping(p.0, q, size);
                 self.mark_copy(q);
                 self.young.moved.small.push(p.0);
@@ -355,7 +377,8 @@ impl Core {
                 let base = b as usize;
                 let c = *self.heap.chunks.iter().find(|c| c.base == base)?;
                 let size = c.end - base - DATA_OFF;
-                let q = self.heap.try_alloc_large(size)?;
+                // (its charge goes with it: the old chunk is retired, not swept)
+                let q = self.heap.try_alloc_large(size, *crate::heap::large_cells(base) as usize)?;
                 std::ptr::copy_nonoverlapping(p.0, q, size);
                 *((q as usize - DATA_OFF) as *mut u64).add(1) = self.epoch;
                 self.young.moved.large.push(base);
@@ -493,7 +516,8 @@ impl Core {
             unsafe {
                 let b = (p as usize & !(BLOCK - 1)) as *mut Block;
                 let size = SIZES[(*b).class as usize];
-                let q = self.heap.alloc_or_abort(size);
+                let cells = self.charge_copy(p);
+                let q = self.heap.alloc_or_abort(size, cells);
                 std::ptr::copy_nonoverlapping(p, q, size);
                 *q.add(header::OFF_FLAGS) |= OLD;
                 self.mark_copy(q);
@@ -507,7 +531,10 @@ impl Core {
             let p = (base + DATA_OFF) as *mut u8;
             let size = c.end - base - DATA_OFF;
             // (a refused copy stays where it is: a debug collector degrades)
-            let Some(q) = self.heap.try_alloc_large(size) else { continue };
+            // (its charge goes with it: the old chunk is retired, not swept)
+            // SAFETY: `base` is a large chunk's.
+            let charged = unsafe { *crate::heap::large_cells(base) } as usize;
+            let Some(q) = self.heap.try_alloc_large(size, charged) else { continue };
             // SAFETY: both are large objects' payloads of `size` bytes in
             // different chunks; the copy's chunk header gets this
             // collection's mark.
@@ -521,6 +548,21 @@ impl Core {
         }
         self.stats.moved += (moved.small.len() + moved.large.len()) as u64;
         moved
+    }
+
+    /// Charge a small object's copy: its vector cells, returned for the
+    /// copy's allocation to count in its new block ([`Block::cells`]), and
+    /// added to the vector heap's use here. The old copy's block gives them
+    /// back at the sweep that frees it, so the use is unchanged, as a copy
+    /// is the object and not an allocation.
+    ///
+    /// # Safety
+    /// `p` is a live small object.
+    unsafe fn charge_copy(&mut self, p: *mut u8) -> usize {
+        // SAFETY: the caller's contract.
+        let cells = unsafe { crate::heapsize::object_cells(Sexp(p)) };
+        self.sizes.valloc += cells;
+        cells
     }
 
     /// Whether the marked object `p` may move.

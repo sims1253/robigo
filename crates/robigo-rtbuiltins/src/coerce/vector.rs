@@ -793,7 +793,7 @@ fn coerce_to_symbol<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
     if let Some(m) = untranslated {
         w.push_message(m);
     }
-    let sym = cx.install(&name)?;
+    let sym = cx.install_tr(s, &name)?;
     done(sym, w)
 }
 

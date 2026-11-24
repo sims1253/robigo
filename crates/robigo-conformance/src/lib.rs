@@ -32,6 +32,18 @@
 //!                               test binaries; scripts/rt-ci.py's
 //!                               conformance steps run alone and use
 //!                               every CPU)
+//!   ROBIGO_CONF_SLOTS_DIR=dir   a machine-wide pool of case slots shared by
+//!                               every run that names the same directory
+//!                               (scripts/rt-ci.py sets it for local runs:
+//!                               several checkouts' gates at once): a case
+//!                               takes a slot, a lock on one of
+//!                               `dir/slot-<i>`, before its process starts
+//!                               and holds it until the process ends, and its
+//!                               time limit counts from its start, not from
+//!                               the wait. Off when unset (CI: one run per
+//!                               runner)
+//!   ROBIGO_CONF_SLOTS=n         the pool's size (default: the machine's
+//!                               parallelism)
 //!   ROBIGO_CONF_TIMEOUT=secs    how long one case may run (default 20: a
 //!                               collector mode, gctorture or the moving
 //!                               collector, needs longer)
@@ -40,6 +52,14 @@
 //!                               (repository-relative paths), each of which
 //!                               must exist: scripts/rt-ci.py's table of
 //!                               cases a collector mode makes too slow
+//!   ROBIGO_CONF_TIMES_REPORT=file
+//!                               write each case's wall time there, one
+//!                               line per case run (`secs limit status
+//!                               case`, slowest first, tab-separated), even
+//!                               when the run fails: scripts/rt-ci.py's
+//!                               conformance steps list the cases over half
+//!                               their limit from it. Off when unset or
+//!                               empty; its directory is made if missing
 //!   ROBIGO_R_VERSION=4.6.2      compare with that GNU R version's
 //!                               recordings (default: the column's gated
 //!                               version); a run against another version
@@ -342,9 +362,10 @@ pub const RT: Column = Column {
 /// being PROMSXPs from the start (their REFCNT, `inspect` fields), so it
 /// does not run under `ROBIGO_MATERIALIZE=1`. `volume`: it makes so many
 /// allocations that a collection at each (`ROBIGO_GCTORTURE=1`, whose
-/// cost is allocations times the heap) does not finish it in the case
-/// timeout, so it does not run under gctorture; a smaller case covers its
-/// paths there. `r-home-tools`: it loads tools' native code from the
+/// cost is allocations times the heap) or at each build (retry torture,
+/// `ROBIGO_RETRY_TORTURE=1`) does not finish it in the case timeout, so it
+/// does not run under either; a smaller case covers its paths there.
+/// `r-home-tools`: it loads tools' native code from the
 /// binary's `R_HOME` tree (`library/tools/libs/tools.so`, which
 /// `scripts/rt-home.sh` builds), so it runs where the caller found that
 /// tree, its stamp and the file (robigo-rtapi's conformance test).
@@ -366,7 +387,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
 ];
 
 /// The production identities the environment's observation modes keep
-/// ([`KNOWN_FEATURES`]), `volume` unless gctorture is on,
+/// ([`KNOWN_FEATURES`]), `volume` unless gctorture or retry torture is on,
 /// `collection-schedule` unless gctorture or retry torture is, and
 /// `default-vsize` unless the environment sets the vector heap's sizes; and
 /// whether
@@ -381,7 +402,10 @@ pub fn identity_features() -> (Vec<&'static str>, bool) {
     if !materialize {
         f.push("promise-identity");
     }
-    if !on("ROBIGO_GCTORTURE") {
+    // (each collects so often that a case of many allocations outlasts the
+    // case timeout: gctorture at every allocation, retry torture at every
+    // build's refused first attempt)
+    if !on("ROBIGO_GCTORTURE") && !on("ROBIGO_RETRY_TORTURE") {
         f.push("volume");
     }
     // both make collections GNU R's run does not have: gctorture at every
@@ -420,6 +444,11 @@ pub struct Options {
     /// Cases that may run longer than `timeout` (`ROBIGO_CONF_TIMEOUTS`):
     /// repository-relative path -> timeout.
     pub case_timeouts: BTreeMap<String, Duration>,
+    /// Where to write each case's wall time (`ROBIGO_CONF_TIMES_REPORT`).
+    pub times: Option<PathBuf>,
+    /// The machine-wide pool of case slots (`ROBIGO_CONF_SLOTS_DIR`, sized
+    /// `ROBIGO_CONF_SLOTS`): its directory and size, or none.
+    pub slots: Option<(PathBuf, usize)>,
     /// Changes to each case's environment, after [`command`]'s: a variable
     /// set (`Some`) or removed (`None`). The runner's own environment is
     /// left alone, so a test sets these instead of `std::env::set_var`.
@@ -485,8 +514,36 @@ impl Options {
             jobs,
             timeout,
             case_timeouts,
+            times: std::env::var_os("ROBIGO_CONF_TIMES_REPORT").filter(|p| !p.is_empty()).map(PathBuf::from),
+            slots: slots_from_env()?,
             env: column.case_env(),
         })
+    }
+}
+
+/// `ROBIGO_CONF_TIMES_REPORT`'s file: one line per case run, slowest first,
+/// `secs limit status case` tab-separated (secs to the tenth; the limit
+/// the case ran under, in whole seconds; `pass` or `fail`), after a `#`
+/// header line.
+pub fn write_times(path: &Path, times: &[(Duration, String, bool)], o: &Options) {
+    let mut rows: Vec<&(Duration, String, bool)> = times.iter().collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut text = String::from("# secs\tlimit\tstatus\tcase\n");
+    for (d, id, passed) in rows {
+        let limit = o.case_timeouts.get(id).copied().unwrap_or(o.timeout).as_secs();
+        text.push_str(&format!("{:.1}\t{limit}\t{}\t{id}\n", d.as_secs_f64(), if *passed { "pass" } else { "fail" }));
+    }
+    // (made if missing, as write_results does: a lost report would read as
+    // "no case over half its limit")
+    // (its directory's error said, not only the write's "No such file")
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("ROBIGO_CONF_TIMES_REPORT: making {}: {e}", dir.display());
+        return;
+    }
+    if let Err(e) = std::fs::write(path, text) {
+        eprintln!("ROBIGO_CONF_TIMES_REPORT: writing {}: {e}", path.display());
     }
 }
 
@@ -693,7 +750,19 @@ pub struct Outcome {
     pub stderr_ok: bool,
     pub status_ok: bool,
     pub diff: String,
+    /// The case's stderr line that says the byte-code crosscheck lost a
+    /// record ([`UNWRITTEN_REPORT`], with its paths and errors): the run
+    /// fails, ratcheted or not.
+    pub report_unwritten: Option<String>,
 }
+
+/// What robigo-rt's crosscheck prints when it can write neither its report
+/// nor `<report>.lost` (crates/robigo-rt/src/compile/crosscheck.rs,
+/// `RECORD_LOST`, the same string: robigo-rtapi's tests/conformance.rs runs
+/// the two together; with `.lost` made, rt-ci's report check fails on that file
+/// instead). For a ratcheted case the stderr diff already fails the run;
+/// for an unratcheted one the record would otherwise be lost silently.
+pub const UNWRITTEN_REPORT: &[u8] = b"robigo: bc crosscheck: record lost:";
 
 impl Outcome {
     pub fn passed(&self) -> bool {
@@ -710,12 +779,132 @@ fn case_command(o: &Options, script: &Path) -> Command {
             None => cmd.env_remove(k),
         };
     }
+    default_sigint(&mut cmd);
     cmd
 }
 
+/// The case starts with SIGINT at its default, as GNU R's recordings were
+/// made: a runner started from a background shell (`cmd &`, which ignores
+/// SIGINT for what it runs) would pass SIG_IGN on, and robigo-rt keeps an
+/// ignored SIGINT ignored as GNU R does (main.c:setup_Rmainloop), so a
+/// case that raises one (tests/rt/capi/interrupt.R) failed in every such
+/// run and passed in the foreground.
+#[allow(unsafe_code)]
+fn default_sigint(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only signal(), which is async-signal-safe; it touches no other state.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+}
+
+/// A slot of the machine-wide pool (`ROBIGO_CONF_SLOTS_DIR`): held while a
+/// case's process runs, released when dropped (or by the kernel when this
+/// process ends: the lock is the open file's).
+struct Slot(#[allow(dead_code)] Option<std::fs::File>);
+
+/// `ROBIGO_CONF_SLOTS_DIR` and `ROBIGO_CONF_SLOTS`: the pool's directory
+/// and size (default: the machine's parallelism), or none.
+fn slots_from_env() -> Result<Option<(PathBuf, usize)>, String> {
+    let Some(dir) = std::env::var_os("ROBIGO_CONF_SLOTS_DIR").filter(|d| !d.is_empty()) else { return Ok(None) };
+    let n = match std::env::var("ROBIGO_CONF_SLOTS") {
+        Err(_) => std::thread::available_parallelism().map_or(2, |n| n.get()),
+        Ok(s) => match s.trim().parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => return Err(format!("ROBIGO_CONF_SLOTS={s:?} is not a positive number")),
+        },
+    };
+    let dir = PathBuf::from(dir);
+    private_dir(&dir).map_err(|e| format!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()))?;
+    Ok(Some((dir, n)))
+}
+
+/// `dir` made private (0700) if missing: another user able to write in a
+/// pool's directory could replace a slot file (scripts/rt-ci.py refuses a
+/// pool that is not private).
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    // an existing one must be private too: this user's, a directory, no
+    // group or other bits (as scripts/rt-ci.py checks the one it names)
+    let m = std::fs::symlink_metadata(dir)?;
+    // SAFETY: getuid() has no preconditions and cannot fail.
+    #[allow(unsafe_code)]
+    let me = unsafe { libc::getuid() };
+    if !m.is_dir() || m.uid() != me || m.mode() & 0o077 != 0 {
+        return Err(std::io::Error::other(format!(
+            "not a private directory of this user's (mode {:o}): another user could replace a slot file",
+            m.mode() & 0o7777
+        )));
+    }
+    Ok(())
+}
+
+/// A free slot of the pool, waiting for one; none without a pool. The
+/// first slot tried differs by process and thread, so that runs starting
+/// together do not all queue on slot 0.
+fn take_slot(pool: &Option<(PathBuf, usize)>) -> Slot {
+    let Some((dir, n)) = pool else { return Slot(None) };
+    private_dir(dir).unwrap_or_else(|e| panic!("ROBIGO_CONF_SLOTS_DIR {}: {e}", dir.display()));
+    let start = (std::process::id() as usize).wrapping_mul(31).wrapping_add(thread_index()) % n;
+    let since = Instant::now();
+    let mut said = Duration::ZERO;
+    loop {
+        for j in 0..*n {
+            let path = dir.join(format!("slot-{}", (start + j) % n));
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+            match f.try_lock() {
+                Ok(()) => return Slot(Some(f)),
+                // another case holds it: try the next
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                // a filesystem that does not lock would make every worker
+                // wait forever, before any case's timeout starts
+                Err(std::fs::TryLockError::Error(e)) => panic!("lock {}: {e}", path.display()),
+            }
+        }
+        // (a stuck pool told apart from a hung case: a line after 10 s of
+        // waiting, then every minute; no cap)
+        let waited = since.elapsed();
+        if waited >= said + if said.is_zero() { Duration::from_secs(10) } else { Duration::from_secs(60) } {
+            said = waited;
+            eprintln!(
+                "robigo-conformance: waiting {} s for a conformance slot ({n} in {})",
+                waited.as_secs(),
+                dir.display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A small number that differs between this process's threads.
+fn thread_index() -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::thread::current().id().hash(&mut h);
+    h.finish() as usize
+}
+
 /// Run `cmd` (of the binary `bin`), killed after `timeout`: (stdout,
-/// stderr, exit status, timed out).
-fn run_command(mut cmd: Command, bin: &Path, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool) {
+/// stderr, exit status, timed out, how long it ran). With a slot pool
+/// (`ROBIGO_CONF_SLOTS_DIR`) it first waits for a slot, and its time and
+/// its limit count from its start: the wait is not the case's.
+fn run_command(mut cmd: Command, o: &Options, timeout: Duration) -> (Vec<u8>, Vec<u8>, i32, bool, Duration) {
+    let bin = &o.bin;
+    let slot = take_slot(&o.slots);
+    // the case's clock from the moment it may run: the slot taken, before
+    // the spawn (a loaded machine may run the child before this thread
+    // gets back from spawning it and its readers)
+    let start = Instant::now();
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -733,7 +922,6 @@ fn run_command(mut cmd: Command, bin: &Path, timeout: Duration) -> (Vec<u8>, Vec
         let _ = err.read_to_end(&mut s);
         s
     });
-    let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
@@ -741,12 +929,19 @@ fn run_command(mut cmd: Command, bin: &Path, timeout: Duration) -> (Vec<u8>, Vec
         }
         if start.elapsed() > timeout {
             let _ = child.kill();
+            // reaped, so the process is gone before its slot is
+            let _ = child.wait();
             timed_out = true;
             break -1;
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    (t_out.join().unwrap(), t_err.join().unwrap(), status, timed_out)
+    let ran = start.elapsed();
+    // the slot goes with the case's process, not with its pipes: a
+    // descendant that keeps one open must not hold a slot (the readers
+    // below wait for it)
+    drop(slot);
+    (t_out.join().unwrap(), t_err.join().unwrap(), status, timed_out, ran)
 }
 
 fn first_diff(expected: &str, got: &str, runtime: &str) -> String {
@@ -782,7 +977,14 @@ fn boot_record(column: &Column, o: &Options) -> String {
     std::fs::write(&script, "invisible(NULL)\n").unwrap_or_else(|e| panic!("write {}: {e}", script.display()));
     let mut cmd = case_command(o, &script);
     cmd.env(var, "1");
-    let (_, err, _, timed_out) = run_command(cmd, &o.bin, o.timeout);
+    // (no byte-code crosscheck: the probe is no case, and its records would
+    // land in the report the cases' are counted from, unchecked; nor the
+    // freeze check's report, where its full-check tally would count for the
+    // cases, Sol's R1 on the check-cost PR)
+    cmd.env_remove("ROBIGO_BC_CROSSCHECK")
+        .env_remove("ROBIGO_BC_CROSSCHECK_REPORT")
+        .env_remove("ROBIGO_GC_FREEZE_CHECK_REPORT");
+    let (_, err, _, timed_out, _) = run_command(cmd, o, o.timeout);
     let _ = std::fs::remove_dir_all(&dir);
     if timed_out {
         return format!(
@@ -823,18 +1025,32 @@ fn check(
     script: &Path,
     o: &Options,
     record: &std::sync::OnceLock<String>,
-) -> Outcome {
+) -> (Outcome, Option<Duration>) {
     let id = case_id(root, script);
     let base = expected_base(root, suite, script, &o.version);
     let exp = match read_recording(&base, script, &o.version) {
         Ok(r) => r,
         Err(why) => {
             let diff = format!("    {why} for GNU R {}\n", o.version);
-            return Outcome { id, unrecorded: Some(why), stdout_ok: false, stderr_ok: false, status_ok: false, diff };
+            return (
+                Outcome {
+                    id,
+                    unrecorded: Some(why),
+                    stdout_ok: false,
+                    stderr_ok: false,
+                    status_ok: false,
+                    diff,
+                    report_unwritten: None,
+                },
+                None,
+            );
         }
     };
     let timeout = o.case_timeouts.get(&id).copied().unwrap_or(o.timeout);
-    let (out, err, status, timed_out) = run_command(case_command(o, script), &o.bin, timeout);
+    // the case's own run, timed alone: neither the wait for a slot nor the
+    // boot probe below (the first failure's, which other failing cases wait
+    // for) is its time
+    let (out, err, status, timed_out, ran) = run_command(case_command(o, script), o, timeout);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut diff = String::new();
     if timed_out {
@@ -863,7 +1079,9 @@ fn check(
         // probed once, by the first case that fails
         diff.push_str(record.get_or_init(|| boot_record(column, o)));
     }
-    Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff }
+    let report_unwritten =
+        String::from_utf8_lossy(&err).lines().find(|l| l.as_bytes().starts_with(UNWRITTEN_REPORT)).map(str::to_owned);
+    (Outcome { id, unrecorded: None, stdout_ok, stderr_ok, status_ok, diff, report_unwritten }, Some(ran))
 }
 
 /// What a run found.
@@ -949,13 +1167,18 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     let record = std::sync::OnceLock::new();
     let queue = std::sync::Mutex::new(jobs);
     let results = std::sync::Mutex::new(Vec::new());
+    let times = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| {
                 loop {
                     let next = queue.lock().unwrap().pop();
                     let Some((suite, p)) = next else { break };
-                    let r = check(root, column, suite, &p, o, &record);
+                    let (r, ran) = check(root, column, suite, &p, o, &record);
+                    // (a case with no recording did not run: it has no time)
+                    if let Some(ran) = ran {
+                        times.lock().unwrap().push((ran, r.id.clone(), r.passed()));
+                    }
                     results.lock().unwrap().push(r);
                 }
             });
@@ -963,6 +1186,11 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     });
     let mut outcomes: Vec<Outcome> = results.into_inner().unwrap();
     outcomes.sort_by(|a, b| a.id.cmp(&b.id));
+    // (before any check below can end the run: a run that fails on a
+    // timeout is the one whose times matter)
+    if let Some(path) = &o.times {
+        write_times(path, &times.into_inner().unwrap(), o);
+    }
 
     let ran: BTreeSet<&str> = outcomes.iter().map(|r| r.id.as_str()).collect();
     let all_listed: BTreeSet<&String> = listed.values().flatten().collect();
@@ -1051,6 +1279,15 @@ pub fn run(root: &Path, column: &Column, o: &Options) -> Result<Report, String> 
     );
     if outcomes.is_empty() {
         eprintln!("(no {} case selected: the filter matches only cases it has not ratcheted)", column.runtime);
+    }
+    let unwritten: Vec<String> =
+        outcomes.iter().filter_map(|r| r.report_unwritten.as_ref().map(|l| format!("  {}: {l}", r.id))).collect();
+    if !unwritten.is_empty() {
+        return Err(format!(
+            "{} case(s) lost a record of the byte-code crosscheck, ratcheted or not:\n{}",
+            unwritten.len(),
+            unwritten.join("\n")
+        ));
     }
     if !gated && !outcomes.is_empty() && compared == 0 {
         return Err(format!(
@@ -1222,6 +1459,48 @@ mod boot_record_tests {
         assert!(std::env::var_os("ROBIGO_CONF_TEST_SET").is_none());
     }
 
+    /// The boot probe is no case: it runs without the byte-code crosscheck,
+    /// whose records would land in the report the cases' are counted from,
+    /// and writes no freeze check report, where its full-check tally would
+    /// count for the cases (Sol's R9 on the check-cost PR).
+    #[cfg(unix)]
+    #[test]
+    fn the_boot_probe_runs_without_the_crosscheck() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = super::scratch_dir("probe-env");
+        let bin = dir.join("says");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\necho \"crosscheck=${ROBIGO_BC_CROSSCHECK:-off} report=${ROBIGO_BC_CROSSCHECK_REPORT:-none} freeze=${ROBIGO_GC_FREEZE_CHECK_REPORT:-none}\" >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let o = Options {
+            bin,
+            version: RT.gated.to_string(),
+            filter: None,
+            diff: false,
+            update: false,
+            sweep: false,
+            features: Vec::new(),
+            results: None,
+            jobs: 1,
+            timeout: Duration::from_secs(10),
+            case_timeouts: BTreeMap::new(),
+            times: None,
+            slots: None,
+            // (as a crosscheck step's environment gives every case)
+            env: vec![
+                ("ROBIGO_BC_CROSSCHECK".into(), Some("1".into())),
+                ("ROBIGO_BC_CROSSCHECK_REPORT".into(), Some("/tmp/report".into())),
+                ("ROBIGO_GC_FREEZE_CHECK_REPORT".into(), Some("/tmp/freeze".into())),
+            ],
+        };
+        let r = boot_record(&RT, &o);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(r.contains("crosscheck=off report=none freeze=none"), "{r}");
+    }
+
     /// A binary that hangs at startup: the probe is killed at the case
     /// timeout and says so, rather than wedging the run.
     #[cfg(unix)]
@@ -1244,6 +1523,8 @@ mod boot_record_tests {
             jobs: 1,
             timeout: Duration::from_secs(1),
             case_timeouts: BTreeMap::new(),
+            times: None,
+            slots: None,
             env: Vec::new(),
         };
         let t = Instant::now();

@@ -56,7 +56,8 @@ pub fn support_object(src: &str, name: &str, defines: &[&str]) -> PathBuf {
     let defines: Vec<String> = defines.iter().map(|d| d.to_string()).collect();
     let key = support_key(&src, &defines);
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("capi_test-{name}-{key:016x}"));
-    std::fs::create_dir_all(&dir).expect("making a support object's directory");
+    // (made in build_support, under the lock: another test's cleanup, made
+    // under it too, would otherwise see the new directory empty and remove it)
     let out = dir.join(format!("{name}.so"));
     build_support(&src, &defines, &out);
     out
@@ -108,6 +109,8 @@ fn build_support(src: &Path, extra: &[String], out: &Path) {
         .open(dir.join("capi_test.lock"))
         .expect("opening the support objects' lock");
     lock.lock().expect("locking the support objects");
+    std::fs::create_dir_all(out.parent().expect("a support object's directory"))
+        .expect("making a support object's directory");
     if out.exists() {
         // each use dates the object (before it is loaded): the cleanup
         // below removes only what no run has used for a day
@@ -145,7 +148,7 @@ fn build_support(src: &Path, extra: &[String], out: &Path) {
 /// dates the object it uses, under the lock, before loading it, so an
 /// object another checkout uses stays. A directory of [`support_object`]'s
 /// goes with its object.
-fn remove_stale_objects(dir: &Path, keep: &Path) {
+pub fn remove_stale_objects(dir: &Path, keep: &Path) {
     let day = std::time::Duration::from_secs(24 * 60 * 60);
     let old = |p: &Path| {
         std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > day)
@@ -160,7 +163,10 @@ fn remove_stale_objects(dir: &Path, keep: &Path) {
         if p.is_dir() {
             let objects: Vec<PathBuf> =
                 std::fs::read_dir(&p).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-            if objects.iter().all(|o| old(o)) {
+            // (an empty directory is dated by itself: `all` of none is true,
+            // and a directory made a moment ago must stay)
+            let stale = if objects.is_empty() { old(&p) } else { objects.iter().all(|o| old(o)) };
+            if stale {
                 let _ = std::fs::remove_dir_all(&p);
             }
         } else if old(&p) {

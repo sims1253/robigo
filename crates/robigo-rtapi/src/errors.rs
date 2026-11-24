@@ -112,12 +112,21 @@ entry! {
         Err(cx.error(&format!("{fun}: argument of type {t} is not an external pointer")))
     }
 
-    /// `PROTECT` past `R_PPStackSize`: GNU R's `R_signal_protect_error`
-    /// signals a preallocated `protectStackOverflowError` condition inside
-    /// the red zone, which needs the condition system's classes.
+    /// `PROTECT` past `R_PPStackSize`, from api.c's
+    /// `R_signal_protect_error` (its context restores the size as the exit
+    /// leaves): the `protectStackOverflowError` condition (NULL call). With
+    /// the red zone still closed it is opened and the condition's calling
+    /// handlers run; once it is open they are skipped (they might overflow
+    /// again).
     // R: memory.c:R_signal_protect_error
     [0] fn robigo_rtapi_protect_error() -> () => |cx, _s| {
-        Err(not_yet(cx, "R_signal_protect_error (a protect stack overflow's condition)"))
+        let cond = if cx.pp_size() < cx.pp_real_size() {
+            cx.open_pp_red_zone();
+            robigo_rtcore::PROT_SO
+        } else {
+            robigo_rtcore::ErrorCond { exit_only: true, ..robigo_rtcore::PROT_SO }
+        };
+        Err(cx.error_condition_call(None, &cond))
     }
 
     /// `UNPROTECT(n)` of more than the stack holds.
@@ -185,6 +194,19 @@ pub unsafe extern "C" fn robigo_rtapi_print(to_stderr: c_int, buf: *const c_char
     unsafe {
         robigo_rtcore::enter_leaf(|cx| if to_stderr != 0 { cx.reprintf(b) } else { cx.rprintf(b) });
     }
+}
+
+/// C's first writable `DATAPTR` of a frozen vector of objects (api.c): the
+/// object is logged as a root, once, so that C's raw writes into its
+/// elements are traced (robigo-heap's `freeze.rs`).
+///
+/// # Safety
+/// `x` is a live object of the thread's isolate.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn robigo_rtapi_remember(x: Sexp) {
+    // SAFETY: called from C code of the thread's isolate, with `x` a live
+    // object of its heap (the caller's contract).
+    unsafe { robigo_rtcore::enter_leaf(|cx| cx.remember_raw(x)) };
 }
 
 /// The heap's barrier store of `v` into the traced field `slot` of `x`

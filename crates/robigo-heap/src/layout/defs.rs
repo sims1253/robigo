@@ -328,11 +328,18 @@ pub mod flags {
     /// sets it on the objects it promotes (sticky marks, docs/core.md §11),
     /// so the inline fast path stays one test of this byte.
     pub const BARRIER: u8 = 0x10;
-    /// Free. Was the second header mark color, retired when marks moved to
-    /// the side bitmaps (docs/core.md §10). Kept for the barrier work: Ruby
-    /// RGenGC's "write-barrier unprotected" bit for objects whose payload
-    /// pointer C has (`DATAPTR` on a STRSXP or VECSXP: docs/core.md §11).
-    pub const SPARE: u8 = 0x20;
+    /// One of the boot heap's frozen objects (`gc/freeze.rs`): set with
+    /// [`IMMORTAL`] by the freeze, cleared when the frozen-reachability pass
+    /// makes the object ordinary again. The store barrier's fast path tests
+    /// it with [`BARRIER`] (a store into a frozen object takes the slow
+    /// path, which notes a frozen value overwritten), and "is this frozen"
+    /// is this bit. The moving collector's modes use the same bit as their
+    /// `OLD` mark (`gc/mover.rs`): they never run with a freeze (the freeze
+    /// is off under them, and they cannot start after it). Was the second
+    /// header mark color, retired when marks moved to the side bitmaps
+    /// (docs/core.md §10); RGenGC's "write-barrier unprotected" role it was
+    /// kept for is `extra::SEEN_BY_C`'s.
+    pub const FROZEN: u8 = 0x20;
     /// An ENVSXP laid out as a slot frame or an overflow block
     /// ([`super::slots`]): its body is the slot map, not node fields.
     pub const SLOTS: u8 = 0x40;
@@ -346,7 +353,7 @@ pub mod flags {
         EXTDATA as u64,
         IMMORTAL as u64,
         BARRIER as u64,
-        SPARE as u64,
+        FROZEN as u64,
         SLOTS as u64,
         NO_TRACKREFS as u64,
     ]));
@@ -597,7 +604,7 @@ pub mod extra {
         const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, CALL_LIVE as u64, ESCAPED as u64]));
     }
 
-    /// A vector. Free: 0, 3, 5, 6, 8-12, 14, 15.
+    /// A vector. Free: 0, 5, 6, 8-12, 14, 15.
     pub mod vector {
         /// GNU R's RTRACE (`sxpinfo.trace`): `tracemem` is on.
         pub const TRACE: u16 = 1 << 1;
@@ -608,11 +615,21 @@ pub mod extra {
         /// Bit 2 is free on main and in all four X3 layout cells (a code
         /// object takes bit 8, the h24 cells bit 0): H, 2026-11-17.
         pub const OWN_ALTREP: u16 = 1 << 2;
-        const _: () = assert!(super::super::disjoint(&[super::TYPE_BLIND as u64, TRACE as u64, OWN_ALTREP as u64]));
+        /// The boot heap's freeze leaves this object ordinary (robigo-heap's
+        /// `gc/freeze.rs`): set on a RAWSXP that is replaced soon after the
+        /// boot, so that its replacement writes over no frozen object. C1's
+        /// translation-cache stub sets it. The freeze tests it on RAWSXPs only.
+        pub const NO_FREEZE: u16 = 1 << 3;
+        const _: () = assert!(super::super::disjoint(&[
+            super::TYPE_BLIND as u64,
+            TRACE as u64,
+            OWN_ALTREP as u64,
+            NO_FREEZE as u64
+        ]));
     }
 
     /// A code object (robigo-rt's `code.rs`: a VECSXP), which has the
-    /// vector bits too. Free: 0, 3, 5, 6, 9-12, 14, 15.
+    /// vector bits too. Free: 0, 5, 6, 9-12, 14, 15.
     pub mod code {
         /// The code object holds weak cache words (inline caches that
         /// name an object without keeping it alive: docs/g3.md §6.1, the
@@ -624,6 +641,7 @@ pub mod extra {
             super::TYPE_BLIND as u64,
             super::vector::TRACE as u64,
             super::vector::OWN_ALTREP as u64,
+            super::vector::NO_FREEZE as u64,
             WEAK_CACHE as u64
         ]));
     }
@@ -656,6 +674,8 @@ pub const TABLE: &[(&str, u64)] = &[
     ("FLAG_ALTREP", flags::ALTREP as u64),
     ("FLAG_EXTDATA", flags::EXTDATA as u64),
     ("FLAG_IMMORTAL", flags::IMMORTAL as u64),
+    ("FLAG_BARRIER", flags::BARRIER as u64),
+    ("FLAG_FROZEN", flags::FROZEN as u64),
     ("EXTRA_SEEN_BY_C", extra::SEEN_BY_C as u64),
     ("GP_S4", gp::S4 as u64),
     ("GP_CHAR_HASHASH", gp::charsxp::HASHASH as u64),

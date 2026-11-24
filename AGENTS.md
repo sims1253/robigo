@@ -112,6 +112,17 @@ See `docs/verification.md` for everything; in short:
   about 30% slower, so never measure with it.
 - `cargo test` runs unit tests, the parser oracle and the conformance suite;
   add `--profile quick` for a binary close to `release` speed.
+- `robigo-rt` (G3's runtime, `cargo build --release -p robigo-rtapi --bin
+  robigo-rt`) boots base GNU R's way, from base's database tree, which its
+  binary writes: `scripts/rt-home-db.sh --robigo-rt BIN` (into
+  `.robigo/rt-home-db`; without it a start exits 2 naming this command).
+  `ROBIGO_RT_BOOT=m1` runs the interim M1 loader instead, until it is
+  deleted. A fresh checkout needs nothing more before `cargo test`: the
+  tests that spawn robigo-rt make the two trees for the binary they test
+  (`crates/robigo-rtapi/tests/common/db_tree.rs`, about 25 s the first
+  time and again whenever that binary changes, then a stamp check). They
+  need GNU R 4.6.2's sources, as `scripts/rt-home.sh` does
+  (`scripts/r-src.sh` fetches them).
 - `scripts/corpus.py run fastr --filter 'TestBuiltin_paste'` runs a slice of
   a corpus; `scripts/corpus.py show fastr ID` diffs one case.
 - `scripts/perf.py run --metric instr --filter shootout/` measures
@@ -141,6 +152,9 @@ time on a shared target directory (`~/.cache/cargo-target`, set by the
 checkouts' parent `.cargo/config.toml`): one build at a time
 (`scripts/build.sh` takes a lock), build only the crates you need
 (`cargo test -p robigo-numerics`), run corpora with `--filter`, and leave
-the full runs to CI. `cargo fmt` before committing and `scripts/lint.sh`
-before pushing (CI checks both; `git config core.hooksPath .githooks` makes
-the push do it). Lints that a C port should ignore are allowed in `Cargo.toml`.
+the full runs to CI. `cargo fmt` before committing. **Before pushing:
+`scripts/lint-job.sh`**, which is CI's whole `lint` job: fmt, `scripts/lint.sh`
+(clippy), and the script suites the job runs. `scripts/lint.sh` alone does not
+run those suites, so it is not a green lint job. `git config core.hooksPath
+.githooks` makes the push run it. Lints that a C port should ignore are
+allowed in `Cargo.toml`.

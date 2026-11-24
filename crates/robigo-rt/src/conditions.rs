@@ -134,6 +134,7 @@ pub(crate) fn install_hooks(cx: &mut Cx) {
     let mut h = cx.hooks();
     h.error = error_hook;
     h.error_condition = error_condition_hook;
+    h.warning_condition = warning_condition_hook;
     h.interrupt = onintr_hook;
     h.warning = warning_hook;
     h.exit_value = fixup_exiting_handler_result;
@@ -369,16 +370,20 @@ pub fn error_hook(cx: &mut Cx, call: Option<Root<'_>>, msg: &[u8]) -> RError {
 /// condition's classes, the handler stack restored after them, then the
 /// default handling of its message.
 ///
-/// GNU R makes the expression and node stack overflows' conditions once
+/// GNU R makes the expression, node and protect stack overflows' conditions once
 /// (`R_InitConditions`, with a NULL call); one is made here per signal,
 /// with the same value.
 // R: errors.c:R_signalErrorConditionEx, R_vmakeErrorCondition
 pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::ErrorCond<'_>) -> RError {
     // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...)
     let msg = trunc(robigo_rtcore::c_str_bytes(c.msg), BUFSIZE - 1).to_vec();
-    let preset = matches!(c.subclass, Some("expressionStackOverflowError" | "nodeStackOverflowError"));
+    let preset = matches!(
+        c.subclass,
+        Some("expressionStackOverflowError" | "nodeStackOverflowError" | "protectStackOverflowError")
+    );
     cx.scope(|cx, s| {
-        let cond = match make_error_condition(cx, s, if preset { None } else { call }, c, &msg) {
+        let call = if preset { None } else { call };
+        let cond = match make_condition(cx, s, call, CondBase::Error, c.class, c.subclass, c.fields, &msg) {
             Ok(cond) => cond,
             Err(e) => return e,
         };
@@ -391,31 +396,82 @@ pub fn error_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtco
     })
 }
 
-/// `R_vmakeErrorCondition(call, class, subclass, nextra, msg)` and
-/// `R_setConditionField` of each of `c`'s fields: the list `(message,
-/// call, fields...)`, named, of class `c(subclass, class, "error",
-/// "condition")`.
-// R: errors.c:R_vmakeErrorCondition, R_setConditionField
-fn make_error_condition<'s>(
+/// The isolate's classed-warning hook: GNU R's `R_makeWarningCondition(
+/// call, class, subclass, nextra, msg)` with its fields set, then
+/// `R_signalWarningCondition(cond)`: base's `warning(cond)` evaluated in a
+/// new environment enclosed by the base namespace, `R_Visible` kept: the
+/// condition goes through `warning()`'s R code, as GNU R's does.
+// R: errors.c:R_vmakeWarningCondition, R_signalWarningCondition
+pub fn warning_condition_hook(cx: &mut Cx, call: Option<Root<'_>>, c: &robigo_rtcore::WarningCond<'_>) -> RResult<()> {
+    // Rvsnprintf_mbcs(emsg_buf, BUFSIZE, ...)
+    let msg = trunc(robigo_rtcore::c_str_bytes(c.msg), BUFSIZE - 1).to_vec();
+    cx.scope(|cx, s| {
+        let cond = make_condition(cx, s, call, CondBase::Warning, c.class, c.subclass, c.fields, &msg)?;
+        let cond_sym = sym(cx, s, b"cond")?;
+        let warning_sym = sym(cx, s, b"warning")?;
+        let o = s.out(cx);
+        let expr = o.root();
+        cx.build(o, |cx| {
+            let a = cx.cons(cond_sym.bind(cx), cx.nil())?;
+            cx.lcons(warning_sym.bind(cx), a)
+        })?;
+        let ns = s.root(cx, cx.base_namespace());
+        let o = s.out(cx);
+        let env = o.root();
+        cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 0))?;
+        cx.define_var(cond_sym, cond, env)?;
+        eval_keep_vis(cx, expr, env)
+    })
+}
+
+/// The base class of a condition [`make_condition`] builds: GNU R's two
+/// builders, `R_vmakeErrorCondition`'s "error" and
+/// `R_vmakeWarningCondition`'s "warning".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CondBase {
+    Error,
+    Warning,
+}
+
+impl CondBase {
+    /// The class after the condition's own, before "condition".
+    fn class(self) -> &'static str {
+        match self {
+            CondBase::Error => "error",
+            CondBase::Warning => "warning",
+        }
+    }
+}
+
+/// `R_vmakeErrorCondition` / `R_vmakeWarningCondition(call, class,
+/// subclass, nextra, msg)` (by `base`) and
+/// `R_setConditionField` of each of `fields`: the list `(message, call,
+/// fields...)`, named, of class `c(subclass, class, base, "condition")`.
+// R: errors.c:R_vmakeErrorCondition, R_vmakeWarningCondition, R_setConditionField
+#[allow(clippy::too_many_arguments)]
+fn make_condition<'s>(
     cx: &mut Cx,
     s: Scope<'s>,
     call: Option<Root<'_>>,
-    c: &robigo_rtcore::ErrorCond<'_>,
+    base: CondBase,
+    class: &str,
+    subclass: Option<&str>,
+    fields: &[(&'static str, Root<'_>)],
     msg: &[u8],
 ) -> RResult<Root<'s>> {
     let o = s.out(cx);
     let r = o.root();
     cx.build(o, |cx| {
-        let n = 2 + c.fields.len();
+        let n = 2 + fields.len();
         let m = cx.mk_string(msg, Encoding::Native)?;
         let mut names = cx.alloc_vector::<Char<'_>>(n)?;
         names.set(0, cx.mk_char(b"message", Encoding::Native)?);
         names.set(1, cx.mk_char(b"call", Encoding::Native)?);
-        for (i, (nm, _)) in c.fields.iter().enumerate() {
+        for (i, (nm, _)) in fields.iter().enumerate() {
             names.set(2 + i, cx.mk_char(nm.as_bytes(), Encoding::Native)?);
         }
         let names = names.finish();
-        let classes: Vec<&str> = c.subclass.into_iter().chain([c.class, "error", "condition"]).collect();
+        let classes: Vec<&str> = subclass.into_iter().chain([class, base.class(), "condition"]).collect();
         let mut klass = cx.alloc_vector::<Char<'_>>(classes.len())?;
         for (i, k) in classes.iter().enumerate() {
             klass.set(i, cx.mk_char(k.as_bytes(), Encoding::Native)?);
@@ -424,7 +480,7 @@ fn make_error_condition<'s>(
         let mut l = cx.alloc_vector::<Ref<'_>>(n)?;
         l.set(0, m);
         l.set(1, call.map_or(cx.nil(), |c| c.bind(cx)));
-        for (i, (_, v)) in c.fields.iter().enumerate() {
+        for (i, (_, v)) in fields.iter().enumerate() {
             l.set(2 + i, v.bind(cx));
         }
         // setAttrib(cond, R_NamesSymbol, names), then the class
@@ -571,8 +627,150 @@ fn goto_exiting_handler(cx: &mut Cx, cond: Root<'_>, call: Option<Root<'_>>, ent
                 r.set_elt(2, handler);
             }
         }
-        cx.find_context(ctxt::FUNCTION, rho, Some(result))
+        // (try_cmpfun's entry: its record is native, not a function's)
+        let mask = if handler == cx.unbound().sexp() { ctxt::CCODE } else { ctxt::FUNCTION };
+        cx.find_context(mask, rho, Some(result))
     })
+}
+
+/// cmp.R's `tryCmpfun(f)` and `tryCompile(e)` around a JIT compile, `body`:
+/// `tryCatch(cmpfun(f), error = function(e) { notifyCompilerError(paste(
+/// e$message, "at", deparse(e$call))); f })`, made here because robigo's
+/// compiler is Rust. An exiting handler for class `"error"` is the
+/// innermost while `body` runs, so an error inside the compile (an R error
+/// of code it runs: a promise it forces, a warning made an error, a
+/// handler's `stop()`, the evaluation depth) ends the compile and nothing
+/// outside sees it. Then the compiler's message is given (silent under
+/// `compilerOptions$suppressAll`, the default) and the result is None: the
+/// closure or loop runs uncompiled. Other exits pass: interrupts,
+/// restarts, another condition's exiting handler, `return`s.
+///
+/// The entry is `mkHandlerEntry("error", R_GlobalEnv, <unbound>, target,
+/// result, FALSE)`: `goto_exiting_handler` sends an entry whose handler is
+/// R_UnboundValue to a `CTXT_CCODE` record whose `cloenv` is `target`, the
+/// one this function makes (GNU R's goes to `doTryCatch`'s frame). The
+/// record has the innermost record's call, so `error()` and `warning()`
+/// report what they report without it.
+///
+/// The JIT is off while the compile and the handler run, and the level is
+/// restored only when they return: an exit that leaves them (a handler's
+/// error, a jump to another condition's exiting handler, an interrupt)
+/// leaves the level as it is then, 0 unless code they ran changed it, as
+/// GNU R's callers set `R_jit_enabled = 0` around `R_cmpfun` and restore
+/// it after the call, which a longjmp skips.
+///
+/// R code that runs inside the compile (a promise it forces, a warning's
+/// handler, the compiler's message) sees no R frame of the compile:
+/// `sys.call()`, `sys.function()`, `parent.frame()` and `sys.calls()`
+/// there see the frames outside the compiled call's (the record is
+/// CTXT_CCODE, which they skip, and its fresh `cloenv` is no frame of
+/// theirs), where GNU R's see `tryCmpfun`, `tryCatch`, `tryCatchList`,
+/// `tryCatchOne`, `doTryCatch` and cmp.R's own frames below the called
+/// function's; a traceback of an error that leaves the compile differs
+/// the same way (`tests/rt/jit/compile-error-frames.R`, not ratcheted).
+/// The record's call is the innermost record's, so `error()` and
+/// `warning()` report the call they report without it; cmp.R's warnings
+/// carry cmp.R's own calls ([`crate::cenv::raise_compile_warnings`]), as
+/// in GNU R.
+///
+/// INTERIM(V4 step 3): when cmp.R's own code compiles, its `tryCmpfun`
+/// runs and this function goes, with its one call per compile entry
+/// (compile.rs) and the CCODE case above.
+// R: cmp.R:tryCmpfun, tryCompile; conditions.R:tryCatch, tryCatchOne
+pub(crate) fn try_cmpfun(
+    cx: &mut Cx,
+    body: impl FnOnce(&mut Cx) -> RResult<Option<robigo_heap::Sexp>>,
+) -> RResult<Option<robigo_heap::Sexp>> {
+    cx.scope(|cx, s| {
+        let o = s.out(cx);
+        let target = o.root();
+        cx.build(o, |cx| cx.new_env(cx.empty_env(), false, 0))?;
+        let o = s.out(cx);
+        let result = o.root();
+        cx.build(o, |cx| {
+            let mut r = cx.alloc_vector::<Ref<'_>>(RESULT_SIZE)?;
+            r.set(RESULT_SIZE - 1, state(cx).handler_result_token.bind(cx));
+            Ok(r.finish().into())
+        })?;
+        let call = s.root(cx, cx.global_context().call());
+        let base = s.root(cx, cx.base_env());
+        // the JIT off for the compile and its handler (R_execClosure's and
+        // R_compileAndExecute's `R_jit_enabled = 0`), restored only when
+        // the compile returns: an exit that leaves it leaves the JIT off,
+        // as GNU R's longjmp skips the restore
+        let jit = &crate::prims::state(cx).jit;
+        let saved = jit.get();
+        jit.set(crate::jit::Config { level: 0, ..saved });
+        let r = cx.with_context(ctxt::CCODE, call, target, base, None, |cx, _| {
+            let o = s.out(cx);
+            let stack = o.root();
+            cx.build(o, |cx| {
+                let mut e = cx.alloc_vector::<Ref<'_>>(5)?;
+                e.set(0, cx.mk_char(b"error", Encoding::Native)?.as_ref());
+                e.set(1, cx.global_env());
+                e.set(2, cx.unbound());
+                e.set(3, target.bind(cx));
+                e.set(4, result.bind(cx));
+                // (gp 0: an exiting handler)
+                cx.cons(e.finish().as_ref(), cx.handler_stack())
+            })?;
+            cx.set_handler_stack(stack);
+            body(cx)
+        });
+        let code = match r {
+            Ok(code) => code,
+            Err(robigo_rtcore::Left::Exit(e)) => return Err(e),
+            Err(robigo_rtcore::Left::Landed(_)) => {
+                notify_compiler_error(cx, s, result)?;
+                None
+            }
+        };
+        crate::prims::state(cx).jit.set(saved);
+        Ok(code)
+    })
+}
+
+/// tryCmpfun's handler after the jump: `tryCatchOne`'s condition from the
+/// result vector, then the handler, `function(e) notifyCompilerError(
+/// paste(e$message, "at", deparse(e$call)))`, called with it in the
+/// compiler's namespace: always, as GNU R's does, so that the option is
+/// read as cmp.R reads it then (`compilerOptions$suppressAll`, which `!`
+/// and `if` take, their errors included) and a `notifyCompilerError` that
+/// was replaced or traced runs. It runs only after a failed compile.
+/// Nothing runs when the compiler is not loaded: INTERIM(L5), the source
+/// boot's JIT compiles without it, where GNU R's loads it at boot.
+// R: cmp.R:tryCmpfun, notifyCompilerError; conditions.R:tryCatchOne
+fn notify_compiler_error(cx: &mut Cx, s: Scope<'_>, result: Root<'_>) -> RResult<()> {
+    let pkg = sym(cx, s, b"compiler")?;
+    let ns = {
+        let (Some(reg), Some(y)) = (crate::dispatch::env_ref(cx.namespace_registry()), pkg.bind(cx).as_sym()) else {
+            return Ok(());
+        };
+        match cx.frame_binding(reg, y) {
+            robigo_rtcore::Lookup::Bound(b) => match b.get(cx) {
+                robigo_rtcore::BindingValue::Value(v) => v.sexp(),
+                _ => return Ok(()),
+            },
+            _ => return Ok(()),
+        }
+    };
+    // SAFETY: a namespace the registry holds.
+    let ns = s.root(cx, unsafe { Ref::from_sexp(ns, cx) });
+    const NOTIFY: &str = "{
+        cond <- value[[1L]]
+        if (is.null(cond)) cond <- simpleError(.Internal(geterrmessage()), value[[2L]])
+        else if (is.character(cond)) cond <- simpleError(cond, value[[2L]])
+        (function(e) notifyCompilerError(paste(e$message, \"at\", deparse(e$call))))(cond)
+    }";
+    let exprs = s.capture(cx, |cx, o| crate::lower::parse(cx, NOTIFY, o))?;
+    let e = s.root(cx, exprs.bind(cx).as_vector::<Ref<'_>>().unwrap().get(0));
+    let o = s.out(cx);
+    let env = o.root();
+    cx.build(o, |cx| cx.new_env(ns.bind(cx), false, 1))?;
+    let value = sym(cx, s, b"value")?;
+    cx.define_var(value, result, env)?;
+    let o = s.out(cx);
+    crate::eval(cx, e, env, o)
 }
 
 /// `R_FixupExitingHandlerResult(result)`: before `on.exit` code runs while
@@ -849,8 +1047,7 @@ fn jump_to_top_ex(
         return e;
     }
     // only an interactive session, options(error) or
-    // options(catch.script.errors) save the traceback (R_Interactive is
-    // FALSE)
+    // options(catch.script.errors) save the traceback
     let catch_script_errors = cx.scope(|cx, s| {
         get_option1(cx, s, b"catch.script.errors")
             .map(|c| {
@@ -860,7 +1057,7 @@ fn jump_to_top_ex(
             })
             .unwrap_or(false)
     });
-    if (have_handler || catch_script_errors)
+    if (have_handler || catch_script_errors || robigo_rtbuiltins::sysutils::interactive(cx))
         && traceback
         && state(cx).in_error.get() < 2
         && state(cx).in_error.get() == old_in_error
@@ -1980,6 +2177,26 @@ pub fn onintr_hook(cx: &mut Cx) -> RResult<()> {
     })?;
     cx.reprintf(b"\n");
     Err(jump_to_top_ex(cx, true, try_user_error, true, true, false, None))
+}
+
+/// `onintrNoResume()` (`onintrEx(FALSE)`), the console read's interrupt
+/// (sys-std.c's `handleInterrupt`): the `interrupt` condition signalled with
+/// no `resume` restart, then the console's newline and the jump to the top
+/// level, as [`onintr_hook`]'s.
+// R: errors.c:onintrEx, unix/sys-std.c:handleInterrupt
+pub fn onintr_no_resume(cx: &mut Cx) -> RError {
+    if let Err(e) = signal_interrupt(cx) {
+        return e;
+    }
+    let try_user_error = match cx.scope(|cx, s| -> RResult<bool> {
+        let h = get_option1(cx, s, b"interrupt")?;
+        Ok(h.bind(cx).sexptype() == NILSXP)
+    }) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    cx.reprintf(b"\n");
+    jump_to_top_ex(cx, true, try_user_error, true, true, false, None)
 }
 
 /// `signalInterrupt()`: the handlers for `interrupt` or `condition`,

@@ -927,7 +927,8 @@ pub fn env_value_sym(cx: &mut Cx, env: Root<'_>, sym: Root<'_>, out: Out<'_>) ->
         if val == cx.unbound() {
             out.set(cx, cx.nil());
         } else if val.sexptype() == PROMSXP {
-            cx.force(vr, out)?;
+            // R: y = eval(y, R_GlobalEnv)
+            cx.eval_promise(vr, out)?;
         } else {
             out.set(cx, val);
         }
@@ -958,10 +959,12 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
     };
     let inp = {
         let c = input.bind(cx).as_char().expect("robigo: '$' takes a CHARSXP name");
-        // (one copy: the name outlives the `&mut Cx` uses below)
-        crate::text::to_native(crate::coerce::text(c), cx.locale())
-            .map(|b| b.into_owned())
-            .unwrap_or_else(|_| c.bytes().to_vec())
+        // (one copy, on the stack for a short name: the name outlives the
+        // `&mut Cx` uses below; GNU R reads translateChar(input) in place)
+        match crate::text::to_native(crate::coerce::text(c), cx.locale()) {
+            Ok(b) => robigo_rtcore::NameBuf::new(&b),
+            Err(_) => robigo_rtcore::NameBuf::new(c.bytes()),
+        }
     };
     match xt {
         OBJSXP if s4 => Err(util::not_yet(cx, Some(call), "'$' of an S4 object")),
@@ -1052,7 +1055,27 @@ pub fn subset3_dflt(cx: &mut Cx, x: Root<'_>, input: Root<'_>, call: Root<'_>, o
             out.set(cx, v);
             Ok(())
         }
-        ENVSXP => env_value(cx, x, &inp, out),
+        ENVSXP => {
+            // installTrChar(input): a name that needs translating is
+            // translated with its warning (translateChar's, for a list or
+            // pairlist above, gives none)
+            let c = input.bind(cx).as_char().expect("robigo: '$' takes a CHARSXP name");
+            if c.is_ascii() {
+                // (install's checks: an empty name, one past 10000 bytes)
+                if let Err(m) = crate::text::check_install_name(&inp) {
+                    return Err(cx.error(&m));
+                }
+                return env_value(cx, x, &inp, out);
+            }
+            let (name, w) = match crate::text::install_tr_name(crate::coerce::text(c), cx.locale()) {
+                Ok((n, w)) => (robigo_rtcore::NameBuf::new(&n), w),
+                Err(d) => return Err(cx.raise(d)),
+            };
+            if let Some(w) = w {
+                cx.warning(&w)?;
+            }
+            env_value(cx, x, &name, out)
+        }
         LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
             Err(cx.error_call(Some(call), "$ operator is invalid for atomic vectors"))
         }

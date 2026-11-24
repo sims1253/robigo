@@ -65,6 +65,7 @@ closure Sys.setFileTime files.R
 closure Sys.setenv getenv.R
 closure Sys.time datetime.R
 closure Sys.unsetenv getenv.R
+closure [.Date dates.R
 closure [.factor factor.R
 closure activeBindingFunction bindenv.R
 closure alist formals.R
@@ -123,6 +124,7 @@ closure builtins builtins.R
 closure bzfile connections.R
 closure cat cat.R
 closure cbind New-Internal.R
+closure charToRaw raw.R
 closure character vector.R
 closure chkDots warnings.R
 closure close connections.R
@@ -219,6 +221,7 @@ closure ifelse ifelse.R
 closure importIntoEnv namespace.R
 closure infoRDS serialize.R
 closure inherits New-Internal.R
+closure intToUtf8 raw.R
 closure integer vector.R
 closure interaction interaction.R
 closure invokeRestart conditions.R
@@ -386,6 +389,8 @@ closure stdout connections.R
 closure stop stop.R
 closure stopifnot stop.R
 closure storage.mode mode.R
+closure str2expression parse.R
+closure str2lang parse.R
 closure strptime datetime.R
 closure strrep character.R
 closure strsplit grep.R
@@ -648,6 +653,7 @@ internal builtins
 internal bzfile
 internal cat
 internal cbind
+internal charToRaw
 internal close
 internal colSums
 internal compareNumericVersion
@@ -716,6 +722,7 @@ internal iconv
 internal identical
 internal importIntoEnv
 internal inherits
+internal intToUtf8
 internal internalsID
 internal is.builtin.internal
 internal is.unsorted
@@ -815,6 +822,8 @@ internal stderr
 internal stdin
 internal stdout
 internal stop
+internal str2expression
+internal str2lang
 internal strptime
 internal strrep
 internal strsplit

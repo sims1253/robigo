@@ -48,7 +48,16 @@ pub enum Need {
     /// promise is reachable from a binding or a root.
     Force(Sexp),
     /// cmp.R would stop with an error: GNU R leaves the code uncompiled.
+    /// From the byte-code translation: byte code it does not translate
+    /// (yet), which raises "not implemented yet" when it runs.
     Fail,
+    /// The byte code is not what GNU R's compiler makes, and reading it as
+    /// such would misread it (an operand out of its range, a constant of
+    /// another kind, a stack the code's own jumps disagree about): the code
+    /// raises "robigo: malformed byte code: ..." when it runs (#976). Only
+    /// the byte-code translation stops so; the compiler's own
+    /// `bc_untranslated` says why.
+    Malformed,
 }
 
 impl From<NeedGc> for Need {
@@ -1443,19 +1452,250 @@ unsafe fn head_name(cx: &Cx, head: Sexp) -> Result<Option<Sexp>, Need> {
     }
 }
 
-/// A length-1 string's symbol (`assign("x", ...)`'s name), if `x` is one.
+/// A length-1 string's symbol (`assign("x", ...)`'s name), if `x` is one:
+/// the name cmp.R's `addVar` assigns (`assign(v, 1, envir = vars)`, whose
+/// do_assign installs it by `installTrChar`), translated to the native
+/// encoding. A name that does not translate warns there, inside the
+/// compiler: the warning is kept for the end of the compile
+/// ([`CompileWarnings`]). A name `install` refuses (a zero-length one, one
+/// past MAXIDSIZE, a non-ASCII "bytes" one) is an error in cmp.R, so no
+/// compile ([`Need::Fail`]): the code is run uncompiled, and raises it.
 ///
 /// # Safety
 /// `x` is live.
+// R: cmp.R:addVar; envir.c:do_assign; sysutils.c:installTrChar
 unsafe fn string1_sym(cx: &Cx, x: Sexp) -> Result<Option<Sexp>, Need> {
     // SAFETY: the caller's contract.
     unsafe {
         if x.typ() == STRSXP && x.std_len() == 1 {
             let c = *(x.std_data() as *const Sexp);
-            return Ok(Some(cx.install(c.char_bytes())?.as_ref().sexp()));
+            let (sym, warning) = match install_tr(cx, c)? {
+                Ok(t) => (Some(t.0), t.1),
+                Err((_, w)) => (None, w),
+            };
+            if let Some(w) = warning {
+                crate::prims::state(cx).compile_warnings.push(CompileWarning::AddVar, w);
+            }
+            // (do_assign's install fails after translateToNative's warning)
+            return sym.map(Some).ok_or(Need::Fail);
         }
     }
     Ok(None)
+}
+
+/// The symbol `addVar(as.character(v), vars)` assigns for an assignment's
+/// target string `v` (getAssignedVar keeps all of it): do_assign's, with
+/// its warning for a longer vector before installTrChar's, both kept for
+/// the end of findLocals ([`CompileWarnings`]). An empty one is
+/// do_assign's error, so no compile.
+///
+/// # Safety
+/// `v` is a live character vector.
+// R: cmp.R:getAssignedVar, addVar; envir.c:do_assign
+unsafe fn addvar_sym(cx: &Cx, v: Sexp) -> Result<Sexp, Need> {
+    // SAFETY: the caller's contract.
+    unsafe {
+        match v.std_len() {
+            0 => Err(Need::Fail),
+            1 => string1_sym(cx, v)?.ok_or(Need::Fail),
+            _ => {
+                let at = CompileWarning::AddVar;
+                let w = &crate::prims::state(cx).compile_warnings;
+                w.push(at, "only the first element is used as variable name".to_owned());
+                let first = cx.alloc_vector_raw(STRSXP, 1)?;
+                first.set_elt(0, *(v.std_data() as *const Sexp));
+                string1_sym(cx, first)?.ok_or(Need::Fail)
+            }
+        }
+    }
+}
+
+/// `installTrChar(c)` for the compiler, which holds raw objects: the
+/// symbol named by CHARSXP `c`'s native translation (a new one's PRINTNAME
+/// `c` itself when no translation was needed: a UTF-8 name keeps its mark,
+/// [`Cx::install_tr`]), with the text of translateToNative's warning when
+/// the name did not translate (`mustWork = 2`: installed with escapes,
+/// after the warning); or GNU R's error for the name, both `error()`s:
+/// translateToNative's for a non-ASCII "bytes" name, `install`'s for a
+/// name of no bytes or past MAXIDSIZE, with the warning translateToNative
+/// gave before it (a name whose escapes take it past MAXIDSIZE).
+///
+/// # Safety
+/// `c` is a live CHARSXP of `cx`'s isolate.
+// R: sysutils.c:installTrChar, names.c:install
+#[allow(clippy::type_complexity)]
+pub(crate) unsafe fn install_tr(
+    cx: &Cx,
+    c: Sexp,
+) -> Result<Result<(Sexp, Option<String>), (String, Option<String>)>, Need> {
+    // SAFETY: the caller's contract.
+    let ch = unsafe { Ref::from_sexp(c, cx) }.as_char().ok_or(Need::Fail)?;
+    let text = robigo_rtbuiltins::coerce::text(ch);
+    let (name, warning) = match robigo_text::translate_char_warn(text, robigo_rtbuiltins::text::ctype(cx.locale())) {
+        Ok(t) => t,
+        Err(e) => return Ok(Err((e.to_string(), None))),
+    };
+    let warning = warning.map(|t| robigo_rtbuiltins::text::unable_to_translate(&t));
+    if let Err(msg) = robigo_rtbuiltins::text::check_install_name(&name) {
+        return Ok(Err((msg, warning)));
+    }
+    let sym = cx.install_tr(ch, &name)?.as_ref().sexp();
+    Ok(Ok((sym, warning)))
+}
+
+/// Where cmp.R's R code warns that a name does not translate, in a
+/// compile: the call its warning names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompileWarning {
+    /// `addVar`'s `assign(v, 1, envir = vars)`, for each name findLocals
+    /// finds (in each of findLocalsList's passes).
+    AddVar,
+    /// `cmpAssign`'s `as.name(getAssignedVar(e, cntxt))`, for an
+    /// assignment to a string.
+    AsName,
+}
+
+/// The warnings of the compile under way (cmp.R's [`CompileWarning`]s, in
+/// the order cmp.R gives them), raised by [`raise_compile_warnings`] when
+/// the compile is over. An attempt the compile retries starts them again
+/// ([`CompileWarnings::clear`]), so each is raised once. The first
+/// `prelude` of them are those given before the body's compile (the
+/// function's findLocals), which GNU R gives before it decides anything
+/// ([`raise_prelude`]).
+#[derive(Default)]
+pub struct CompileWarnings(std::cell::RefCell<Vec<(CompileWarning, String)>>, std::cell::Cell<usize>);
+
+impl CompileWarnings {
+    /// A warning given now.
+    pub fn push(&self, at: CompileWarning, msg: String) {
+        self.0.borrow_mut().push((at, msg));
+    }
+
+    /// Forget the warnings given so far (a new attempt of the compile).
+    pub fn clear(&self) {
+        self.0.borrow_mut().clear();
+        self.1.set(0);
+    }
+
+    /// The warnings given so far are the prelude: given before the body's
+    /// compile.
+    pub fn mark_prelude(&self) {
+        self.1.set(self.len());
+    }
+
+    /// How many warnings the prelude has.
+    pub fn prelude(&self) -> usize {
+        self.1.get()
+    }
+
+    /// How many were given: a mark to [`CompileWarnings::truncate`] to.
+    pub fn len(&self) -> usize {
+        self.0.borrow().len()
+    }
+
+    /// Whether none was given.
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+
+    /// Forget those given after `mark` (a compile whose warnings GNU R
+    /// never sees: the crosscheck's).
+    pub fn truncate(&self, mark: usize) {
+        self.0.borrow_mut().truncate(mark);
+    }
+
+    fn take(&self) -> Vec<(CompileWarning, String)> {
+        std::mem::take(&mut self.0.borrow_mut())
+    }
+}
+
+/// Raise the compile's warnings ([`CompileWarnings`]) as GNU R's compiler
+/// gives them: `warning()` inside the R function cmp.R calls, so each names
+/// that function's call.
+// R: cmp.R:addVar, cmpAssign
+pub fn raise_compile_warnings(cx: &mut Cx) -> robigo_rtcore::RResult<()> {
+    let ws = crate::prims::state(cx).compile_warnings.take();
+    raise_warnings(cx, ws)
+}
+
+/// Raise the compile's prelude ([`CompileWarnings::prelude`]: findLocals'
+/// warnings, given before the body's compile) and forget the rest: the
+/// caller compiles again after them, as a handler they run may change what
+/// cmp.R decides (a binding it makes, an option), and that compile gives
+/// the rest again.
+pub fn raise_prelude(cx: &mut Cx) -> robigo_rtcore::RResult<()> {
+    let w = &crate::prims::state(cx).compile_warnings;
+    let mut ws = w.take();
+    ws.truncate(w.prelude());
+    w.clear();
+    raise_warnings(cx, ws)
+}
+
+/// The warnings `ws` given, each `warningcall` of its cmp.R call, with the
+/// JIT off as during GNU R's compile (`R_execClosure`'s and
+/// `R_compileAndExecute`'s `R_jit_enabled = 0`): a handler they run sees
+/// level 0 and compiles nothing. Restored when they return; an exit
+/// leaves the level as it is (GNU R restores it after `R_cmpfun`, which a
+/// longjmp skips).
+// R: eval.c:R_execClosure (R_CheckJIT), R_compileAndExecute
+fn raise_warnings(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtcore::RResult<()> {
+    if ws.is_empty() {
+        return Ok(());
+    }
+    let jit = &crate::prims::state(cx).jit;
+    let saved = jit.get();
+    jit.set(crate::jit::Config { level: 0, ..saved });
+    raise_each(cx, ws)?;
+    // (an exit leaves the level as it is then: GNU R's longjmp skips the
+    // restore, so a handler's enableJIT() stands)
+    crate::prims::state(cx).jit.set(saved);
+    Ok(())
+}
+
+fn raise_each(cx: &mut Cx, ws: Vec<(CompileWarning, String)>) -> robigo_rtcore::RResult<()> {
+    for (at, msg) in ws {
+        let call = cx.retry_alloc(|cx| {
+            // SAFETY: fresh nodes and symbols; nothing collects in this
+            // interval.
+            unsafe { warning_call(cx, at) }
+        })?;
+        cx.scope(|cx, s| {
+            // SAFETY: a fresh call, rooted at once.
+            let c = s.root(cx, unsafe { Ref::from_sexp(call, cx) });
+            cx.warning_call(Some(c), &msg)
+        })?;
+    }
+    Ok(())
+}
+
+/// The call a [`CompileWarning`] names: `assign(v, 1, envir = vars)` or
+/// `as.name(getAssignedVar(e, cntxt))`, as cmp.R's source has it.
+///
+/// # Safety
+/// The result is fresh: the caller roots it before the next safepoint.
+unsafe fn warning_call(cx: &Cx, at: CompileWarning) -> Result<Sexp, NeedGc> {
+    let nil = cx.nil().sexp();
+    let sym = |name: &[u8]| cx.install(name).map(|s| s.as_ref().sexp());
+    // SAFETY: the caller's contract; each node is reached from the next.
+    unsafe {
+        match at {
+            CompileWarning::AddVar => {
+                let one = cx.alloc_vector_raw(REALSXP, 1)?;
+                *(one.std_data() as *mut f64) = 1.0;
+                let envir = cx.alloc_node_raw(LISTSXP, sym(b"vars")?, nil, sym(b"envir")?)?;
+                let l = cx.alloc_node_raw(LISTSXP, one, envir, nil)?;
+                let l = cx.alloc_node_raw(LISTSXP, sym(b"v")?, l, nil)?;
+                cx.alloc_node_raw(LANGSXP, sym(b"assign")?, l, nil)
+            }
+            CompileWarning::AsName => {
+                let l = cx.alloc_node_raw(LISTSXP, sym(b"cntxt")?, nil, nil)?;
+                let l = cx.alloc_node_raw(LISTSXP, sym(b"e")?, l, nil)?;
+                let inner = cx.alloc_node_raw(LANGSXP, sym(b"getAssignedVar")?, l, nil)?;
+                let l = cx.alloc_node_raw(LISTSXP, inner, nil, nil)?;
+                cx.alloc_node_raw(LANGSXP, sym(b"as.name")?, l, nil)
+            }
+        }
+    }
 }
 
 /// `findLocalsList1(elist, shadowed, cntxt)`: the variables found, in the
@@ -1565,7 +1805,7 @@ pub(crate) unsafe fn assigned_var(cx: &Cx, e: Sexp) -> Result<Sexp, Need> {
         }
         match v.typ() {
             SYMSXP => return Ok(v),
-            STRSXP => return string1_sym(cx, v)?.ok_or(Need::Fail),
+            STRSXP => return addvar_sym(cx, v),
             _ => {}
         }
         while v.typ() == LANGSXP {
@@ -1620,11 +1860,12 @@ pub unsafe fn may_call_browser(cx: &Cx, st: &RtState, cenv: &Cenv<'_>, e: Sexp) 
 /// `is.simpleInternal(def)` (with `simpleFormals` and `simpleArgs`): `def`
 /// is a closure without `...` whose defaults are constants, and whose body
 /// is one `.Internal` call of a builtin internal with formals or constants
-/// as its arguments. The internal call when it is.
+/// as its arguments. The internal call when it is. The body is `body(def)`
+/// as cmp.R reads it, through R_ClosureExpr: byte code's source.
 ///
 /// # Safety
 /// `def` is live.
-// R: cmp.R:is.simpleInternal, simpleFormals, simpleArgs
+// R: cmp.R:is.simpleInternal, simpleFormals, simpleArgs; eval.c:R_ClosureExpr
 pub unsafe fn simple_internal(cx: &Cx, st: &RtState, def: Sexp) -> Option<Sexp> {
     let missing = cx.missing_arg().sexp();
     let not_simple = |t: u8| matches!(t, SYMSXP | LANGSXP | PROMSXP | BCODESXP);
@@ -1641,7 +1882,10 @@ pub unsafe fn simple_internal(cx: &Cx, st: &RtState, def: Sexp) -> Option<Sexp> 
         if forms.iter().any(|&(d, _)| d != missing && not_simple(d.typ())) {
             return None;
         }
-        let mut b = def.cdr();
+        // cmp.R reads `body(def)`, R_ClosureExpr: a byte-code body (base's
+        // closures as the lazy-load database installs them) is judged by
+        // its source, its first constant (tests/simple_internal.rs)
+        let mut b = robigo_rtbuiltins::bytecode::expr(cx, Ref::from_sexp(def.cdr(), cx)).sexp();
         if b.typ() == LANGSXP && b.car() == st.syms.brace {
             let a = elements(cx, b, true);
             if a.len() == 1 {

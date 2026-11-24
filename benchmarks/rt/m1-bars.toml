@@ -37,6 +37,20 @@
 #   "guard" group's, or another group's), measured with the bars and held
 #   only to the 0.5% rule against main: a common VM path the bars' rows do
 #   not reach. It needs no GNU R number. A guard's row is not also a bar's.
+# - [[startup]]: a start of robigo-rt, `--vanilla -e 1` with
+#   R_DEFAULT_PACKAGES=NULL (scripts/rt-startup.py's STARTS: `name`), each
+#   binary from the R_HOME trees its own build writes. Three numbers:
+#   - callgrind's total instructions, the median over environment shifts;
+#   - peak anonymous memory and peak RSS, the median of `--startup-runs`
+#     runs with address randomization off.
+#   They are held to main's binary: instructions +0.5%, anonymous memory
+#   +1% (at least 64 KiB), peak RSS +5% (its file-backed part follows code
+#   layout). GNU R's start named `gnur` (rt-startup.py's GNUR_STARTS) is
+#   shown beside it, report only: the distance to L5's condition, "at or
+#   below GNU R's startup" (docs/ledger/g3/2026-11-23-startup-rows.md).
+#   The rdb starts run as they ship, with the translation cache (#979);
+#   `rdb-nocache` guards the uncached path, the translator's cost.
+#   rt-startup.py reserves `rdb-pkgs` for L5's default packages.
 # Every row and program here is also compared with main's binary of the
 # merge's base, measured on the same runner: more than the threshold slower
 # fails the gate.
@@ -115,6 +129,13 @@ max = 1.0
 # rival (about 1.095x, F2 revised, docs/ledger/g3/2026-11-17-a0b-stock-rival.md)
 # and owed by P3, M3's bar-closing package. Until then the gate holds it to
 # the 0.5% rule against main, as fib.
+# rt-bars' NOTE that it meets 1.0x (0.928x under m1, 0.932x under rdb) stands
+# unacted on: the ratio holds GNU R's minor collection inside the row's
+# window and none of robigo-rt's. With neither side collecting it is 1.061x,
+# amortised over many collections 1.111x (X's three-ratio table on main
+# a0440322a; docs/ledger/g3/2026-11-23-row-collections.md). Whether a bar
+# may be met on today's ratio is the open decision on how the bars count
+# collections; the bar stays unmet until it is made.
 row = "s3"
 against = "gnur"
 max = 1.0
@@ -236,3 +257,19 @@ row = "guard-dollar-assign" # l$a <- i on a list
 row = "guard-while" # a while loop
 [[guard]]
 row = "guard-repeat" # a repeat loop left by break
+
+[[startup]]
+name = "interim"
+gnur = "jit"
+
+[[startup]]
+name = "rdb-jit"
+gnur = "jit"
+
+[[startup]]
+name = "rdb-nojit"
+gnur = "nojit"
+
+[[startup]]
+name = "rdb-nocache"
+gnur = "jit"

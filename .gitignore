@@ -1,6 +1,7 @@
 /target
 *.swp
 .Rhistory
+.RData
 /.claude/
 /.robigo/
 /fuzz/target/

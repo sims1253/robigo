@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 
 mod diag;
+mod freeze;
 mod mover;
 pub use diag::PinReportTo;
 pub use mover::POISON_TYPE;
@@ -405,6 +406,70 @@ fn torture_from_env() -> (i32, i32) {
     (if wait > 0 { wait } else { gap }, gap)
 }
 
+/// `ROBIGO_TORTURE_AFTER_START`: a test hook, not a GNU R setting. `1`
+/// asks the embedder that arms it (robigo-rt's front end: where it arms
+/// `ROBIGO_FAIL_ALLOC_AT`) to hold the environment's gctorture
+/// (`R_GCTORTURE`, `ROBIGO_GCTORTURE`) and `ROBIGO_GC_MOVE`'s moves through
+/// the start ([`Core::hold_torture_until_armed`], then
+/// [`Core::arm_after_start`]), so a torture run does not torture every
+/// case's start. The heap never reads it itself: an embedder that would not
+/// arm must not hold. Unset (the default) is GNU R's: InitMemory reads the
+/// torture settings, and the whole start runs under them.
+///
+/// # Panics
+/// On a value other than unset, empty, `0` or `1`.
+pub fn torture_after_start_from_env() -> bool {
+    match std::env::var("ROBIGO_TORTURE_AFTER_START").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Ok("") | Err(_) => false,
+        Ok(other) => panic!("robigo: ROBIGO_TORTURE_AFTER_START={other:?} is neither \"0\" nor \"1\""),
+    }
+}
+
+/// Whether the environment turns gctorture on, read as the heap reads it
+/// at its creation (InitMemory's init_gctorture: `R_GCTORTURE`, else
+/// `ROBIGO_GCTORTURE`, a positive gap after atoi).
+pub fn gctorture_from_env() -> bool {
+    torture_from_env().1 > 0
+}
+
+/// The heap's logical peaks under `ROBIGO_GC_STATS`, in bytes: what the
+/// heap's own bookkeeping says, never where the kernel or the allocator put
+/// anything, so the same allocation sequence gives the same figures.
+///
+/// Bytes in use are the objects allocated and not swept (the last sweep's
+/// live bytes, slot classes and large chunks, plus what was allocated since,
+/// requests rounded to 16) and the claimed blocks' headers. Objects are
+/// freed only by a collection's sweep, and chunks are acquired only by
+/// allocation and released only by a collection, so between two
+/// collections both grow: sampled at each collection's start and at the
+/// report, the maxima are the peaks, not an approximation of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Peaks {
+    /// Bytes in use at their peak: `objects + block_overhead`.
+    pub in_use: u64,
+    /// At that peak: the objects' bytes. A large object counts its chunk
+    /// once a sweep has seen it, and its request (rounded to 16) before.
+    pub objects: u64,
+    /// At that peak: the claimed blocks' headers (`heap::DATA_OFF` each).
+    pub block_overhead: u64,
+    /// At that peak: the bytes of the large objects' chunks.
+    pub large: u64,
+    /// The chunks mapped, small and large, at their own peak.
+    pub chunks_mapped: u64,
+}
+
+/// [`Core`]'s `sweep_kinds` (tests only): a small block the sweep skipped,
+/// as nothing died in it.
+#[cfg(test)]
+const SWEPT_SKIPPED: usize = 0;
+/// ... one it walked, with survivors.
+#[cfg(test)]
+const SWEPT_PARTLY: usize = 1;
+/// ... one it walked to empty.
+#[cfg(test)]
+const SWEPT_EMPTY: usize = 2;
+
 /// One heap and its tables. Single-threaded, like R's values.
 pub struct Core {
     heap: Heap,
@@ -412,6 +477,11 @@ pub struct Core {
     /// panic out of a collection (`tests::death`).
     #[cfg(test)]
     panic_at: tests::PanicAt,
+    /// The sweep's small blocks by how it settled them, indexed by
+    /// [`SWEPT_SKIPPED`], [`SWEPT_PARTLY`] and [`SWEPT_EMPTY`] (the tests'
+    /// `Block::cells` coverage).
+    #[cfg(test)]
+    sweep_kinds: [u64; 3],
     mark_stack: Vec<Sexp>,
     /// the collection's number: large objects are marked by storing it in
     /// their chunk's header (no clearing between collections)
@@ -447,6 +517,10 @@ pub struct Core {
     own_poll: AtomicU32,
     /// `ROBIGO_GC_STATS`, read when the core is made
     stats_mode: StatsMode,
+    /// `ROBIGO_GC_STATS`'s logical peaks ([`Core::peaks`]), sampled where
+    /// they can be at their highest: at each collection's start, before
+    /// anything is freed, and when the stats are reported.
+    peaks: Peaks,
     /// the bounds of the thread the core is bound to (the evaluator's)
     stack_top: usize,
     stack_lo: usize,
@@ -520,6 +594,15 @@ pub struct Core {
     /// `ROBIGO_GC_MOVE` (`mover.rs`): collections move what they may and
     /// poison the old copies.
     gc_move: bool,
+    /// Under `gc_move`: collections may move. Off from the core's creation
+    /// to [`Core::arm_after_start`] under `ROBIGO_TORTURE_AFTER_START=1`:
+    /// the mode's bookkeeping (what C was handed, no freeze) runs from the
+    /// creation, only the moves wait, and the young:N count starts at the
+    /// arming (every object made before it is young then).
+    moves_armed: bool,
+    /// The environment's torture counters `(wait, gap)`, held until
+    /// [`Core::arm_after_start`] under `ROBIGO_TORTURE_AFTER_START=1`.
+    torture_held: Option<(i32, i32)>,
     /// `ROBIGO_GC_MOVE=young:N`'s state (`mover.rs`), boxed: the debug
     /// collector's, kept out of the core's own layout.
     young: Box<mover::Young>,
@@ -528,6 +611,60 @@ pub struct Core {
     quarantine: Vec<crate::heap::Chunk>,
     /// `ROBIGO_GC_PIN_REPORT`, `ROBIGO_GC_STRONG_DLL` (`diag.rs`)
     diag: Option<Box<diag::Diag>>,
+    /// `ROBIGO_GC_FREEZE` (or [`Core::set_freeze_enabled`]): the boot heap's
+    /// freeze runs. On by default; off (`0`), nothing of it runs.
+    freeze_on: bool,
+    /// The boot boundary, between [`Core::freeze_boundary`] and the lazy
+    /// freeze inside the next collection (`freeze.rs`).
+    boot_boundary: Option<Box<freeze::BootBoundary>>,
+    /// The boot heap's freeze (`freeze.rs`): the frozen objects, by address.
+    frozen: Vec<Sexp>,
+    /// Frozen objects to become ordinary at the next collection.
+    pending_unfreeze: Vec<Sexp>,
+    /// The frozen environments on the search path at the last pass (or the
+    /// freeze), by address: the deferred search-path test's snapshot.
+    path_snapshot: Option<Vec<usize>>,
+    /// How many frozen-reachability passes ran (`ROBIGO_GC_STATS`).
+    frozen_passes: u64,
+    /// Pinned objects still on the frozen list (`pin_frozen`), dropped
+    /// from it at the next collection.
+    stale_frozen: usize,
+    /// The lazy freeze ran at its boundary (`freeze_at_boundary`): the
+    /// boundary is drawn once (`Core::boundary_drawn`).
+    boundary_done: bool,
+    /// `ROBIGO_GC_FREEZE_CHECK=N[,M]`: the freeze's invariant checked at
+    /// every N-th collection (1: every one; 0: never): there, the direct
+    /// loop (every frozen object's ordinary children marked), whose defect,
+    /// a missed barrier, is transient (the next sweep frees the child).
+    /// Under gctorture the period keeps a run's cost near a plain one's, as
+    /// `ROBIGO_GC_MOVE=young:N`'s does. The first collection with a frozen
+    /// set is checked whatever the count and restarts it, so the later
+    /// checks fall every N collections after it (with N alone too).
+    freeze_check: u32,
+    /// `M` (default 1): the persistent-state parts, a "full check", at the
+    /// first collection with a frozen set (checked whatever the period: the
+    /// freezing collection) and then at every M-th checked collection:
+    /// I2 and I3 (`check_frozen_reach`), whose defects stay until the next
+    /// pass or for good, and the independent trace's comparison (the bar's
+    /// (c)), whose defect (a child marked but never traced) is systematic
+    /// and whose cost grows with the live set, the stack's depth included.
+    /// Every process gets one (the 2026-11-21 check ledger's note of
+    /// 2026-11-24).
+    freeze_full: u32,
+    /// Collections since the last checked one.
+    freeze_check_count: u32,
+    /// Checked collections, and those with a frozen set; of them, the
+    /// full checks (`ROBIGO_GC_STATS`'s freeze line).
+    freeze_checks: u64,
+    freeze_checks_frozen: u64,
+    freeze_full_checks: u64,
+    /// This collection's check is a full one (counted after its comparison).
+    freeze_full_now: bool,
+    /// Whether this collection is checked.
+    freeze_checking: bool,
+    /// Under `freeze_check`, the ordinary objects the independent trace
+    /// reached at this collection's start.
+    freeze_reach: Vec<Sexp>,
     /// GNU R's `R_weak_refs`: the weak references (WEAKREFSXP) not yet
     /// finalized, ready ones (`READY_TO_FINALIZE`, their key dead or the
     /// session ending) included, oldest first (`R_weak_refs` reversed).
@@ -566,20 +703,114 @@ pub struct Core {
 #[cold]
 #[inline(never)]
 pub(crate) unsafe fn store_slow(x: Sexp, slot: *mut Sexp, v: Sexp) {
-    // SAFETY: the caller's contract (`Sexp::store`'s).
+    // SAFETY: the caller's contract (`Sexp::store`'s): the old value is
+    // null or live.
     unsafe {
-        barrier_slow(x);
+        if x.flags() & flags::FROZEN != 0 {
+            note_overwritten_in(x, slot, v);
+        }
+        if x.flags() & flags::BARRIER != 0 {
+            barrier_slow(x);
+        } else if crate::shared::is_shared(x) {
+            shared_store();
+        }
         x.store_counted(slot, v);
     }
 }
 
-/// The barrier of [`crate::Sexp::store_uncounted`].
+/// [`note_overwritten`] for a store of `v` into frozen `x` at `slot`. A
+/// frozen promise's PRENV cleared over a pinned lazy-load frame (forcing one
+/// of base's promises, step 2's (b)) takes no note while another counted
+/// promise uses the frame: a counted promise is one the freeze roots show
+/// directly (a base binding's value), so it reaches the frame by a path
+/// that does not go through the frame (Sol step 2 r5 S18), and removing it
+/// from those roots is noted itself. The frame's count drops, and the last
+/// counted promise's clear unpins it with a note, so the next pass decides
+/// the frame as GNU R's collector would once every promise using it was
+/// forced (Sol step 2 r4 S15). Writing the frame back is no clear (r5 S20).
+/// The count is a lower bound between walks: an uncounted promise (one the
+/// frame binds itself) clearing its PRENV takes one as well, which can only
+/// bring the pass early, never miss it (r6 S21).
+///
+/// # Safety
+/// As for [`store_slow`]; `x` is frozen.
+#[inline]
+unsafe fn note_overwritten_in(x: Sexp, slot: *mut Sexp, v: Sexp) {
+    // SAFETY: the caller's contract; a frozen object is in a block or large
+    // chunk of its heap, whose header names its remembered set, which no
+    // one else borrows outside a collection.
+    unsafe {
+        let old = *slot;
+        if old.is_null() || old.flags() & flags::FROZEN == 0 || old == v {
+            return;
+        }
+        let r = &*remembered_of(old.0);
+        let pins = &mut *r.2.get();
+        if !pins.is_empty()
+            && x.typ() == PROMSXP
+            && x.promise_tag() == 0
+            && std::ptr::eq(slot.cast::<usize>(), x.word(crate::layout::promise::OFF_ENV))
+            && let Some(i) = pins.iter().position(|p| p.0 == old)
+        {
+            pins[i].1 = pins[i].1.saturating_sub(1);
+            if pins[i].1 != 0 {
+                return;
+            }
+            pins.swap_remove(i);
+        }
+        r.note(Remembered::DIRTY);
+    }
+}
+
+/// The barrier of [`crate::Sexp::store_uncounted`]. Its old word may hold
+/// raw bits (an argument alias's slot), so it is not read: a store into a
+/// frozen object through it is noted as dirty whatever it overwrites.
 ///
 /// # Safety
 /// As for [`store_slow`].
+#[cold]
+#[inline(never)]
 pub(crate) unsafe fn barrier_only(x: Sexp) {
     // SAFETY: the caller's contract.
+    unsafe {
+        if x.flags() & flags::FROZEN != 0 {
+            (*remembered_of(x.0)).note(Remembered::DIRTY);
+        }
+        if x.flags() & flags::BARRIER != 0 {
+            barrier_slow(x);
+        } else if crate::shared::is_shared(x) {
+            shared_store();
+        }
+    }
+}
+
+/// Log `x` once in its heap's remembered set (C's first writable `DATAPTR`
+/// of a frozen vector of objects: `Core::remember`).
+///
+/// # Safety
+/// As for [`store_slow`]; `x` has `BARRIER`.
+pub(crate) unsafe fn log_once(x: Sexp) {
+    // SAFETY: the caller's contract.
     unsafe { barrier_slow(x) }
+}
+
+/// A frozen value `old` was overwritten (in a frozen object, or in a freeze
+/// root: a base binding, an `.Internal`'s slot): an edge left the frozen graph,
+/// so the next collection runs the frozen-reachability pass. Nothing for
+/// any other value (an ordinary or immortal one removes no frozen edge).
+///
+/// # Safety
+/// `old` is null or a live object.
+#[inline]
+pub unsafe fn note_overwritten(old: Sexp) {
+    // SAFETY: the caller's contract; a frozen object is in a block or large
+    // chunk of its heap, whose header names its remembered set, which no
+    // one else borrows outside a collection.
+    unsafe {
+        if !old.is_null() && old.flags() & flags::FROZEN != 0 {
+            (*remembered_of(old.0)).note(Remembered::DIRTY);
+        }
+    }
 }
 
 #[cold]
@@ -819,6 +1050,52 @@ fn spill_callee_saved(buf: &mut [usize; 12]) {
 /// is empty and unlimited but for `R_MAX_VSIZE`, whose minimum fits them).
 const CONSTANTS: &str = "robigo: cannot allocate R's constants";
 
+/// `ROBIGO_GC_FREEZE`: the boot heap's freeze (`gc/freeze.rs`), on by
+/// default (unset, empty or `1`; step 2, docs/ledger/g3/2026-11-23-h-freeze-fold.md),
+/// off with `0`. Anything else is refused.
+fn freeze_from_env() -> bool {
+    match std::env::var("ROBIGO_GC_FREEZE") {
+        Err(std::env::VarError::NotPresent) => true,
+        Ok(v) if v.is_empty() || v == "1" => true,
+        Ok(v) if v == "0" => false,
+        Ok(v) => panic!("robigo: ROBIGO_GC_FREEZE is 1 (the boot heap's freeze on) or 0, not {v:?}"),
+        Err(e) => panic!("robigo: ROBIGO_GC_FREEZE: {e}"),
+    }
+}
+
+/// `ROBIGO_GC_FREEZE_CHECK`'s rates (read only with the freeze on): unset
+/// or empty is 0 (off); `N` checks every N-th collection, each a full
+/// check; `N,M` runs the full check (the persistent-state parts) at the
+/// first collection with a frozen set and every M-th check after, the
+/// direct loop at each. Anything else is refused, so a typo never turns
+/// the check off unseen.
+fn freeze_check_from_env() -> (u32, u32) {
+    match std::env::var("ROBIGO_GC_FREEZE_CHECK") {
+        Err(std::env::VarError::NotPresent) => (0, 1),
+        Ok(v) if v.is_empty() => (0, 1),
+        Ok(v) => parse_freeze_check(&v).unwrap_or_else(|| {
+            panic!(
+                "robigo: ROBIGO_GC_FREEZE_CHECK must be a collection period (1: every collection), optionally followed by ,M (a full check at every M-th check, M >= 1), not {v:?}"
+            )
+        }),
+        Err(e) => panic!("robigo: ROBIGO_GC_FREEZE_CHECK: {e}"),
+    }
+}
+
+/// `N` or `N,M` (M at least 1) of [`freeze_check_from_env`].
+fn parse_freeze_check(v: &str) -> Option<(u32, u32)> {
+    let (n, m) = match v.split_once(',') {
+        Some((n, m)) => (n, Some(m)),
+        None => (v, None),
+    };
+    let n = n.parse().ok()?;
+    let m = match m {
+        Some(m) => m.parse().ok().filter(|&m| m >= 1)?,
+        None => 1,
+    };
+    Some((n, m))
+}
+
 impl Core {
     /// A new heap. The calling thread's stack is the one whose C segments
     /// are scanned.
@@ -826,6 +1103,7 @@ impl Core {
         // the process's fork handlers, before this heap can take a lock
         crate::fork::register();
         let (stack_lo, stack_top) = thread_stack();
+        let freeze_on = freeze_from_env();
         let mut c = Box::new(Core {
             heap: Heap::new(),
             mark_stack: Vec::new(),
@@ -839,11 +1117,14 @@ impl Core {
             poisoned: false,
             #[cfg(test)]
             panic_at: tests::PanicAt::default(),
+            #[cfg(test)]
+            sweep_kinds: [0; 3],
             due: false,
             due_at: 0,
             poll: None,
             own_poll: AtomicU32::new(0),
             stats_mode: StatsMode::from_env(),
+            peaks: Peaks::default(),
             stack_top,
             stack_lo,
             open: OpenSegment { top: 0, routine: 0 },
@@ -872,13 +1153,32 @@ impl Core {
             gcstarttimes: [0.0; 5],
             call65_plain: std::env::var_os("ROBIGO_CALL65_PLAIN").is_some_and(|v| v == "1"),
             gc_move: mover::policy_from_env().is_some(),
+            moves_armed: true,
+            torture_held: None,
             young: Box::new(mover::Young::new(mover::policy_from_env().unwrap_or(0))),
             quarantine: Vec::new(),
             diag: diag::Diag::from_env(),
+            freeze_on,
+            boot_boundary: None,
+            frozen: Vec::new(),
+            pending_unfreeze: Vec::new(),
+            path_snapshot: None,
+            frozen_passes: 0,
+            stale_frozen: 0,
+            boundary_done: false,
+            freeze_check: if freeze_on { freeze_check_from_env().0 } else { 0 },
+            freeze_full: if freeze_on { freeze_check_from_env().1 } else { 1 },
+            freeze_check_count: 0,
+            freeze_checks: 0,
+            freeze_checks_frozen: 0,
+            freeze_full_checks: 0,
+            freeze_full_now: false,
+            freeze_checking: false,
+            freeze_reach: Vec::new(),
             weak_refs: Vec::new(),
             finalizers_pending: false,
             releases: Vec::new(),
-            remembered: Box::new(Remembered(Default::default())),
+            remembered: Box::new(Remembered(Default::default(), Default::default(), Default::default())),
         });
         // every block and large chunk header points at the log, before the
         // first allocation makes one
@@ -908,7 +1208,9 @@ impl Core {
             }
             c.count(bytes, cells);
         }
-        // like InitMemory: once the constants exist
+        // like InitMemory: once the constants exist. (ROBIGO_TORTURE_AFTER_START
+        // is not read here: the embedder that arms the hold decides it,
+        // Core::hold_torture_until_armed; every other one never holds)
         (c.force_wait, c.force_gap) = torture_from_env();
         c.retrigger();
         c
@@ -924,7 +1226,99 @@ impl Core {
     /// the store barrier ([`Sexp::store`]), which makes `x` a root. An object flagged
     /// without this function is missing from its block's count, and the
     /// sweep miscounts.
+    #[inline]
     pub unsafe fn make_immortal(&mut self, x: Sexp) {
+        // SAFETY: as for `make_immortal_raw`; `x`'s fields are null or live.
+        unsafe {
+            if x.has_flag(flags::IMMORTAL) {
+                if x.has_flag(flags::FROZEN) {
+                    self.pin_frozen(x);
+                }
+                return;
+            }
+            self.make_immortal_raw(x);
+            // (no frozen object, no frozen child: every FROZEN object is on
+            // the frozen list, I3. With the freeze off this is the whole
+            // cost: a start makes every symbol immortal, #984)
+            if !self.frozen.is_empty() {
+                self.log_if_frozen_child(x);
+            }
+        }
+    }
+
+    /// A frozen object asked to be immortal for good (a symbol's PRINTNAME
+    /// made of a frozen CHARSXP: Sol r1 S1): pinned, so that no
+    /// frozen-reachability pass thaws it. It stays on the frozen list until
+    /// the next pass drops it there. Pinned, it leaves the frozen graph, so
+    /// its frozen children may lose their last frozen edge: a dirty note
+    /// (Sol r2 S8), only if it has one (a CHARSXP has none: the first
+    /// symbols installed from frozen names ran a pass, step 2). Out of line:
+    /// `make_immortal` stays the flag store it was (#984's start).
+    ///
+    /// # Safety
+    /// As for [`Core::make_immortal`]; `x` is frozen.
+    #[cold]
+    #[inline(never)]
+    unsafe fn pin_frozen(&mut self, x: Sexp) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            x.set_flag_raw(flags::FROZEN, false);
+            // (it leaves the frozen list at the next collection: Sol step 2
+            // r1 S4)
+            self.stale_frozen += 1;
+            if self.has_frozen_child(x) {
+                self.remembered.note(Remembered::DIRTY);
+                self.log_if_frozen_child(x);
+            }
+        }
+    }
+
+    /// An immortal object that is not frozen and holds a frozen one is a
+    /// root from now on (the remembered set): a frozen-reachability pass may
+    /// thaw that child, and ordinary marking traces an immortal object's
+    /// fields only when it is logged (Sol r2 S8).
+    ///
+    /// # Safety
+    /// `x` is live; its fields are null or live.
+    #[inline(never)]
+    unsafe fn log_if_frozen_child(&mut self, x: Sexp) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if x.flags() & flags::BARRIER != 0 && self.has_frozen_child(x) {
+                barrier_slow(x);
+            }
+        }
+    }
+
+    /// Whether `x` points to a frozen object (a CHARSXP points to nothing).
+    ///
+    /// # Safety
+    /// `x` is live; its fields are null or live.
+    unsafe fn has_frozen_child(&self, x: Sexp) -> bool {
+        // SAFETY: the caller's contract.
+        unsafe {
+            if x.typ() == CHARSXP {
+                return false;
+            }
+            struct AnyFrozen(bool);
+            impl Visitor for AnyFrozen {
+                fn edge(&mut self, e: &mut Sexp) {
+                    // SAFETY: a field of a live object is null or live.
+                    self.0 |= !e.is_null() && unsafe { e.flags() } & flags::FROZEN != 0;
+                }
+            }
+            let mut v = AnyFrozen(false);
+            x.trace_fields(&mut v);
+            v.0
+        }
+    }
+
+    /// [`Core::make_immortal`] without the frozen-child check: the boot
+    /// heap's freeze, whose walk logs what it freezes itself.
+    ///
+    /// # Safety
+    /// As for [`Core::make_immortal`].
+    pub(crate) unsafe fn make_immortal_raw(&mut self, x: Sexp) {
         // SAFETY: `x` is live, so its header can be read and written. Its
         // block's address is in a chunk, and a large chunk's first word
         // (cleared when allocated) cannot equal the magic number.
@@ -1293,7 +1687,8 @@ impl Core {
             self.poll_slow(t, n, size, cells)?;
         }
         let size = size.max(GRANULE);
-        let p = self.heap.alloc(size);
+        // (its block counts the cells: `Block::cells`)
+        let p = self.heap.alloc(size, cells);
         if p.is_null() {
             return Err(self.refused_chunk(t, n));
         }
@@ -1382,7 +1777,7 @@ impl Core {
         if self.sizes.over_trigger(cells) {
             self.poll_slow(t, n, bytes, cells)?;
         }
-        let p = self.heap.try_alloc_large(bytes).ok_or(NeedGc::new(t, n))?;
+        let p = self.heap.try_alloc_large(bytes, cells).ok_or(NeedGc::new(t, n))?;
         // SAFETY: `p` is fresh, with `bytes` bytes.
         let x = unsafe { self.init_header(p, t) };
         self.count(bytes, cells);
@@ -1469,7 +1864,7 @@ impl Core {
             // SAFETY: the caller's contract.
             return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
         }
-        let Some(p) = self.heap.alloc_fast(size) else {
+        let Some(p) = self.heap.alloc_fast(size, 0) else {
             // SAFETY: the caller's contract.
             return unsafe { self.alloc_node_slow(t, car, cdr, tag) };
         };
@@ -1692,13 +2087,13 @@ impl Core {
         // Within the limits here: below the trigger, or checked after the
         // collection (or, with collections inhibited, the vector limit, as
         // GNU R's postponed collection checks).
-        let mut p = self.alloc_raw(bytes);
+        let mut p = self.alloc_raw(bytes, cells);
         if p.is_none() && !collected && self.gc_inhibit == 0 {
             // R: memory.c:allocVector3, a refused malloc: collect
             // (R_gc_no_finalizers) and try once more
             // SAFETY: the caller's contract.
             unsafe { self.collect_needing(cells, Safepoint::Rooted, roots) };
-            p = self.alloc_raw(bytes);
+            p = self.alloc_raw(bytes, cells);
         }
         let Some(p) = p else {
             // (a small object's page, mem_err_malloc; a large one, allocVector3's)
@@ -1722,12 +2117,13 @@ impl Core {
     /// Memory for an object of `size` bytes (at least 16), past the
     /// poll-only path's tests: None if the system refuses a large one.
     #[inline]
-    fn alloc_raw(&mut self, size: usize) -> Option<*mut u8> {
+    fn alloc_raw(&mut self, size: usize, cells: usize) -> Option<*mut u8> {
         if size <= MAX_MEDIUM {
-            let p = self.heap.alloc(size.max(GRANULE));
+            // (a small one's block counts the cells: `Block::cells`)
+            let p = self.heap.alloc(size.max(GRANULE), cells);
             (!p.is_null()).then_some(p)
         } else {
-            self.heap.try_alloc_large(size)
+            self.heap.try_alloc_large(size, cells)
         }
     }
 
@@ -2005,6 +2401,13 @@ impl Core {
         // newest first where its order shows (a finalizer pass,
         // [`Core::pop_finalizable_before`])
         self.weak_refs.push(w);
+        // a frozen key must be able to die (`freeze.rs`): ordinary from the
+        // next collection on
+        // SAFETY: the caller's contract: element 0 is the key.
+        unsafe {
+            let key = Self::weak_field(w, 0);
+            self.request_unfreeze(key);
+        }
     }
 
     /// The references ready for their finalizer (tests, statistics).
@@ -2232,6 +2635,41 @@ impl Core {
         self.gc_torture(on as i32, 0);
     }
 
+    /// Whether a hold ([`Core::hold_torture_until_armed`]) is waiting for its
+    /// arming.
+    pub fn torture_held(&self) -> bool {
+        !self.moves_armed
+    }
+
+    /// Hold the torture set now (gctorture's counters, `ROBIGO_GC_MOVE`'s
+    /// moves) until [`Core::arm_after_start`]: what
+    /// `ROBIGO_TORTURE_AFTER_START=1` does when the core is made. The
+    /// moving mode's bookkeeping goes on; only its moves wait.
+    pub fn hold_torture_until_armed(&mut self) {
+        // (only a gctorture that is on is held: with moves alone held, a
+        // gctorture(TRUE) the start itself calls is not undone at the
+        // arming; and one held gives way to any setting the start makes,
+        // [`Core::gc_torture`])
+        if self.force_wait > 0 {
+            self.torture_held = Some((self.force_wait, self.force_gap));
+            (self.force_wait, self.force_gap) = (0, 0);
+        }
+        self.moves_armed = false;
+        self.retrigger();
+    }
+
+    /// The torture `ROBIGO_TORTURE_AFTER_START=1` held from the core's
+    /// creation, armed: the environment's gctorture counters, and
+    /// `ROBIGO_GC_MOVE`'s moves. Without the variable, nothing changes
+    /// (both have been on since the creation).
+    pub fn arm_after_start(&mut self) {
+        self.moves_armed = true;
+        if let Some((wait, gap)) = self.torture_held.take() {
+            (self.force_wait, self.force_gap) = (wait, gap);
+            self.retrigger();
+        }
+    }
+
     /// Start E9's injection knob (`ROBIGO_FAIL_ALLOC_AT`), if the
     /// environment set it: allocations are counted from here, and the
     /// `n`th one is refused once. The embedder arms it where the program
@@ -2267,7 +2705,12 @@ impl Core {
     /// safepoint serves it.
     // R: memory.c:R_gc_torture (without PROTECTCHECK: no inhibit_release)
     pub fn gc_torture(&mut self, gap: i32, wait: i32) {
+        // (during ROBIGO_TORTURE_AFTER_START's hold, a setting the start
+        // makes itself, gctorture(FALSE) or another gap, is the start's:
+        // the held counters give way and the arming does not override it;
+        // a negative gap, NA's, sets nothing and keeps them)
         if gap >= 0 {
+            self.torture_held = None;
             self.force_wait = gap;
             self.force_gap = gap;
         }
@@ -2756,6 +3199,9 @@ impl Core {
         // R: memory.c:R_gc_internal
         self.sizes.n_maxused = self.sizes.n_maxused.max(self.sizes.nodes_in_use);
         self.sizes.v_maxused = self.sizes.v_maxused.max(self.sizes.valloc);
+        if self.stats_mode != StatsMode::Off {
+            self.peaks = self.peaks_now();
+        }
         let t0 = self.begin_collection();
         // SAFETY: nothing was freed since the last sweep, so the heap's own
         // lists contain objects whose fields are objects (the rooting
@@ -2766,7 +3212,64 @@ impl Core {
             // (forwarded objects, `collecting` set): poisoned until both
             // end, so an unwinding panic leaves it set and the heap is
             // never collected again
+            // the lazy freeze (`freeze.rs`): the first collection after the
+            // boot boundary freezes, before anything is marked
+            // (poisoned first: a panic inside the freeze leaves headers
+            // flagged and a partial frozen list, Sol step 2 r1 S1)
             self.poisoned = true;
+            if self.boot_boundary.is_some() {
+                self.freeze_at_boundary(roots);
+            }
+            // the frozen-reachability pass (`freeze.rs`) before anything is
+            // marked: what the frozen graph no longer reaches thaws
+            self.frozen_pass(roots);
+            // (this collection's snapshot only: r4 S10)
+            self.freeze_reach.clear();
+            self.freeze_checking = false;
+            self.freeze_full_now = false;
+            // (with the freeze on, an empty frozen list is checked too: a stray
+            // FROZEN bit is an I3 failure, Sol r1 S6)
+            let mut due = false;
+            // (`freeze_enabled`, not `freeze_on`: under the mover's modes its
+            // OLD bit is FROZEN's, Sol r2 S6)
+            if self.freeze_check != 0 && (!self.frozen.is_empty() || self.freeze_enabled()) {
+                self.freeze_check_count += 1;
+                // the first collection with a frozen set (the freezing one,
+                // under the lazy freeze) is checked whatever the period, and
+                // it is a full check: a marking defect is caught where it
+                // first runs, before unchecked collections free what it
+                // missed and the process fails some other way
+                if self.freeze_check_count >= self.freeze_check
+                    || (!self.frozen.is_empty() && self.freeze_checks_frozen == 0)
+                {
+                    self.freeze_check_count = 0;
+                    due = true;
+                }
+            }
+            if due {
+                self.freeze_checks += 1;
+                if self.frozen.is_empty() {
+                    // before the freeze: I3 alone (no FROZEN bit anywhere)
+                    self.check_frozen_reach(roots);
+                } else {
+                    // the direct loop after marking, at every checked
+                    // collection (its defect is transient)
+                    self.freeze_checking = true;
+                    // the persistent-state parts at the first collection
+                    // with a frozen set, then every `freeze_full`-th
+                    // checked one (its doc): I2 and I3 (the pass's bar,
+                    // (d)), after the pass step, and the independent trace
+                    // (the bar's (c)) for the comparison after marking
+                    if self.freeze_checks_frozen.is_multiple_of(self.freeze_full as u64) {
+                        // (counted, and its tally written, once its last
+                        // part, the comparison after marking, has run)
+                        self.freeze_full_now = true;
+                        self.check_frozen_reach(roots);
+                        self.freeze_reach = self.independent_reach(roots);
+                    }
+                    self.freeze_checks_frozen += 1;
+                }
+            }
             if self.young_collection() {
                 // ROBIGO_GC_MOVE=young:N (mover.rs): the pins first, then a
                 // marking that copies the young objects as it reaches them
@@ -2783,7 +3286,7 @@ impl Core {
                 self.mark_heap_roots();
                 roots.trace(&mut Mark(self));
                 self.mark_rest();
-                if self.gc_move {
+                if self.gc_move && self.moves_armed {
                     let moved = self.evacuate();
                     Self::forward_roots(roots);
                     self.forward_heap();
@@ -2879,6 +3382,15 @@ impl Core {
         // context of matching types, on the core's thread.
         unsafe {
             self.trace_y::<Y>();
+            // ROBIGO_GC_FREEZE_CHECK: after the strong trace, before weak
+            // references and C segments can mark what it missed (Sol r2 S5)
+            if self.freeze_checking && !Y {
+                self.check_frozen_marked();
+                if std::mem::take(&mut self.freeze_full_now) {
+                    self.freeze_full_checks += 1;
+                    freeze::note_full_check(self.freeze_full_checks);
+                }
+            }
             // docs/g3.md §3, "What a collection marks" (L8): precise roots
             // (above), weak references and finalizers decided on them alone,
             // then the C segments as pins: what a C word reaches stays
@@ -3078,7 +3590,58 @@ impl Core {
         self.chars = chars;
     }
 
-    /// Queue the release callback of a dead object.
+    /// Change a live object in place (`change`) where the change may alter
+    /// its vector cells (`heapsize::object_cells`), keeping its charge to
+    /// the vector heap's use exact: the cells before and after are read
+    /// around the change, and the difference moves in its block's count
+    /// ([`Block::cells`]) or its large chunk's charge, and in `valloc`. The
+    /// one way a live object's cells may change (the invariant of
+    /// `Block::cells`): the frame quarantine's poisoned frames, which lose
+    /// SLOTS (rtcore's `recycle.rs`), and the heap's own tests.
+    ///
+    /// # Safety
+    /// `x` is a live object of this heap whose charge is its `object_cells`
+    /// (as every live object's is), and `change` leaves it an object whose
+    /// `object_cells` can be read. `change` neither allocates nor collects
+    /// (through this heap by any other path than the borrow this call
+    /// holds): a moving collection inside it could move or free `x`, and
+    /// the cells read after it would be an old copy's (debug builds check
+    /// that no collection ran).
+    pub unsafe fn recharge(&mut self, x: Sexp, change: impl FnOnce(Sexp)) {
+        // SAFETY: the caller's contract; a block's or large chunk's header
+        // is at its address rounded down to a block.
+        unsafe {
+            let before = crate::heapsize::object_cells(x);
+            let collections = self.stats.collections;
+            change(x);
+            debug_assert_eq!(
+                self.stats.collections, collections,
+                "robigo: a collection inside Core::recharge's change"
+            );
+            let after = crate::heapsize::object_cells(x);
+            if before == after {
+                return;
+            }
+            let b = (x.0 as usize & !(BLOCK - 1)) as *mut Block;
+            if (*b).magic == 0x524f4249474f4241 {
+                debug_assert!((*b).cells as usize >= before, "robigo: a recharged object's block has fewer cells");
+                (*b).cells = ((*b).cells as usize - before.min((*b).cells as usize) + after) as u32;
+            } else {
+                let c = crate::heap::large_cells(b as usize);
+                debug_assert!(*c as usize == before, "robigo: a recharged large object's charge is not its cells");
+                *c = after as u64;
+            }
+            debug_assert!(
+                self.sizes.valloc >= before,
+                "robigo: a recharged object's cells exceed the vector heap's use"
+            );
+            self.sizes.valloc = self.sizes.valloc.saturating_sub(before) + after;
+        }
+    }
+
+    /// Queue the release callback of a dead object. (Its vector cells leave
+    /// the vector heap's use with its block's or large chunk's charge, in
+    /// the sweep: [`Block::cells`], `heap::large_cells`.)
     ///
     /// # Safety
     /// `p` must be an object not yet overwritten by the sweep.
@@ -3089,10 +3652,6 @@ impl Core {
         // SAFETY: the flags are in the header; EXTDATA means the object was
         // made by `alloc_extdata`, and the sweep has not reused its slot.
         unsafe {
-            // R: memory.c:ReleaseLargeFreeVectors (R_LargeVallocSize -=
-            // getVecSizeInVEC(s)); small vectors are counted by class there,
-            // which is the same number
-            self.sizes.valloc = self.sizes.valloc.saturating_sub(crate::heapsize::object_cells(Sexp(p)));
             if *p.add(header::OFF_FLAGS) & flags::EXTDATA != 0
                 && let Some(call) = take_extdata_release(p)
             {
@@ -3116,6 +3675,10 @@ impl Core {
         let mut dead_small_chunks: Vec<(usize, usize, usize)> = Vec::new();
         let chunks = self.heap.chunks.clone();
         let epoch = self.epoch;
+        // a moving collection leaves its old copies poisoned (no type, no
+        // length) among the dead: their cells are read from the charge, as
+        // the block's count less its survivors'
+        let moved = self.gc_move && self.moves_armed;
         for (idx, c) in chunks.iter().enumerate() {
             if c.large {
                 let obj = (c.base + DATA_OFF) as *mut u8;
@@ -3127,8 +3690,19 @@ impl Core {
                     live_bytes += (c.end - c.base) as u64;
                     live_objects += 1;
                 } else {
+                    // R: memory.c:ReleaseLargeFreeVectors (R_LargeVallocSize
+                    // -= the vector's size): the charge its allocation made,
+                    // which its chunk's header holds (`large_cells`)
                     // SAFETY: as above, and this object is not read again.
-                    unsafe { self.on_death(obj) };
+                    unsafe {
+                        let charged = *crate::heap::large_cells(c.base) as usize;
+                        debug_assert!(
+                            self.sizes.valloc >= charged,
+                            "robigo: a large object's cells exceed the vector heap's use"
+                        );
+                        self.sizes.valloc = self.sizes.valloc.saturating_sub(charged);
+                        self.on_death(obj);
+                    }
                     dead_chunks.push(idx);
                 }
                 continue;
@@ -3151,6 +3725,10 @@ impl Core {
                     }
                     if (*b).live_objects > 0 && (*b).marked + (*b).immortals == (*b).live_objects {
                         // nothing died here: skip the bitmap walk
+                        #[cfg(test)]
+                        {
+                            self.sweep_kinds[SWEPT_SKIPPED] += 1;
+                        }
                         live_bytes += (*b).live_objects as u64 * SIZES[(*b).class as usize] as u64;
                         live_objects += (*b).live_objects as u64;
                         (*b).marked = 0;
@@ -3175,6 +3753,21 @@ impl Core {
                     // flagless, their release calls taken
                     let mut new_starts = [0u64; START_WORDS];
                     let mut live: u32 = 0;
+                    // the dead objects' cells leave the vector heap's use: the
+                    // block's count (`Block::cells`) less its survivors', or
+                    // the dead ones' summed, whichever side is smaller (the
+                    // mark counted the survivors: a block of long-lived boot
+                    // objects with a few dead ones reads only those); debug
+                    // builds sum both, to check the count (but after a move,
+                    // whose old copies are poison: `moved`)
+                    let survivors = (*b).marked + (*b).immortals;
+                    let count_dead = !moved && (*b).live_objects.saturating_sub(survivors) <= survivors;
+                    // (a block of nodes only has no cells to settle; debug
+                    // builds sum both sides of every walked block, after a
+                    // move the dead that are not old copies, as a bound)
+                    let check = cfg!(debug_assertions);
+                    let sum = (*b).cells != 0 || check;
+                    let (mut live_cells, mut dead_cells) = (0usize, 0usize);
                     let csize = SIZES[(*b).class as usize] as u64;
                     for w in 0..START_WORDS {
                         let mut s = (*b).starts[w];
@@ -3185,8 +3778,16 @@ impl Core {
                             if marks[w] & (1u64 << (g & 63)) != 0 || f & flags::IMMORTAL != 0 {
                                 live += 1;
                                 live_bytes += csize;
+                                if sum && (!count_dead || check) {
+                                    live_cells += crate::heapsize::object_cells(Sexp(p));
+                                }
                                 new_starts[w] |= 1u64 << (g & 63);
                             } else {
+                                // (its header is read before the free list's
+                                // writes below)
+                                if sum && (count_dead || check) && *p.add(header::OFF_TYPE) != POISON_TYPE {
+                                    dead_cells += crate::heapsize::object_cells(Sexp(p));
+                                }
                                 self.on_death(p);
                                 if self.force_gap > 0 {
                                     // poison: a use after free reads garbage
@@ -3206,6 +3807,32 @@ impl Core {
                     (*b).starts = new_starts;
                     (*b).marked = 0;
                     (*b).live_objects = live;
+                    let charged = (*b).cells as usize;
+                    if check && !moved {
+                        assert_eq!(
+                            live_cells + dead_cells,
+                            charged,
+                            "robigo: a block's cells (Block::cells) are not its objects' (an object's cells changed while it lived)"
+                        );
+                    } else if check {
+                        // (the old copies' cells are in the charge, not in
+                        // a poisoned header)
+                        assert!(
+                            live_cells + dead_cells <= charged,
+                            "robigo: a block's cells (Block::cells) are fewer than its objects' after a move"
+                        );
+                    }
+                    let dead = if count_dead { dead_cells } else { charged.saturating_sub(live_cells) };
+                    debug_assert!(
+                        self.sizes.valloc >= dead,
+                        "robigo: a block's dead cells exceed the vector heap's use"
+                    );
+                    self.sizes.valloc = self.sizes.valloc.saturating_sub(dead);
+                    (*b).cells = (charged - dead.min(charged)) as u32;
+                    #[cfg(test)]
+                    {
+                        self.sweep_kinds[if live == 0 { SWEPT_EMPTY } else { SWEPT_PARTLY }] += 1;
+                    }
                     live_objects += live as u64;
                     if live == 0 {
                         if (*b).owner == OWNER_EMPTY {
@@ -3347,6 +3974,10 @@ fn not_adopted(id: u32) -> ! {
 /// registered stays; the runtime is the one caller. (Function pointers
 /// cannot be compared to check that a later call gives the same rule: one
 /// function may have several addresses.)
+///
+/// The rule runs under the symbol arena's lock (`arena::install`): it must
+/// take no lock and must not reach a cold `once_excluding_fork` cell, whose
+/// `FORK` comes before the arena's lock in the process's order (`fork.rs`).
 pub fn set_symbol_bits(bits: SymbolBits) {
     crate::fork::once_excluding_fork(&SYMBOL_BITS, || bits);
 }
@@ -3385,6 +4016,35 @@ impl Core {
     /// What `ROBIGO_GC_STATS` asks for (read when the core is made).
     pub fn stats_mode(&self) -> StatsMode {
         self.stats_mode
+    }
+
+    /// `ROBIGO_GC_STATS`'s logical peaks so far, this moment included
+    /// ([`Peaks`]). All zero with the stats off: nothing is sampled then.
+    pub fn peaks(&self) -> Peaks {
+        if self.stats_mode == StatsMode::Off { Peaks::default() } else { self.peaks_now() }
+    }
+
+    /// The stored peaks raised by this moment's figures.
+    fn peaks_now(&self) -> Peaks {
+        let (mut large, mut mapped, mut claimed) = (0u64, 0u64, 0u64);
+        for c in &self.heap.chunks {
+            let size = (c.end - c.base) as u64;
+            mapped += size;
+            if c.large {
+                large += size;
+            } else {
+                claimed += c.claimed as u64;
+            }
+        }
+        let objects = self.stats.live_bytes + self.alloc_since_gc as u64;
+        let block_overhead = claimed * crate::heap::DATA_OFF as u64;
+        let mut p = self.peaks;
+        if objects + block_overhead > p.in_use {
+            (p.in_use, p.objects, p.block_overhead, p.large) =
+                (objects + block_overhead, objects, block_overhead, large);
+        }
+        p.chunks_mapped = p.chunks_mapped.max(mapped);
+        p
     }
 
     /// Change it: the allocation counts by type start from here.
@@ -3437,6 +4097,27 @@ impl Core {
                 st.live_bytes
             );
         }
+        if self.freeze_on {
+            let state = if self.boot_boundary.is_some() { ", the boundary drawn, no collection since" } else { "" };
+            let _ = writeln!(
+                r,
+                "robigo gc: the boot heap's freeze (ROBIGO_GC_FREEZE): {} objects frozen, {} bytes, {} frozen-reachability passes{state}",
+                self.frozen_count(),
+                self.frozen_bytes(),
+                self.frozen_passes
+            );
+            if self.freeze_check != 0 {
+                let _ = writeln!(
+                    r,
+                    "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK={},{}): {} checked collections, {} with a frozen set (the direct loop), {} full checks (I2, I3 and the comparison with the independent trace)",
+                    self.freeze_check,
+                    self.freeze_full,
+                    self.freeze_checks,
+                    self.freeze_checks_frozen,
+                    self.freeze_full_checks
+                );
+            }
+        }
         let _ = writeln!(
             r,
             "robigo gc: large &Cx requests while due {} (largest {} bytes)",
@@ -3452,6 +4133,14 @@ impl Core {
         if st.pin_hits > 0 {
             let _ = writeln!(r, "robigo gc: pin report hits {}", st.pin_hits);
         }
+        // the logical peaks (`Peaks`): deterministic for an allocation
+        // sequence; a reported figure (the startup gate's memory is massif's)
+        let pk = self.peaks_now();
+        let _ = writeln!(
+            r,
+            "robigo gc: peak bytes in use {} (objects {}, block overhead {}, large {}); peak chunk bytes mapped {}",
+            pk.in_use, pk.objects, pk.block_overhead, pk.large, pk.chunks_mapped
+        );
         let _ = writeln!(
             r,
             "robigo gc: allocated {} objects, {} bytes",
@@ -3831,6 +4520,202 @@ mod tests {
         assert_eq!(c.take_refusal(), Some(AllocError::VectorMemory { limit }));
         // SAFETY: `roots` holds every object kept.
         assert_eq!(unsafe { c.make_room(req, &mut roots) }, Err(AllocError::VectorMemory { limit }));
+    }
+
+    /// The vector heap's use (`valloc`) after any collection is the cells
+    /// of the live objects, recounted one by one, and every block's count
+    /// (`Block::cells`) and large chunk's charge is its objects' (so errors
+    /// cannot cancel between blocks): for blocks that survive whole, die in
+    /// part or die whole (each seen), large objects, the allocation paths
+    /// that charge cells (vectors, `alloc_rooted`, CHARSXPs, slot frames,
+    /// external data), a frozen boot heap, and both moving collectors; and
+    /// `recharge` keeps it so for live objects whose cells change.
+    #[cfg(not(miri))]
+    #[test]
+    fn the_vector_heaps_use_is_the_live_objects_cells_after_every_collection() {
+        /// Every block's and large chunk's charge against its objects'
+        /// cells, and the heap's: `valloc` less the charges outside the heap
+        /// (`base`).
+        fn check(c: &Core, base: usize, what: &str) {
+            let mut total = 0;
+            for ch in &c.heap.chunks {
+                // SAFETY: outside a collection: a chunk's headers and the
+                // objects their start bits show are live.
+                unsafe {
+                    if ch.large {
+                        let x = Sexp((ch.base + DATA_OFF) as *mut u8);
+                        let n = crate::heapsize::object_cells(x);
+                        assert_eq!(*crate::heap::large_cells(ch.base) as usize, n, "{what}: a large chunk's charge");
+                        total += n;
+                        continue;
+                    }
+                    for bi in 0..ch.claimed as usize {
+                        let b = (ch.base + bi * BLOCK) as *mut Block;
+                        let mut n = 0;
+                        for w in 0..START_WORDS {
+                            let mut s = (*b).starts[w];
+                            while s != 0 {
+                                let g = w * 64 + s.trailing_zeros() as usize;
+                                let x = Sexp(Block::data_ptr(b).add(g * GRANULE));
+                                n += crate::heapsize::object_cells(x);
+                                s &= s - 1;
+                            }
+                        }
+                        assert_eq!((*b).cells as usize, n, "{what}: block {bi} of a chunk");
+                        total += n;
+                    }
+                }
+            }
+            assert_eq!(c.sizes.valloc - base, total, "{what}: the vector heap's use");
+        }
+        /// The test's roots; the boot objects (the first `boot`) are also
+        /// its freeze roots.
+        struct R {
+            roots: Vec<Sexp>,
+            held: Vec<Sexp>,
+            boot: usize,
+        }
+        impl Trace for R {
+            fn trace<V: Visitor + ?Sized>(&mut self, v: &mut V) {
+                for x in self.roots.iter_mut().chain(self.held.iter_mut()) {
+                    v.edge(x);
+                }
+            }
+            fn trace_freeze<V: Visitor + ?Sized>(&mut self, v: &mut V) -> bool {
+                for x in &mut self.roots[..self.boot] {
+                    v.edge(x);
+                }
+                true
+            }
+        }
+        for mode in 0..4 {
+            let mut c = Core::new();
+            c.set_freeze_enabled(mode == 3);
+            // SAFETY: switched before anything is allocated.
+            unsafe {
+                match mode {
+                    1 => c.set_gc_move(true),
+                    2 => c.set_gc_move_young(3),
+                    _ => c.set_gc_move(false),
+                }
+            }
+            c.set_torture(false);
+            let nil = c.nil();
+            // the heap's own charges outside its chunks (the process's
+            // shared constants)
+            let mut base = c.sizes.valloc;
+            for ch in &c.heap.chunks {
+                // SAFETY: as in `check`.
+                unsafe {
+                    if ch.large {
+                        base -= *crate::heap::large_cells(ch.base) as usize;
+                    } else {
+                        for bi in 0..ch.claimed as usize {
+                            base -= (*((ch.base + bi * BLOCK) as *mut Block)).cells as usize;
+                        }
+                    }
+                }
+            }
+            let mut r = R { roots: Vec::new(), held: Vec::new(), boot: 0 };
+            // a boot heap of vectors, strings and frames, frozen at the
+            // first collection after the boundary (mode 3)
+            for i in 0..400usize {
+                r.roots.push(c.alloc_vector(REALSXP, i % 9).unwrap());
+                r.roots.push(c.mk_char(format!("boot{i}").as_bytes(), 0).unwrap());
+                // SAFETY: a fresh frame of this heap.
+                r.roots.push(unsafe { c.alloc_slot_frame(i % 5, nil) }.unwrap());
+            }
+            let boot = r.roots.len();
+            r.boot = boot;
+            if mode == 3 {
+                // SAFETY: nothing excluded, no pins.
+                unsafe { c.freeze_boundary(nil.addr(), &[]) };
+            }
+            for round in 0..6 {
+                // a block that survives whole: all of these are kept
+                for _ in 0..600 {
+                    r.held.push(c.alloc_vector(INTSXP, 3).unwrap());
+                }
+                // vectors of many types and lengths (small, medium, large),
+                // nodes, strings and frames between them; every third kept
+                for i in 0..3000usize {
+                    let t = [REALSXP, INTSXP, LGLSXP, RAWSXP, STRSXP, VECSXP, CPLXSXP][i % 7];
+                    let n = match i % 11 {
+                        0 => 0,
+                        1 => 1,
+                        2 => 3,
+                        3 => 40,
+                        4 => 500,
+                        5 if i % 97 == 5 => 20_000,
+                        _ => i % 17,
+                    };
+                    let x = match i % 13 {
+                        // SAFETY: `roots` holds every object kept.
+                        0 => unsafe { c.alloc_rooted(t, n, &mut r) }.unwrap(),
+                        // SAFETY: a fresh frame of this heap.
+                        1 => unsafe { c.alloc_slot_frame(n % 7, nil) }.unwrap(),
+                        2 => c.mk_char(format!("s{round}-{i}").as_bytes(), 0).unwrap(),
+                        // SAFETY: a fresh node whose payload is static.
+                        3 => unsafe {
+                            c.alloc_extdata(
+                                REALSXP,
+                                std::ptr::NonNull::<f64>::dangling().as_ptr() as *mut u8,
+                                0,
+                                0,
+                                None,
+                            )
+                        }
+                        .unwrap(),
+                        _ => c.alloc_vector(t, n).unwrap(),
+                    };
+                    // SAFETY: fresh objects of this heap.
+                    let y = unsafe { c.alloc_node(LISTSXP, nil, nil, nil) }.unwrap();
+                    if (i + round) % 3 == 0 {
+                        r.roots.push(x);
+                    }
+                    if i % 5 == 0 {
+                        r.roots.push(y);
+                    }
+                }
+                // SAFETY: `roots` and `held` hold every object kept (the
+                // vectors' elements are nil or unset).
+                unsafe { c.collect(&mut r) };
+                check(&c, base, &format!("mode {mode}, round {round}"));
+                assert_eq!(mode == 3, c.frozen_count() > 0, "mode {mode}: frozen {}", c.frozen_count());
+                // half the session's survivors die at the next collection:
+                // blocks that die in part, and whole ones
+                let keep = boot + (r.roots.len() - boot) / 2;
+                r.roots.truncate(keep);
+            }
+            // live objects whose cells change in place, through `recharge`:
+            // a frame that loses SLOTS (the quarantine's), and a vector
+            // shortened without GROWABLE (a session's: a boot one is frozen
+            // in mode 3)
+            // SAFETY: fresh objects of this heap, rooted by `r`.
+            let (f, v) = unsafe { (c.alloc_slot_frame(3, nil).unwrap(), c.alloc_vector(REALSXP, 40).unwrap()) };
+            r.held.push(f);
+            r.held.push(v);
+            // SAFETY: live objects of this heap, as allocated.
+            unsafe {
+                c.recharge(f, |f| f.set_flag_raw(flags::SLOTS, false));
+                c.recharge(v, |v| v.set_std_len(3));
+                c.collect(&mut r);
+            }
+            check(&c, base, &format!("mode {mode}, after a recharge"));
+            r.roots.truncate(boot);
+            r.held.clear();
+            // SAFETY: `r` holds every object kept.
+            unsafe { c.collect(&mut r) };
+            check(&c, base, &format!("mode {mode}, the session's objects dead"));
+            if mode != 1 {
+                // (the full mover moves every block's survivors out)
+                assert!(
+                    [SWEPT_SKIPPED, SWEPT_PARTLY, SWEPT_EMPTY].iter().all(|&k| c.sweep_kinds[k] > 0),
+                    "mode {mode}: every kind of block settled: {:?}",
+                    c.sweep_kinds
+                );
+            }
+        }
     }
 
     /// `gcinfo(TRUE)`: each collection appends GNU R's three report lines,

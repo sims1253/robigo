@@ -26,12 +26,72 @@ fn nargs(cx: &Cx, call: Root<'_>) -> usize {
 
 /// `checkArity(op, args)` of a primitive special, its arguments the
 /// call's (`crate::prims::check_arity`).
-fn check_arity(cx: &mut Cx, call: Root<'_>, name: &str, arity: usize) -> RResult<()> {
-    let n = nargs(cx, call);
+fn check_arity(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, name: &str, arity: usize) -> RResult<()> {
+    let n = nargs(cx, ac);
     crate::prims::check_arity(cx, call, n, name, arity, false)
 }
 
 /// `eval(e, rho)` into a new root of scope `s`.
+/// The call whose CDR is a special's arguments, `PRIMFUN(op)(call, op,
+/// args, rho)`'s `args`: `call` itself (`args` None, `CDR(call)`), or for
+/// `applyMethod`'s special method (objects.c:91) a call of the method's
+/// name over its promise list, read for the arguments only. The special's
+/// messages name `call`, the method's `newcall`.
+// R: objects.c:applyMethod (SPECIALSXP)
+/// `None`: the arguments are `call`'s own (the caller reads `call`).
+#[inline(always)]
+pub(crate) fn arg_call<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    args: Option<Root<'_>>,
+) -> RResult<Option<Root<'s>>> {
+    match args {
+        None => Ok(None),
+        Some(a) => arg_call_over(cx, s, call, a).map(Some),
+    }
+}
+
+/// A special `f` run again on [`arg_call`]'s call over `applyMethod`'s
+/// promises (`args` Some), its own arguments then: `f(cx, ac, op, None,
+/// rho, out)`. For the specials that read their arguments from their call
+/// and name it in their messages (`withVisible`, `forceAndCall`, `cbind`,
+/// `NextMethod`, ...): their body stays in `f`, inline as before, and this
+/// cold path passes `None` for them, so the promises cannot be handed twice.
+/// (`UseMethod` keeps its own inline prologue: see `dispatch::do_usemethod`.)
+#[cold]
+#[inline(never)]
+pub(crate) fn rerun_apart(
+    cx: &mut Cx,
+    call: Root<'_>,
+    op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+    f: crate::prims::SpecialFn,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        f(cx, ac, op, None, rho, out)
+    })
+}
+
+/// [`arg_call`]'s call over the promise list `a` (out of line: only
+/// `applyMethod` passes one).
+#[cold]
+#[inline(never)]
+fn arg_call_over<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, a: Root<'_>) -> RResult<Root<'s>> {
+    s.capture(cx, |cx, o| {
+        cx.build(o, |cx| {
+            let head = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.car());
+            cx.lcons(head, a.bind(cx))
+        })
+    })
+}
+
 fn eval_root<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>) -> RResult<Root<'s>> {
     let o = s.out(cx);
     let r = o.root();
@@ -122,6 +182,22 @@ impl<'s> Evaluated<'s> {
         // SAFETY: `n` filled value slots and `n` tag slots of the scope.
         unsafe { Args::from_raw(self.vals, Some(self.names), self.n as u32, any_alt) }
     }
+}
+
+/// `evalListKeepMissing(CDR(call), rho)` of the whole argument list of
+/// `call`: the values in a window of `s` (each linked until all are
+/// evaluated, `...` expanded, missing arguments kept as R_MissingArg).
+// R: eval.c:evalListKeepMissing
+pub(crate) fn eval_call_args_keep_missing<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    rho: Root<'_>,
+) -> RResult<Evaluated<'s>> {
+    let cap = count_args(cx, call, 0, rho)?;
+    let mut ev = Evaluated::new(cx, s, cap);
+    eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 0)?;
+    Ok(ev)
 }
 
 /// How many values `evalListKeepMissing` makes of the call's arguments
@@ -263,14 +339,51 @@ fn eval_list_keep_missing<'s>(
 /// expanded first, as a builtin's are ([`crate::call::run_builtin`]):
 /// GNU R's `math1`/`math2` read it through `REAL()`.
 // R: arithmetic.c:do_log, memory.c:DATAPTR
-pub fn do_log(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_log(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
-        let cap = count_args(cx, call, 0, rho)?;
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        let cap = count_args(cx, ac, 0, rho)?;
         let mut ev = Evaluated::new(cx, s, cap);
-        eval_list_keep_missing(cx, s, call, 0, rho, &mut ev, 0)?;
+        eval_list_keep_missing(cx, s, ac, 0, rho, &mut ev, 0)?;
         let args = ev.args(cx);
         cx.materialize_args(args)?;
         robigo_rtbuiltins::math::do_log_builtin(cx, call, args, rho, out)
+    })
+}
+
+/// `round` and `signif` (`do_Math2`, a special with internal argument
+/// matching): `evalListKeepMissing` of the arguments, then the matching,
+/// dispatch and arithmetic of `math::do_math2_special`.
+// R: arithmetic.c:do_Math2
+pub fn do_math2<const IS_SIGNIF: bool>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        let cap = count_args(cx, ac, 0, rho)?;
+        let mut ev = Evaluated::new(cx, s, cap);
+        eval_list_keep_missing(cx, s, ac, 0, rho, &mut ev, 0)?;
+        let args = ev.args(cx);
+        cx.materialize_args(args)?;
+        robigo_rtbuiltins::math::do_math2_special::<IS_SIGNIF>(cx, call, args, rho, out)
     })
 }
 
@@ -457,26 +570,52 @@ pub(crate) fn ev_promise<'s>(cx: &mut Cx, s: Scope<'s>, expr: Root<'_>, value: R
 
 /// `do_subset`: `x[...]`.
 // R: subset.c:do_subset
-pub fn do_subset(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, call, "[", rho, &out)? {
-        Disp::Done => Ok(()),
-        Disp::Default(ev) => {
-            let args = ev.args(cx);
-            cx.materialize_subset_args(args)?;
-            subset::do_subset_dflt(cx, call, args, rho, out)
+pub fn do_subset(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        match dispatch_or_eval_sp(cx, s, call, ac, "[", rho, &out)? {
+            Disp::Done => Ok(()),
+            Disp::Default(ev) => {
+                let args = ev.args(cx);
+                cx.materialize_subset_args(args)?;
+                subset::do_subset_dflt(cx, call, args, rho, out)
+            }
         }
     })
 }
 
 /// `do_subset2`: `x[[...]]`.
 // R: subset.c:do_subset2
-pub fn do_subset2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    cx.scope(|cx, s| match dispatch_or_eval_sp(cx, s, call, call, "[[", rho, &out)? {
-        Disp::Done => Ok(()),
-        Disp::Default(ev) => {
-            let args = ev.args(cx);
-            cx.materialize_subset_args(args)?;
-            subset::do_subset2_dflt(cx, call, args, rho, out)
+pub fn do_subset2(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        match dispatch_or_eval_sp(cx, s, call, ac, "[[", rho, &out)? {
+            Disp::Done => Ok(()),
+            Disp::Default(ev) => {
+                let args = ev.args(cx);
+                cx.materialize_subset_args(args)?;
+                subset::do_subset2_dflt(cx, call, args, rho, out)
+            }
         }
     })
 }
@@ -485,8 +624,15 @@ pub fn do_subset2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
 /// one-element character vector; a promise is forced first), and the
 /// symbol when the argument was one.
 // R: subset.c:fixSubset3Args
-fn subset3_name<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, rho: Root<'_>) -> RResult<(Root<'s>, Option<Root<'s>>)> {
-    let mut nl = s.root(cx, arg(cx, call, 1).map_or(cx.nil(), |(e, _)| e));
+fn subset3_name<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    ac: Root<'_>,
+    rho: Root<'_>,
+) -> RResult<(Root<'s>, Option<Root<'s>>)> {
+    // (the argument read from `ac`, the error against `call`)
+    let mut nl = s.root(cx, arg(cx, ac, 1).map_or(cx.nil(), |(e, _)| e));
     if nl.bind(cx).sexptype() == PROMSXP {
         nl = eval_root(cx, s, nl, rho)?;
     }
@@ -540,11 +686,22 @@ fn link_root(r: Root<'_>) -> links::Linked {
 /// argument is evaluated (and dispatched on), then the name as a string
 /// constant, as `R_DispatchOrEvalSP` evaluates the fixed arguments.
 // R: subset.c:do_subset3
-pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    check_arity(cx, call, "$", 2)?;
+pub fn do_subset3(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
-        let (input, _) = subset3_name(cx, s, call, rho)?;
-        let e = s.root(cx, arg(cx, call, 0).unwrap().0);
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        check_arity(cx, call, ac, "$", 2)?;
+        let (input, _) = subset3_name(cx, s, call, ac, rho)?;
+        let e = s.root(cx, arg(cx, ac, 0).unwrap().0);
         if e.bind(cx).sexp() == prims::state(cx).syms.dots {
             return Err(cx.error("robigo: '$' with '...' as its object is not implemented yet"));
         }
@@ -559,14 +716,14 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
             let o = s.out(cx);
             let rest = o.root();
             let plain = {
-                let c = call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr().as_cons().unwrap();
+                let c = ac.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr().as_cons().unwrap();
                 c.tag().sexptype() == NILSXP && c.cdr().sexptype() == NILSXP
             };
             if plain {
                 // (an untagged last cell: its shallow copy is this cell)
                 cx.build(o, |cx| cx.cons(str.bind(cx), cx.nil()))?;
             } else {
-                let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+                let after = s.root(cx, ac.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
                 cx.shallow_duplicate(after, o)?;
                 cx.set_car(rest, str);
             }
@@ -587,8 +744,21 @@ pub fn do_subset3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out
 
 /// `do_subassign`: `` `[<-`(x, ..., value) ``.
 // R: subassign.c:do_subassign
-pub fn do_subassign(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    subassign_apart(cx, call, call, rho, out)
+pub fn do_subassign(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        subassign_apart(cx, call, ac, rho, out)
+    })
 }
 
 /// `do_subassign(call, op, args, rho)` with the arguments `ev`'s (a call
@@ -608,8 +778,21 @@ pub fn subassign_apart(cx: &mut Cx, call: Root<'_>, ev_call: Root<'_>, rho: Root
 
 /// `do_subassign2`: `` `[[<-`(x, ..., value) ``.
 // R: subassign.c:do_subassign2
-pub fn do_subassign2(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    subassign2_apart(cx, call, call, rho, out)
+pub fn do_subassign2(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        subassign2_apart(cx, call, ac, rho, out)
+    })
 }
 
 /// [`subassign_apart`] for `[[<-`.
@@ -627,11 +810,22 @@ pub fn subassign2_apart(cx: &mut Cx, call: Root<'_>, ev_call: Root<'_>, rho: Roo
 
 /// `do_subassign3`: `` `$<-`(x, name, value) ``.
 // R: subassign.c:do_subassign3
-pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    check_arity(cx, call, "$<-", 3)?;
+pub fn do_subassign3(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
-        let (input, sym) = subset3_name(cx, s, call, rho)?;
-        let e = s.root(cx, arg(cx, call, 0).unwrap().0);
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        check_arity(cx, call, ac, "$<-", 3)?;
+        let (input, sym) = subset3_name(cx, s, call, ac, rho)?;
+        let e = s.root(cx, arg(cx, ac, 0).unwrap().0);
         if e.bind(cx).sexp() == prims::state(cx).syms.dots {
             return Err(cx.error("robigo: '$<-' with '...' as its object is not implemented yet"));
         }
@@ -643,7 +837,7 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
             // fixSubset3Args: a shallow copy of the call's cells after the
             // object, the name made a string; the tags (`value =`) kept
             let str = scalar_string(cx, s, input)?;
-            let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+            let after = s.root(cx, ac.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
             let rest = tagged_rest(cx, s, after, str)?;
             match crate::dispatch::dispatch_special(cx, "$<-", call, prom, rest, rho, &out) {
                 // no method: the default below, with the arguments
@@ -661,7 +855,7 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
         // the name (a constant) and the value are evaluated as arguments
         let str = scalar_string(cx, s, input)?;
         let _ = eval_root(cx, s, str, rho)?;
-        let ve = s.root(cx, arg(cx, call, 2).unwrap().0);
+        let ve = s.root(cx, arg(cx, ac, 2).unwrap().0);
         // evalListKeepMissing: an empty argument, or a missing argument's
         // symbol, is R_MissingArg
         let vs = ve.bind(cx).sexp();
@@ -692,7 +886,14 @@ pub fn do_subassign3(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
 /// the environment it was evaluated in as `.Environment` (a call that is
 /// already an object is only duplicated).
 // R: names.c:do_tilde
-pub fn do_tilde(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_tilde(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    _args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
         let o = s.out(cx);
         let r = o.root();
@@ -720,22 +921,33 @@ fn methods_dispatch_on() -> bool {
 /// the name made a string as `$`'s is; then, without the methods package,
 /// formal classes are an error.
 // R: attrib.c:do_AT
-pub fn do_at(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    check_arity(cx, call, "@", 2)?;
+pub fn do_at(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
-        let e = s.root(cx, arg(cx, call, 0).unwrap().0);
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        check_arity(cx, call, ac, "@", 2)?;
+        let e = s.root(cx, arg(cx, ac, 0).unwrap().0);
         let x = eval_root(cx, s, e, rho)?;
         let xv = x.bind(cx);
         if xv.is_object() && !xv.is_s4() {
             // fixSubset3Args (its errors), the object as an evaluated
             // promise, then DispatchOrEval
-            let (input, _) = subset3_name(cx, s, call, rho)?;
+            let (input, _) = subset3_name(cx, s, call, ac, rho)?;
             let lx = link_root(x);
             let prom = ev_promise(cx, s, e, x)?;
             let str = scalar_string(cx, s, input)?;
             // shallow_duplicate(args), the name's cell holding the string
             // (the arguments' tags kept)
-            let after = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
+            let after = s.root(cx, ac.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().cdr());
             let rest = tagged_rest(cx, s, after, str)?;
             let r = crate::dispatch::dispatch_special(cx, "@", call, prom, rest, rho, &out);
             lx.release();
@@ -758,8 +970,15 @@ pub fn do_at(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out
 /// `checkAtAssignment`, which needs `initMethodDispatch()` evaluated in its
 /// namespace first (the global environment until methods is loaded).
 // R: attrib.c:do_attrgets, check_slot_assign
-pub fn do_slot_gets(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    slot_gets(cx, call, None, rho, out)
+pub fn do_slot_gets(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    slot_gets(cx, call, args, rho, out)
 }
 
 /// [`do_slot_gets`] given its call and its arguments apart, as bcEval's
@@ -963,12 +1182,30 @@ pub(crate) fn as_integer(cx: &mut Cx, x: Root<'_>) -> RResult<i32> {
 /// `do_switch`: `switch(EXPR, ...)`. The chosen alternative is evaluated
 /// (its value visible as it leaves it); no match is NULL, invisible.
 // R: builtin.c:do_switch
-pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
-    let n = nargs(cx, call);
+pub fn do_switch(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        switch_in(cx, call, ac, rho, out)
+    })
+}
+
+/// [`do_switch`] with its arguments read from `ac` ([`arg_call`]).
+fn switch_in(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = nargs(cx, ac);
     if n < 1 {
         return Err(cx.error_call(Some(call), "'EXPR' is missing"));
     }
-    if let Some((_, Some(t))) = arg(cx, call, 0) {
+    if let Some((_, Some(t))) = arg(cx, ac, 0) {
         let supplied = t.name_bytes();
         if supplied.len() > 4 || !b"EXPR".starts_with(supplied) {
             let msg = format!("supplied argument name '{}' does not match 'EXPR'", String::from_utf8_lossy(supplied));
@@ -976,7 +1213,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
         }
     }
     cx.scope(|cx, s| {
-        let e = s.root(cx, arg(cx, call, 0).unwrap().0);
+        let e = s.root(cx, arg(cx, ac, 0).unwrap().0);
         let x = eval_root(cx, s, e, rho)?;
         let xv = x.bind(cx);
         if !robigo_rtbuiltins::attrib::is_vector(xv) || xv.len() != Some(1) {
@@ -989,7 +1226,7 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
             )?;
         }
         if n > 1 {
-            let w = expand_dots(cx, s, call, rho)?;
+            let w = expand_dots(cx, s, ac, rho)?;
             let missing = cx.missing_arg().sexp();
             let nil = cx.nil().sexp();
             let is_str = x.bind(cx).sexptype() == STRSXP;
@@ -1060,19 +1297,43 @@ pub fn do_switch(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out:
 
 /// `matchArgs_NR(formals, args, call)` for a special's formals (no `...`):
 /// each formal's expression, `R_MissingArg` when not supplied.
-fn match_formals<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, formals: &[&[u8]]) -> RResult<Vec<Root<'s>>> {
+fn match_formals<'s>(
+    cx: &mut Cx,
+    s: Scope<'s>,
+    call: Root<'_>,
+    ac: Root<'_>,
+    formals: &[&[u8]],
+) -> RResult<Vec<Root<'s>>> {
     let syms: Vec<Root<'s>> = formals.iter().map(|f| subset::install_sym(cx, s, f)).collect::<RResult<_>>()?;
     // (symbols are immortal)
     let fs: Vec<Sexp> = syms.iter().map(|r| r.bind(cx).sexp()).collect();
-    crate::args::match_builtin_args(cx, s, call, &fs)
+    crate::args::match_builtin_args_apart(cx, s, call, ac, &fs)
 }
 
 /// `do_onexit`: `on.exit(expr, add, after)` attached to the function
 /// record of `rho` (C2's records).
 // R: builtin.c:do_onexit
-pub fn do_onexit(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_onexit(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
-        let a = match_formals(cx, s, call, &[b"expr", b"add", b"after"])?;
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        onexit_in(cx, call, ac, rho, out)
+    })
+}
+
+/// [`do_onexit`] with its arguments read from `ac` ([`arg_call`]).
+fn onexit_in(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let a = match_formals(cx, s, call, ac, &[b"expr", b"add", b"after"])?;
         let missing = cx.missing_arg();
         let code = if a[0].bind(cx) == missing { s.root(cx, cx.nil()) } else { a[0] };
         let flag = |cx: &mut Cx, r: Root<'_>| -> RResult<Option<i32>> {
@@ -1271,7 +1532,24 @@ fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
                 };
                 t.root(cx, x)
             };
-            let sym = cx.install_rooted(t, &name)?;
+            // installTrChar: a new symbol's PRINTNAME is the name's
+            // CHARSXP when no translation was needed (Cx::install_tr); a
+            // pairlist's tag is a symbol already
+            let y = cx.retry_alloc(|cx| {
+                let v = env.bind(cx);
+                let ch = match v.view() {
+                    View::List(_) => {
+                        robigo_rtbuiltins::attrib::names(v).and_then(|n| n.as_vector::<Char<'_>>()).map(|n| n.get(i))
+                    }
+                    _ => None,
+                };
+                match ch {
+                    Some(ch) => cx.install_tr(ch, &name).map(|s| s.as_ref().sexp()),
+                    None => cx.install(&name).map(|s| s.as_ref().sexp()),
+                }
+            })?;
+            // SAFETY: a symbol: immortal in its heap.
+            let sym = t.root(cx, unsafe { Ref::from_sexp(y, cx) });
             cx.define_var(sym, val, e)
         })?;
     }
@@ -1280,9 +1558,27 @@ fn list_env<'s>(cx: &mut Cx, s: Scope<'s>, env: Root<'_>) -> RResult<Root<'s>> {
 
 /// `do_substitute`: `substitute(expr, env)`.
 // R: coerce.c:do_substitute
-pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_substitute(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
-        let a = match_formals(cx, s, call, &[b"expr", b"env"])?;
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        substitute_in(cx, call, ac, rho, out)
+    })
+}
+
+/// [`do_substitute`] with its arguments read from `ac` ([`arg_call`]).
+fn substitute_in(cx: &mut Cx, call: Root<'_>, ac: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let a = match_formals(cx, s, call, ac, &[b"expr", b"env"])?;
         let env = if a[1].bind(cx) == cx.missing_arg() { rho } else { eval_root(cx, s, a[1], rho)? };
         let ev = env.bind(cx);
         let env = if ev == cx.global_env() {
@@ -1345,11 +1641,22 @@ pub fn do_substitute(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, 
 /// (each duplicated if referenced: they are the call's), named if any
 /// argument is.
 // R: builtin.c:do_expression
-pub fn do_expression(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, _rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_expression(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    _rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
         let items: Vec<(Root<'_>, Option<Root<'_>>)> = {
             let mut v = Vec::new();
-            let mut a = call.bind(cx).as_cons().map(|c| c.cdr()).and_then(|c| c.as_cons());
+            let mut a = ac.bind(cx).as_cons().map(|c| c.cdr()).and_then(|c| c.as_cons());
             while let Some(c) = a {
                 v.push((c.car(), (c.tag() != cx.nil()).then(|| c.tag())));
                 a = c.cdr().as_cons();

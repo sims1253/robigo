@@ -52,36 +52,17 @@ pub fn apply_special_args(
     // SAFETY: a rooted primitive of this isolate.
     let off = unsafe { prims::offset(fun.bind(cx).sexp()) };
     let def = prims::state(cx).defs[off];
-    if let (Some(a), Kind::Fn(f)) = (args, def.kind) {
-        // a function over its call gets a call over the promises: the method
-        // name at its head (no dispatch again), each argument a promise its
-        // `eval` forces. Its messages name that call, whose deparse shows
-        // the arguments' values where GNU R's shows their expressions.
-        return cx.scope(|cx, s| {
-            let c = s.capture(cx, |cx, o| {
-                cx.build(o, |cx| {
-                    let head = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.car());
-                    cx.lcons(head, a.bind(cx))
-                })
-            })?;
-            let flag = def.print();
-            cx.note_effect();
-            cx.set_visible(flag != 1);
-            f(cx, c, fun, rho, out)?;
-            if flag < 2 {
-                cx.set_visible(flag != 1);
-            }
-            Ok(())
-        });
-    }
     match def.kind {
+        // PRIMFUN(op)(call, op, args, rho): `args` the method's promises
+        // (`applyMethod`), `call` the method's `newcall`, which its messages
+        // name; None for the call's own arguments
         Kind::Fn(f) => {
             let flag = def.print();
             // a builtin may change what an argument expression evaluates to or
             // look at an argument: values computed early are dropped (crate::early)
             cx.note_effect();
             cx.set_visible(flag != 1);
-            f(cx, call, fun, rho, out)?;
+            f(cx, call, fun, args, rho, out)?;
             if flag < 2 {
                 cx.set_visible(flag != 1);
             }
@@ -144,6 +125,32 @@ pub fn apply_special_args(
 /// arguments, the first `n` forced before its body runs.
 // R: eval.c:R_forceAndCall
 pub fn force_and_call(cx: &mut Cx, call: Root<'_>, n: i32, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+    force_and_call_with(cx, call, n, rho, None, out)
+}
+
+/// The isolate's `force_and_call_indexed` hook: [`force_and_call`] of base's
+/// lapply/vapply call `FUN(X[[i]], ...)` with `n` 1, `x` the vector `X`
+/// evaluated to and `ind` the one `i` binds, whose first argument's promise
+/// may get its value directly ([`force_x_i`]).
+pub fn force_and_call_indexed(
+    cx: &mut Cx,
+    call: Root<'_>,
+    rho: Root<'_>,
+    x: Root<'_>,
+    ind: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    force_and_call_with(cx, call, 1, rho, Some((x, ind)), out)
+}
+
+fn force_and_call_with(
+    cx: &mut Cx,
+    call: Root<'_>,
+    n: i32,
+    rho: Root<'_>,
+    direct: Option<(Root<'_>, Root<'_>)>,
+    out: Out<'_>,
+) -> RResult<()> {
     cx.scope(|cx, s| {
         // SAFETY: the head of the rooted call.
         let head = s.root(cx, unsafe { Ref::from_sexp(call.bind(cx).sexp().car(), cx) });
@@ -190,8 +197,15 @@ pub fn force_and_call(cx: &mut Cx, call: Root<'_>, n: i32, rho: Root<'_>, out: O
                         cx.scope(|cx, s2| {
                             // SAFETY: as above; rooted at once.
                             let pr = s2.root(cx, unsafe { Ref::from_sexp(p, cx) });
+                            if i == 0
+                                && let Some((x, ind)) = direct
+                                && force_x_i(cx, s2, call, pr, rho, x, ind)?
+                            {
+                                return Ok(());
+                            }
                             let o = s2.out(cx);
-                            cx.eval(pr, rho, o)
+                            // R: eval(p, rho)
+                            crate::eval::eval_promise(cx, pr, o)
                         })?;
                     } else if p == cx.missing_arg().sexp() {
                         let msg = format!("argument {} is empty", i + 1);
@@ -208,10 +222,156 @@ pub fn force_and_call(cx: &mut Cx, call: Root<'_>, n: i32, rho: Root<'_>, out: O
     })
 }
 
+/// The levels below the caller the general force of `X[[i]]`'s promise
+/// reaches: `eval` of the promise, of `X[[i]]`, and of `[[`'s argument `X`
+/// (or `i`), each `INCREMENT_EVAL_DEPTH` (S1 checked them against eval.c
+/// and subset.c). The guard asks one level more, a margin: at exactly the
+/// limit the general path runs, and is exact there.
+const X_I_DEPTH: i32 = 3;
+
+/// C stack a general force of `X[[i]]` may use, at least: below this
+/// headroom the general path runs (its `R_CheckStack` raises where GNU R's
+/// does).
+const X_I_STACK: usize = 256 * 1024;
+
+/// `forcePromise` of lapply's `X[[i]]` promise `p` with its value computed
+/// directly, when GNU R's force of it is unobservable (true; false: the
+/// caller forces it as usual, nothing done here that it would not do).
+///
+/// GNU R's `R_forceAndCall` forces the first argument before the closure's
+/// frame is made: `eval(p)` → `forcePromise` → `eval(X[[i]])` →
+/// `do_subset2` → `R_DispatchOrEvalSP`, which evaluates `X` and `i` and
+/// dispatches on nothing for an unclassed `X` → `do_subset2_dflt`. Four
+/// `eval`s, so four evaluation-count ticks.
+///
+/// Taken only when none of that can be seen, all decided before anything
+/// is done (otherwise the general path, untouched):
+/// - none of the four ticks polls (`evalcount + 4 <= 1000`): no interrupt
+///   check or finalizer could run between the reads GNU R makes, so the
+///   ticks are the count alone, added at once;
+/// - no safepoint work is pending (the general force serves it at its
+///   entry: a collection, then the finalizers it makes pending, run at
+///   GNU R's next poll);
+/// - the depth and C stack checks of the four `eval`s cannot fail
+///   (headroom first; the general path raises where GNU R does);
+/// - the guards: `p` is the call's own unforced `X[[i]]` in `rho`, `X` in
+///   `rho` is still `x` with no class, `i` still `ind`, and `[[` from `rho`
+///   is base's primitive.
+///
+/// The value is `do_subset2_dflt`'s own, after the special's
+/// `materialize_subset_args`; the promise is left as `forcePromise` leaves
+/// it (PRVALUE, PRSEEN 0, PRENV R_NilValue; PRCODE the call's `X[[i]]`,
+/// which `substitute` and `sys.call()` show).
+// R: eval.c:R_forceAndCall, forcePromise, eval; subset.c:do_subset2
+#[allow(clippy::too_many_arguments)]
+fn force_x_i(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'_>,
+    call: Root<'_>,
+    p: Root<'_>,
+    rho: Root<'_>,
+    x: Root<'_>,
+    ind: Root<'_>,
+) -> RResult<bool> {
+    // the promise is the call's X[[i]] (an AST one, unforced, in rho)
+    let Some(tmp) = call.bind(cx).as_cons().and_then(|c| c.cdr().as_cons()).map(|c| c.car()) else { return Ok(false) };
+    let pv = p.bind(cx);
+    let plain = cx.promise_unforced_ast(pv)
+        && match pv.view() {
+            robigo_rtcore::View::Promise(pr) => pr.code() == tmp && pr.env() == rho.bind(cx),
+            _ => false,
+        };
+    if !plain
+        || cx.eval_depth() + X_I_DEPTH + 1 > cx.expressions()
+        || !cx.c_stack_headroom(X_I_STACK)
+        || cx.safepoint_pending()
+        // (`eval::tick` polls when the count passes 1000)
+        || cx.evalcount().get() + 4 > 1000
+        || !x_i_guards(cx, call, rho, x, ind)
+    {
+        return Ok(false);
+    }
+    // the four evaluations' ticks, none of which polls
+    cx.evalcount().set(cx.evalcount().get() + 4);
+    let tmp = s.root(cx, call.bind(cx).as_cons().unwrap().cdr().as_cons().unwrap().car());
+    let v = s.out(cx);
+    let vr = v.root();
+    let args = s.args(cx, &[x.bind(cx), ind.bind(cx)], None);
+    // R: subset.c:do_subset2 (the special's default, as specials.rs calls
+    // it), at the depth GNU R runs it: eval(p) and eval(X[[i]]) active, so
+    // a calling handler of an error signalled there (an allocation that
+    // fails, e.g. expanding an unserialized compact sequence with names
+    // under a lowered mem.maxVSize) sees GNU R's depth
+    let depth = cx.eval_depth();
+    cx.set_eval_depth(depth + 2);
+    let r = cx
+        .materialize_subset_args(args)
+        .and_then(|()| robigo_rtbuiltins::subset::do_subset2_dflt(cx, tmp, args, rho, v));
+    cx.set_eval_depth(depth);
+    r?;
+    cx.set_promise_forced(p, vr);
+    Ok(true)
+}
+
+/// [`force_x_i`]'s guards: `X` in `rho` is `x` without a class, `i` is
+/// `ind`, and `[[` from `rho` is base's primitive.
+fn x_i_guards(cx: &Cx, call: Root<'_>, rho: Root<'_>, x: Root<'_>, ind: Root<'_>) -> bool {
+    let tmp = call.bind(cx).as_cons().and_then(|c| c.cdr().as_cons()).map(|c| c.car());
+    let Some(t) = tmp.and_then(|t| t.as_cons()) else { return false };
+    let Some(t1) = t.cdr().as_cons() else { return false };
+    let Some(t2) = t1.cdr().as_cons() else { return false };
+    let (b2, xs, is) = (t.car().sexp(), t1.car().sexp(), t2.car().sexp());
+    let (xv, rv) = (x.bind(cx), rho.bind(cx).sexp());
+    if xv.is_object() {
+        return false;
+    }
+    let value_of = |sym: Sexp| -> Option<Sexp> {
+        // SAFETY: an immortal symbol and a rooted environment; read only.
+        match unsafe { cx.var_lookup_raw(sym, rv) } {
+            robigo_rtcore::RawBinding::Value(v) | robigo_rtcore::RawBinding::Forced(v) => {
+                // a forced promise reads as its value
+                // SAFETY: a live object read from a live frame.
+                if unsafe { v.typ() } == PROMSXP {
+                    // SAFETY: as above; read within this `&Cx` interval.
+                    match unsafe { Ref::from_sexp(v, cx) }.view() {
+                        robigo_rtcore::View::Promise(pr) if !pr.is_unboxed() && pr.value() != cx.unbound() => {
+                            Some(pr.value().sexp())
+                        }
+                        _ => None,
+                    }
+                } else {
+                    Some(v)
+                }
+            }
+            _ => None,
+        }
+    };
+    if value_of(xs) != Some(xv.sexp()) || value_of(is) != Some(ind.bind(cx).sexp()) {
+        return false;
+    }
+    // SAFETY: as above.
+    match unsafe { cx.fun_lookup_raw(b2, rv) } {
+        // SAFETY: a function bound in a live frame.
+        Some(f) => prims::prim_name(cx, unsafe { Ref::from_sexp(f, cx) }) == Some("[["),
+        None => false,
+    }
+}
+
 /// `forceAndCall(n, FUN, ...)`: the call `FUN(...)` made of the rest of
 /// the call, its first `n` arguments forced before a closure's body runs.
 // R: eval.c:do_forceAndCall
-pub fn do_force_and_call(cx: &mut Cx, call: Root<'_>, _op: Root<'_>, rho: Root<'_>, out: Out<'_>) -> RResult<()> {
+pub fn do_force_and_call(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    // (applyMethod's promise list: run again on the call over it)
+    if args.is_some() {
+        return crate::specials::rerun_apart(cx, call, _op, args, rho, out, do_force_and_call);
+    }
     cx.scope(|cx, s| {
         let (nexpr, rest) = {
             let args = call.bind(cx).as_cons().map_or(cx.nil(), |c| c.cdr());

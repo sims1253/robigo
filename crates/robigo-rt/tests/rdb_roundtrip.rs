@@ -471,6 +471,7 @@ fn oracle_base_closures_crosscheck() {
                             robigo_rt::compile::Verdict::Unexpected => "Unexpected",
                             robigo_rt::compile::Verdict::Skipped => "Skipped",
                             robigo_rt::compile::Verdict::Untranslated => "Untranslated",
+                            robigo_rt::compile::Verdict::Malformed => "Malformed",
                         };
                         *verdicts.entry(verdict.to_owned()).or_default() += 1;
                     }
@@ -485,6 +486,9 @@ fn oracle_base_closures_crosscheck() {
     assert!(closures > 1000, "{closures} closures");
     assert!(failures.is_empty(), "{failures:#?}");
     assert_eq!(n("Unexpected"), 0, "unexpected differences (the report has them): {verdicts:?}");
+    // GNU R's compiler's code is never malformed: a refusal is a
+    // translator bug (#976's checks are stricter than the code they check)
+    assert_eq!(n("Malformed"), 0, "byte code refused as malformed: {verdicts:?}");
     let compared = n("Same") + n("Expected");
     assert!(compared >= CROSSCHECK_COMPARED, "{compared} compared, fewer than {CROSSCHECK_COMPARED}: {verdicts:?}");
     for (v, most) in [("Skipped", CROSSCHECK_SKIPPED), ("Untranslated", CROSSCHECK_UNTRANSLATED)] {
@@ -507,4 +511,34 @@ fn eval_src(cx: &mut Cx, src: &str) {
             let _ = robigo_rt::eval(cx, e, g, o);
         }
     });
+}
+
+/// `translation_gaps` walks the constants of the byte code it translates
+/// for the byte code they hold, and `mkCode` takes any constants: a code
+/// object whose constants are no list (an integer vector here), at the top
+/// and inside a MAKECLOSURE-shaped constant, is translated (its LDNULL,
+/// RETURN reads none) and its constants are not walked as a list's (they
+/// were: an out-of-bounds read, #1003's review).
+#[test]
+fn translation_gaps_walks_only_list_constants() {
+    let mut r = common::Session::jit();
+    r.val(
+        r#"
+inner <- .Internal(mkCode(c(12L, 17L, 1L), 1:3))
+top <- .Internal(bcClose(NULL, .Internal(mkCode(c(12L, 17L, 1L), 1:3)), globalenv()))
+nested <- .Internal(bcClose(NULL, .Internal(mkCode(c(12L, 17L, 1L), list(NULL, list(NULL, inner)))), globalenv()))
+"#,
+    );
+    let cx = r.cx();
+    for name in ["top", "nested"] {
+        let gaps = cx.scope(|cx, s| {
+            let sym = cx.install_rooted(s, name.as_bytes()).unwrap();
+            let g = s.root(cx, cx.global_env());
+            let out = s.out(cx);
+            let f = out.root();
+            cx.find_var(sym, g, out).unwrap();
+            robigo_rt::compile::translation_gaps(cx, f).map_err(|e| common::message(cx, e))
+        });
+        assert_eq!(gaps, Ok(vec![]), "{name}");
+    }
 }

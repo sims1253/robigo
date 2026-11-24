@@ -67,11 +67,13 @@ def main():
             if re.match(r"^(primitive|internal):", k):
                 by_key.setdefault(k, []).append(st)
     keys = sorted(by_key)
-    # the tree robigo-rt finds as its own R_HOME (its build checkout's): it
-    # ignores an inherited R_HOME with GNU R's warning
-    made = subprocess.run([str(ROOT / "scripts/rt-home.sh")], capture_output=True, text=True, check=False)
-    if made.returncode:
-        sys.exit(f"rt-build-gaps: scripts/rt-home.sh failed (status {made.returncode}):\n{made.stderr}")
+    # the trees robigo-rt finds as its own R_HOME (its build checkout's): it
+    # ignores an inherited R_HOME with GNU R's warning; it names no boot,
+    # which boots rdb once that is the default, so base's database tree is
+    # this binary's too (scripts/rt_trees.py; the R_HOME tree with it)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import rt_trees
+    rt_trees.ensure(a.robigo_rt, str(ROOT))
     env = {k: v for k, v in os.environ.items() if k != "R_HOME"}
     env.update(R_DEFAULT_PACKAGES="NULL", LANGUAGE="en", LC_ALL="C.UTF-8")
     skip, crashed, missing = set(SKIP), [], []

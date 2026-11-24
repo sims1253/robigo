@@ -9,12 +9,28 @@ use robigo_rtcore::clib::category as lc;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Ref, Root};
 
-/// `interactive()`: robigo-rt runs scripts as Rscript does (`R_Interactive`
-/// is FALSE).
+/// The session's `R_Interactive`, which the front end sets
+/// ([`set_interactive`]) as `Rf_initialize_R` computes it; FALSE until then.
+struct Interactive(bool);
+
+/// Whether R is interactive (`R_Interactive`).
+pub fn interactive(cx: &Cx) -> bool {
+    cx.ext::<Interactive>().is_some_and(|i| i.0)
+}
+
+/// Set `R_Interactive` (the front end, from `--interactive`, a terminal
+/// on stdin, and a FILE or `-e`, as unix/system.c's `Rf_initialize_R`).
+pub fn set_interactive(cx: &mut Cx, on: bool) {
+    // (set_ext replaces the state of its type)
+    cx.set_ext(Interactive(on));
+}
+
+/// `interactive()`: `R_Interactive`.
 // R: sysutils.c:do_interactive
 pub fn do_interactive(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::row!("interactive").check_arity(cx, call, args)?;
-    cx.build_scalar(out, Lgl::FALSE)
+    let on = interactive(cx);
+    cx.build_scalar(out, Lgl(on as i32))
 }
 
 /// `.Internal(Sys.getenv(x, unset))`: each variable's value (`unset` if it
@@ -707,4 +723,174 @@ pub fn do_setlocale(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     };
     // (R_check_locale: the codeset is unchanged)
     cx.build(out, |cx| cx.mk_string(&p, Encoding::Native))
+}
+
+// ---- the session's temporary directory --------------------------------------
+
+/// `srand(TimeToSeed())`: the C library's `rand()` (which `tempfile` names
+/// read) seeded as GNU R's startup seeds it, before `InitTempDir`.
+// R: main.c:setup_Rmainloop
+pub fn seed_rand() {
+    robigo_rtcore::clib::srand(robigo_numerics::rng::time_to_seed());
+}
+
+/// `R_reInitTempDir(die_on_fail)`: unless the session has one, a new
+/// directory `<TMPDIR, TMP, TEMP or /tmp>/RtmpXXXXXX` made (the first of
+/// them a writable directory), `R_SESSION_TMPDIR` set to it, and it made
+/// the session's (`R_TempDir`). The error's message otherwise, which the
+/// caller raises: at startup (`die_on_fail`) `R_Suicide`'s, else
+/// `errorcall(R_NilValue, ...)`'s. The process environment is written only
+/// when the embedder granted it (`EnvWrites`); without the grant the
+/// directory is still made and `R_SESSION_TMPDIR` left as it is.
+// R: sysutils.c:R_reInitTempDir
+pub fn init_temp_dir(cx: &Cx, die_on_fail: bool) -> Result<(), String> {
+    use robigo_rtcore::clib;
+    use std::os::unix::ffi::OsStrExt;
+    let _ = die_on_fail; // (the caller's: how the message is raised)
+    if cx.temp_dir().is_some() {
+        return Ok(()); // someone else set it
+    }
+    let var = |n: &str| std::env::var_os(n).map(|v| v.as_bytes().to_vec());
+    let mut tm = var("TMPDIR");
+    if !clib::is_writeable_dir(tm.as_deref()) {
+        tm = var("TMP");
+        if !clib::is_writeable_dir(tm.as_deref()) {
+            tm = var("TEMP");
+            if !clib::is_writeable_dir(tm.as_deref()) {
+                tm = Some(b"/tmp".to_vec());
+            }
+        }
+    }
+    let tm = tm.unwrap_or_default();
+    // make sure no spaces in path (isspace, the C locale's)
+    if tm.iter().any(|&c| matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')) {
+        return Err("'R_TempDir' contains space".into());
+    }
+    let mut template = tm;
+    template.extend_from_slice(b"/RtmpXXXXXX");
+    let Some(tmp) = clib::mkdtemp(&template) else {
+        return Err("cannot create 'R_TempDir'".into());
+    };
+    if let Ok(w) = clib::env_writer(cx)
+        && !w.set(b"R_SESSION_TMPDIR", &tmp)
+    {
+        drop(w);
+        return Err("unable to set R_SESSION_TMPDIR".into());
+    }
+    cx.set_temp_dir(Some(tmp));
+    Ok(())
+}
+
+/// `R_CleanTempDir()`: the session's temporary directory removed (once:
+/// a second call does nothing).
+// R: platform.c:R_CleanTempDir
+pub fn clean_temp_dir(cx: &Cx) {
+    cx.clean_temp_dir();
+}
+
+/// `.Internal(tempdir(check))`: the session's temporary directory, made
+/// again first when `check` and it is no longer a writable directory.
+// R: sysutils.c:do_tempdir
+pub fn do_tempdir(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("tempdir", true).check_arity(cx, call, args)?;
+    let check = crate::util::as_bool2(cx, call, args.root(0))?;
+    // (an embedder's isolate that ran no InitTempDir gets one now: GNU R's
+    // session always has one)
+    let none = cx.temp_dir().is_none();
+    if none || (check && !robigo_rtcore::clib::is_writeable_dir(cx.temp_dir().as_deref())) {
+        cx.set_temp_dir(None);
+        if let Err(m) = init_temp_dir(cx, false) {
+            return Err(cx.error_call(None, &m));
+        }
+    }
+    let d = cx.temp_dir().unwrap_or_default();
+    cx.build(out, |cx| cx.mk_string(&d, Encoding::Native))
+}
+
+/// GNU R's `R_PATH_MAX`: Linux's `PATH_MAX`.
+const R_PATH_MAX: usize = 4096;
+
+/// `R_tmpnam2(prefix, tempdir, fileext)`: `<tempdir>/<prefix><pid><rand>
+/// <fileext>` (hex) that names no file, of 100 tries; or GNU R's error.
+// R: sysutils.c:R_tmpnam2
+fn r_tmpnam2(prefix: &[u8], tempdir: &[u8], fileext: &[u8]) -> Result<Vec<u8>, &'static str> {
+    use std::os::unix::ffi::OsStrExt;
+    let pid = std::process::id();
+    for _ in 0..100 {
+        // RAND_MAX > 16777215: one random number at the end
+        let r1 = robigo_rtcore::clib::rand();
+        let mut res = tempdir.to_vec();
+        res.push(b'/');
+        res.extend_from_slice(prefix);
+        res.extend_from_slice(format!("{pid:x}{r1:x}").as_bytes());
+        res.extend_from_slice(fileext);
+        // (snprintf's length and the NUL)
+        if res.len() + 1 > R_PATH_MAX {
+            return Err("temporary name too long");
+        }
+        // R_FileExists: stat
+        if std::fs::metadata(std::ffi::OsStr::from_bytes(&res)).is_err() {
+            return Ok(res);
+        }
+    }
+    Err("cannot find unused tempfile name")
+}
+
+/// `.Internal(tempfile(pattern, tmpdir, fileext))`: unused file names, one
+/// per element of the longest argument (the others recycled).
+// R: sysutils.c:do_tempfile
+pub fn do_tempfile(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::row!("tempfile", true).check_arity(cx, call, args)?;
+    let (pattern, tempdir, fileext) = (args.root(0), args.root(1), args.root(2));
+    let len = |cx: &mut Cx, x: Root<'_>| crate::builtin::length_mut(cx, x).map(|n| n.unwrap_or(0));
+    let n1 = len(cx, pattern)?;
+    let n2 = len(cx, tempdir)?;
+    let n3 = len(cx, fileext)?;
+    if pattern.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("invalid filename pattern"));
+    }
+    if tempdir.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("invalid 'tempdir' value"));
+    }
+    if fileext.bind(cx).sexptype() != STRSXP {
+        return Err(cx.error("invalid file extension"));
+    }
+    if n1 < 1 {
+        return Err(cx.error("no 'pattern'"));
+    }
+    if n2 < 1 {
+        return Err(cx.error("no 'tempdir'"));
+    }
+    if n3 < 1 {
+        return Err(cx.error("no 'fileext'"));
+    }
+    for x in [pattern, tempdir, fileext] {
+        if x.bind(cx).is_package_altrep() {
+            return Err(crate::util::not_yet(cx, Some(call), "tempfile() of a package ALTREP vector"));
+        }
+    }
+    let slen = n1.max(n2).max(n3);
+    let mut names: Vec<Vec<u8>> = Vec::with_capacity(slen);
+    for i in 0..slen {
+        let tr = |cx: &Cx, x: Root<'_>, n: usize| -> Result<Vec<u8>, String> {
+            let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i % n);
+            crate::text::to_native_fp(crate::coerce::text(c), cx.locale()).map(|b| b.into_owned())
+        };
+        let (tn, td, te) = match (tr(cx, pattern, n1), tr(cx, tempdir, n2), tr(cx, fileext, n3)) {
+            (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+            (Err(m), _, _) | (_, Err(m), _) | (_, _, Err(m)) => return Err(cx.error(&m)),
+        };
+        // try to get a new file name
+        match r_tmpnam2(&tn, &td, &te) {
+            Ok(n) => names.push(n),
+            Err(m) => return Err(cx.error(m)),
+        }
+    }
+    cx.build(out, |cx| {
+        let mut ans = cx.alloc_vector::<Char<'_>>(slen)?;
+        for (i, n) in names.iter().enumerate() {
+            ans.set(i, cx.mk_char(n, Encoding::Native)?);
+        }
+        Ok(ans.finish().into())
+    })
 }
