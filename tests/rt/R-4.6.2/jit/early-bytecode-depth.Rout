@@ -1,0 +1,4 @@
+last_ok = 86; first_error = 87; message = evaluation nested too deeply: infinite recursion / options(expressions=)? 
+last_ok = 87; first_error = 88; message = evaluation nested too deeply: infinite recursion / options(expressions=)? 
+the promise's force takes one level: 1 
+[1] 2 1
