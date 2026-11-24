@@ -569,13 +569,23 @@ class RtCi(unittest.TestCase):
     def test_the_end_to_end_crosscheck_test_clears_every_modes_variables(self):
         # robigo-rtapi's a_lost_crosscheck_record_fails_the_run runs a case
         # as the plain binary does, inside whatever crate-test step runs it:
-        # each variable such a step sets is in its MODE_VARS, or is one that
-        # does not change the case (the runner's own, the crosscheck's, the
-        # tree's)
+        # each variable such a step sets is in tests/common/db_tree.rs's
+        # MODE_VARS (which boot_db.rs's and lazyload.rs's spawns drop too)
+        # or conformance.rs's CASE_VARS, or is one that does not change the
+        # case (the runner's own, the crosscheck's, the tree's)
         import re
-        src = (HERE.parent / "crates" / "robigo-rtapi" / "tests" / "conformance.rs").read_text()
-        block = re.search(r"const MODE_VARS: &\[&str\] = &\[(.*?)\];", src, re.S).group(1)
-        cleared = set(re.findall(r'"([A-Z_0-9]+)"', block))
+        tests = HERE.parent / "crates" / "robigo-rtapi" / "tests"
+        cleared = set()
+        for f, const in (("common/db_tree.rs", "MODE_VARS"), ("conformance.rs", "CASE_VARS")):
+            block = re.search(rf"const {const}: &\[&str\] = &\[(.*?)\];", (tests / f).read_text(), re.S)
+            self.assertIsNotNone(block, f"{f}: no {const}")
+            cleared |= set(re.findall(r'"([A-Z_0-9]+)"', block.group(1)))
+            if const == "CASE_VARS":
+                # (a case's own, not a mode: a new mode belongs in MODE_VARS,
+                # which boot_db.rs and lazyload.rs drop too, so this list
+                # does not grow without this test)
+                self.assertEqual(set(re.findall(r'"([A-Z_0-9]+)"', block.group(1))),
+                                 {"ROBIGO_RT_BOOT", "R_VSIZE", "R_MAX_VSIZE"}, f)
         harmless = {"ROBIGO_RT_HOME_DB", "ROBIGO_TRANSLATION_CACHE", "RUSTFLAGS", "CARGO_TARGET_DIR"}
         crates = ["robigo-rt", "robigo-rtapi", "robigo-rtcore"]
         for shard in rt.SHARDS:
@@ -584,7 +594,21 @@ class RtCi(unittest.TestCase):
                     for k in env:
                         if k.startswith("ROBIGO_CONF_") or k.startswith("ROBIGO_BC_CROSSCHECK") or k in harmless:
                             continue
-                        self.assertIn(k, cleared, f"{shard}: {title}: {k} is not in MODE_VARS")
+                        self.assertIn(k, cleared, f"{shard}: {title}: {k} is in neither MODE_VARS nor CASE_VARS")
+
+    def test_the_spawns_that_are_not_the_modes_subject_drop_the_one_list(self):
+        # one list of the modes (db_tree::MODE_VARS): boot_db.rs's and
+        # lazyload.rs's spawns drop it through without_modes, and keep no
+        # hand-written copy that could miss the next mode
+        import re
+        tests = HERE.parent / "crates" / "robigo-rtapi" / "tests"
+        block = re.search(r"const MODE_VARS: &\[&str\] = &\[(.*?)\];", (tests / "common" / "db_tree.rs").read_text(), re.S)
+        modes = set(re.findall(r'"([A-Z_0-9]+)"', block.group(1)))
+        for f in ("boot_db.rs", "lazyload.rs"):
+            src = (tests / f).read_text()
+            self.assertIn("db_tree::without_modes(", src, f)
+            copies = sorted(modes & set(re.findall(r'env_remove\("([A-Z_0-9]+)"\)', src)))
+            self.assertEqual(copies, [], f"{f}: removes modes by hand (db_tree::without_modes drops them)")
 
     def test_every_step_that_can_boot_rdb_has_its_binarys_tree_before_it(self):
         # base's database tree is written by one binary (rt-home-db.sh's
