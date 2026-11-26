@@ -660,19 +660,23 @@ def steps(crates):
                           **AFTER_START}},
          [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
-        # freeze's check at every 16th collection: at every one it traces
-        # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
-        # against 97 s without it, past the case timeout). Its comparison
-        # with the independent trace, whose cost grows with the stack
-        # (c-stack-overflow.R 1.37x at every check), and I2 and I3: the
-        # persistent-state parts, a full check at each process's freezing
-        # collection (checked whatever the period: a marking defect is
-        # caught where it first runs) and every 16th check after, so every
-        # case gets one; the direct loop, whose
-        # defect is transient, at every check (the 2026-11-21 check ledger's
-        # note of 2026-11-24); the step fails if no full check ran (run_steps)
+        # freeze's check at every 16th collection for the first 524,288
+        # collections and every 64th after: at every one it traces the heap
+        # twice per allocation (tests/rt/bytecode/jit.R: 536 s against 97 s
+        # without it, past the case timeout). Under rdb's 42k frozen objects,
+        # only the three >1M-collection outliers (finalizers-self-ref-envs,
+        # cycle_reclamation, tailcall-frames; 64% of the slice's collections)
+        # cross 524,288, leaving the other 973/976 cases at their full 16,16
+        # rate. Its comparison with the independent trace, whose cost grows
+        # with the stack (c-stack-overflow.R 1.37x at every check), and I2
+        # and I3: the persistent-state parts, a full check at each process's
+        # freezing collection (checked whatever the period: a marking defect
+        # is caught where it first runs) and every 16th check after, so every
+        # case gets one; the direct loop, whose defect is transient, at every
+        # check (the 2026-11-21 check ledger's notes of 2026-11-24 and
+        # 2026-11-27); the step fails if no full check ran (run_steps)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16,16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16,16,524288", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **AFTER_START, **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **GCTORTURE_SLOW})}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's

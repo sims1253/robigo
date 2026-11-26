@@ -632,7 +632,7 @@ pub struct Core {
     /// The lazy freeze ran at its boundary (`freeze_at_boundary`): the
     /// boundary is drawn once (`Core::boundary_drawn`).
     boundary_done: bool,
-    /// `ROBIGO_GC_FREEZE_CHECK=N[,M]`: the freeze's invariant checked at
+    /// `ROBIGO_GC_FREEZE_CHECK=N[,M[,K]]`: the freeze's invariant checked at
     /// every N-th collection (1: every one; 0: never): there, the direct
     /// loop (every frozen object's ordinary children marked), whose defect,
     /// a missed barrier, is transient (the next sweep frees the child).
@@ -651,6 +651,12 @@ pub struct Core {
     /// Every process gets one (the 2026-11-21 check ledger's note of
     /// 2026-11-24).
     freeze_full: u32,
+    /// `K` (default 0: no growth): once `stats.collections >= K` (after the
+    /// process's first `K` collections), the check period widens from `N` to
+    /// `4N` (saturating). Full checks stay at every `M`-th checked
+    /// collection, so they thin with the period. Leaves every case below `K`
+    /// collections untouched while cutting E3's few >1M-collection outliers.
+    freeze_grow: u64,
     /// Collections since the last checked one.
     freeze_check_count: u32,
     /// Checked collections, and those with a frozen set; of them, the
@@ -1067,33 +1073,39 @@ fn freeze_from_env() -> bool {
 /// or empty is 0 (off); `N` checks every N-th collection, each a full
 /// check; `N,M` runs the full check (the persistent-state parts) at the
 /// first collection with a frozen set and every M-th check after, the
-/// direct loop at each. Anything else is refused, so a typo never turns
-/// the check off unseen.
-fn freeze_check_from_env() -> (u32, u32) {
+/// direct loop at each; `N,M,K` widens the period from `N` to `4N` after
+/// the process's first `K` collections (`M >= 1`, `K >= 1`). Anything else
+/// is refused, so a typo never turns the check off unseen.
+fn freeze_check_from_env() -> (u32, u32, u64) {
     match std::env::var("ROBIGO_GC_FREEZE_CHECK") {
-        Err(std::env::VarError::NotPresent) => (0, 1),
-        Ok(v) if v.is_empty() => (0, 1),
+        Err(std::env::VarError::NotPresent) => (0, 1, 0),
+        Ok(v) if v.is_empty() => (0, 1, 0),
         Ok(v) => parse_freeze_check(&v).unwrap_or_else(|| {
             panic!(
-                "robigo: ROBIGO_GC_FREEZE_CHECK must be a collection period (1: every collection), optionally followed by ,M (a full check at every M-th check, M >= 1), not {v:?}"
+                "robigo: ROBIGO_GC_FREEZE_CHECK must be N[,M[,K]] (period N, full check every M-th check with M >= 1, optional 4x period growth after K >= 1 collections), not {v:?}"
             )
         }),
         Err(e) => panic!("robigo: ROBIGO_GC_FREEZE_CHECK: {e}"),
     }
 }
 
-/// `N` or `N,M` (M at least 1) of [`freeze_check_from_env`].
-fn parse_freeze_check(v: &str) -> Option<(u32, u32)> {
-    let (n, m) = match v.split_once(',') {
-        Some((n, m)) => (n, Some(m)),
-        None => (v, None),
-    };
-    let n = n.parse().ok()?;
-    let m = match m {
+/// `N`, `N,M` (`M >= 1`), or `N,M,K` (`M >= 1`, `K >= 1`) of
+/// [`freeze_check_from_env`].
+fn parse_freeze_check(v: &str) -> Option<(u32, u32, u64)> {
+    let mut parts = v.split(',');
+    let n = parts.next()?.parse().ok()?;
+    let m = match parts.next() {
         Some(m) => m.parse().ok().filter(|&m| m >= 1)?,
         None => 1,
     };
-    Some((n, m))
+    let k = match parts.next() {
+        Some(k) => k.parse().ok().filter(|&k| k >= 1)?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((n, m, k))
 }
 
 impl Core {
@@ -1104,6 +1116,7 @@ impl Core {
         crate::fork::register();
         let (stack_lo, stack_top) = thread_stack();
         let freeze_on = freeze_from_env();
+        let (freeze_check, freeze_full, freeze_grow) = if freeze_on { freeze_check_from_env() } else { (0, 1, 0) };
         let mut c = Box::new(Core {
             heap: Heap::new(),
             mark_stack: Vec::new(),
@@ -1166,8 +1179,9 @@ impl Core {
             frozen_passes: 0,
             stale_frozen: 0,
             boundary_done: false,
-            freeze_check: if freeze_on { freeze_check_from_env().0 } else { 0 },
-            freeze_full: if freeze_on { freeze_check_from_env().1 } else { 1 },
+            freeze_check,
+            freeze_full,
+            freeze_grow,
             freeze_check_count: 0,
             freeze_checks: 0,
             freeze_checks_frozen: 0,
@@ -3233,15 +3247,18 @@ impl Core {
             // (`freeze_enabled`, not `freeze_on`: under the mover's modes its
             // OLD bit is FROZEN's, Sol r2 S6)
             if self.freeze_check != 0 && (!self.frozen.is_empty() || self.freeze_enabled()) {
-                self.freeze_check_count += 1;
+                self.freeze_check_count = self.freeze_check_count.saturating_add(1);
+                let period = if self.freeze_grow != 0 && self.stats.collections >= self.freeze_grow {
+                    self.freeze_check.saturating_mul(4)
+                } else {
+                    self.freeze_check
+                };
                 // the first collection with a frozen set (the freezing one,
                 // under the lazy freeze) is checked whatever the period, and
                 // it is a full check: a marking defect is caught where it
                 // first runs, before unchecked collections free what it
                 // missed and the process fails some other way
-                if self.freeze_check_count >= self.freeze_check
-                    || (!self.frozen.is_empty() && self.freeze_checks_frozen == 0)
-                {
+                if self.freeze_check_count >= period || (!self.frozen.is_empty() && self.freeze_checks_frozen == 0) {
                     self.freeze_check_count = 0;
                     due = true;
                 }
@@ -3597,7 +3614,9 @@ impl Core {
     /// ([`Block::cells`]) or its large chunk's charge, and in `valloc`. The
     /// one way a live object's cells may change (the invariant of
     /// `Block::cells`): the frame quarantine's poisoned frames, which lose
-    /// SLOTS (rtcore's `recycle.rs`), and the heap's own tests.
+    /// SLOTS (rtcore's `recycle.rs`), unserialize setting a vector's `gp`
+    /// levels (its `GROWABLE` bit, via rtcore's `Cx::set_levels` in
+    /// `collect.rs`), and the heap's own tests.
     ///
     /// # Safety
     /// `x` is a live object of this heap whose charge is its `object_cells`
@@ -4107,14 +4126,15 @@ impl Core {
                 self.frozen_passes
             );
             if self.freeze_check != 0 {
+                let spec = if self.freeze_grow != 0 {
+                    format!("{},{},{}", self.freeze_check, self.freeze_full, self.freeze_grow)
+                } else {
+                    format!("{},{}", self.freeze_check, self.freeze_full)
+                };
                 let _ = writeln!(
                     r,
-                    "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK={},{}): {} checked collections, {} with a frozen set (the direct loop), {} full checks (I2, I3 and the comparison with the independent trace)",
-                    self.freeze_check,
-                    self.freeze_full,
-                    self.freeze_checks,
-                    self.freeze_checks_frozen,
-                    self.freeze_full_checks
+                    "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK={spec}): {} checked collections, {} with a frozen set (the direct loop), {} full checks (I2, I3 and the comparison with the independent trace)",
+                    self.freeze_checks, self.freeze_checks_frozen, self.freeze_full_checks
                 );
             }
         }

@@ -978,10 +978,12 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there; a case whose `.requires` names `volume` is left out, for a
    smaller one that covers its paths; under gctorture the boot heap's
-   freeze is checked with `ROBIGO_GC_FREEZE_CHECK=16,16`: the direct loop
-   at every 16th collection, a full check, I2, I3 and the comparison with
-   the independent trace, at each process's freezing collection and every
-   16th check after, the step failing if none ran; the check names a
+   freeze is checked with `ROBIGO_GC_FREEZE_CHECK=16,16,524288`: the direct
+   loop at every 16th collection for a process's first 524,288 collections
+   and every 64th after (leaving 973 of 976 slice cases at their full rate
+   and cutting only the three >1M-collection outliers), a full check, I2, I3
+   and the comparison with the independent trace, at each process's freezing
+   collection and every 16th check after, the step failing if none ran; the check names a
    marking defect only at a full check, so an E3 failure with an
    unexplained error under the freeze is rerun with
    `ROBIGO_GC_FREEZE_CHECK=1` before anything else: a child marked but not
