@@ -2,7 +2,7 @@
 //! `.Internal(environment(fun))`, and util.c's `nargs()`.
 
 use crate::attrib;
-use crate::coerce::vector::{as_real, coerce, coercion_warning};
+use crate::coerce::vector::{as_real, coerce_vector, coercion_warning};
 use crate::util::{is_vector_atomic, not_yet, str2type};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{Args, Char, Cx, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
@@ -95,8 +95,7 @@ pub fn do_makevector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
     let mode = cx.scope(|cx, s| {
         let m = s.out(cx);
         let mr = m.root();
-        let w = cx.build_with(m, |cx| coerce(cx, args.get(cx, 0), STRSXP, true))?;
-        w.signal(cx)?;
+        coerce_vector(cx, args.root(0), STRSXP, m)?;
         let v = mr.bind(cx);
         match v.as_scalar::<Char<'_>>() {
             Some(c) => Ok(c.bytes().to_vec()),
@@ -110,12 +109,13 @@ pub fn do_makevector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
             if len > i32::MAX as usize {
                 return Err(cx.error("too long for a pairlist"));
             }
-            return cx.build(out, |cx| {
-                let mut l = cx.nil();
-                for _ in 0..len {
-                    l = cx.cons(cx.nil(), l)?;
+            return cx.fill_pairlist(out, len, |cx, fill| {
+                for i in fill.start()..len {
+                    if fill.put(i, Ok((cx.nil(), None, None)))? {
+                        return Ok(Ok(()));
+                    }
                 }
-                Ok(l)
+                Ok(Ok(()))
             });
         }
         _ => {

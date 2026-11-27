@@ -18,7 +18,7 @@
 //! by `R_compute_identical`.
 
 use crate::attrib::{self, Attrs};
-use crate::coerce::vector::{Warns, as_integer, coerce};
+use crate::coerce::vector::{as_integer, coerce_vector};
 use crate::identical::{NotYet, compute_identical};
 use crate::util::not_yet;
 use robigo_rtcore::RSym;
@@ -655,55 +655,52 @@ pub fn do_duplicated<const CODE: i32>(
         let len = crate::coerce::xlength(inc);
         len > 0 && !(inc.sexptype() == LGLSXP && len == 1 && inc.as_vector::<Lgl>().is_some_and(|v| v.get(0).0 == 0))
     };
-    cx.build_with(out, |cx| {
-        let xv = x.bind(cx);
-        let utf8 = any_known(xv).unwrap_or(false);
-        // coerceVector(incomp, TYPEOF(x)), its warnings given after
-        let mut warns = Warns::new();
-        let inc = if use_incomp {
-            match coerce(cx, incomp.bind(cx), xv.sexptype(), true)? {
-                Built::Done(v, w) => {
-                    warns = w;
-                    Some(v)
+    let run_dup = |cx: &mut Cx, inc_root: Option<Root<'_>>, out: Out<'_>| -> RResult<()> {
+        cx.build_with(out, |cx| {
+            let xv = x.bind(cx);
+            let utf8 = any_known(xv).unwrap_or(false);
+            let inc = inc_root.map(|r| r.bind(cx));
+            let res: Result<Ref<'_>, Fail> = (|| {
+                if CODE == 2 {
+                    let ind = match inc {
+                        None => with_keys!(cx, xv, utf8, |k| any_duplicated(cx, &k, None, from_last))?,
+                        Some(iv) => with_keys!(cx, xv, utf8, |k| {
+                            with_same_keys(cx, iv, &k, utf8, |kk| any_duplicated(cx, &k, Some(kk), from_last))
+                        })?,
+                    };
+                    return Ok(if ind > i32::MAX as usize {
+                        cx.alloc_copy(&[ind as f64])?.finish().into()
+                    } else {
+                        cx.alloc_copy(&[ind as i32])?.finish().into()
+                    });
                 }
-                Built::Fail(d) => return Ok(Built::fail(d.into_error())),
-            }
-        } else {
-            None
-        };
-        let res: Result<Ref<'_>, Fail> = (|| {
-            if CODE == 2 {
-                let ind = match inc {
-                    None => with_keys!(cx, xv, utf8, |k| any_duplicated(cx, &k, None, from_last))?,
+                let dup = match inc {
+                    None => with_keys!(cx, xv, utf8, |k| duplicated_flags(cx, &k, None, from_last, nmax))?,
                     Some(iv) => with_keys!(cx, xv, utf8, |k| {
-                        with_same_keys(cx, iv, &k, utf8, |kk| any_duplicated(cx, &k, Some(kk), from_last))
+                        with_same_keys(cx, iv, &k, utf8, |kk| duplicated_flags(cx, &k, Some(kk), from_last, nmax))
                     })?,
                 };
-                return Ok(if ind > i32::MAX as usize {
-                    cx.alloc_copy(&[ind as f64])?.finish().into()
-                } else {
-                    cx.alloc_copy(&[ind as i32])?.finish().into()
-                });
+                if CODE == 0 {
+                    return Ok(dup.finish().into());
+                }
+                Ok(keep_unique(cx, xv, dup.as_slice())?)
+            })();
+            match res {
+                Ok(r) => Ok(Built::done(r)),
+                Err(Fail::Gc(e)) => Err(e),
+                Err(Fail::Full) => Ok(Built::fail(Diag::error("hash table is full"))),
+                Err(Fail::NotYet(e)) => Ok(Built::fail(Diag::error(format!("robigo: {} is not implemented yet", e.0)))),
             }
-            let dup = match inc {
-                None => with_keys!(cx, xv, utf8, |k| duplicated_flags(cx, &k, None, from_last, nmax))?,
-                Some(iv) => with_keys!(cx, xv, utf8, |k| {
-                    with_same_keys(cx, iv, &k, utf8, |kk| duplicated_flags(cx, &k, Some(kk), from_last, nmax))
-                })?,
-            };
-            if CODE == 0 {
-                return Ok(dup.finish().into());
-            }
-            Ok(keep_unique(cx, xv, dup.as_slice())?)
-        })();
-        match res {
-            Ok(r) => Ok(Built::done(r).with(warns)),
-            Err(Fail::Gc(e)) => Err(e),
-            Err(Fail::Full) => Ok(Built::fail(Diag::error("hash table is full"))),
-            Err(Fail::NotYet(e)) => Ok(Built::fail(Diag::error(format!("robigo: {} is not implemented yet", e.0)))),
-        }
-    })?
-    .signal(cx)
+        })
+    };
+    if use_incomp && incomp.bind(cx).sexptype() != x.bind(cx).sexptype() {
+        let xv_ty = x.bind(cx).sexptype();
+        return cx.scope(|cx, s| {
+            let inc = s.capture(cx, |cx, o| coerce_vector(cx, incomp, xv_ty, o))?;
+            run_dup(cx, Some(inc), out)
+        });
+    }
+    run_dup(cx, use_incomp.then_some(incomp), out)
 }
 
 /// GNU R's `any_duplicated(x, FALSE)` for a C caller (`levels<-`): the
@@ -864,132 +861,169 @@ fn match_transform<'g>(cx: &'g Cx, s: Ref<'g>) -> Result<Result<Ref<'g>, String>
     crate::coerce::vector::as_character_factor(cx, s)
 }
 
-/// `match5(itable, ix, nmatch, incomp, env)` under `&Cx`: the positions.
+/// `match5(itable, ix, nmatch, incomp, env)`: transforms factors and coerces
+/// `x`, `table`, and `incomp` to their common type via [`coerce_vector`] (so
+/// character/list coercions collect between elements), then runs the lookup.
 // R: unique.c:match5
-fn match5<'g>(
-    cx: &'g Cx,
-    itable: Ref<'g>,
-    ix: Ref<'g>,
+fn match5(
+    cx: &mut Cx,
+    itable: Root<'_>,
+    ix: Root<'_>,
     nmatch: i32,
-    incomp: Option<Ref<'g>>,
-) -> Result<Built<'g, 'static, Warns>, NeedGc> {
-    let mut warns = Warns::new();
-    let n = crate::coerce::xlength(ix);
+    incomp: Option<Root<'_>>,
+    out: Out<'_>,
+) -> RResult<()> {
+    let n = crate::coerce::xlength(ix.bind(cx));
     if n == 0 {
-        return Ok(Built::done(cx.alloc_vector::<i32>(0)?.finish()).with(warns));
+        return cx.build(out, |cx| Ok(cx.alloc_vector::<i32>(0)?.finish().into()));
     }
-    if crate::coerce::xlength(itable) == 0 {
-        return Ok(Built::done(cx.alloc_with(n, |_| nmatch)?.finish()).with(warns));
+    if crate::coerce::xlength(itable.bind(cx)) == 0 {
+        return cx.build(out, |cx| Ok(cx.alloc_with(n, |_| nmatch)?.finish().into()));
     }
     let is_date_str = |a: Ref<'_>, b: Ref<'_>| a.is_object() && attrib::inherits(a, b"Date") && is_valid_string(b);
-    if is_date_str(ix, itable) || is_date_str(itable, ix) {
-        return Ok(Built::fail(Diag::error(
-            "robigo: match() of a Date and a character vector (as.Date.character) is not implemented yet",
-        )));
+    if is_date_str(ix.bind(cx), itable.bind(cx)) || is_date_str(itable.bind(cx), ix.bind(cx)) {
+        return Err(
+            cx.error("robigo: match() of a Date and a character vector (as.Date.character) is not implemented yet")
+        );
     }
-    let x = match match_transform(cx, ix)? {
-        Ok(v) => v,
-        Err(m) => return Ok(Built::fail(Diag::error(m))),
+    // Hot path: non-objects already of the same non-coerced type (`<= STRSXP`)
+    // and no incomparables — skip scope/coercion overhead completely.
+    let (ix_obj, it_obj, ix_ty, it_ty) = {
+        let (a, b) = (ix.bind(cx), itable.bind(cx));
+        (a.is_object(), b.is_object(), a.sexptype(), b.sexptype())
     };
-    let table = match match_transform(cx, itable)? {
-        Ok(v) => v,
-        Err(m) => return Ok(Built::fail(Diag::error(m))),
-    };
-    let (tx, tt) = (x.sexptype(), table.sexptype());
-    let ty = if tx >= STRSXP || tt >= STRSXP { STRSXP } else { tx.max(tt) };
-    let coerced = |v: Ref<'g>, warns: &mut Warns| -> Result<Result<Ref<'g>, Diag<'static>>, NeedGc> {
-        Ok(match coerce(cx, v, ty, true)? {
-            Built::Done(r, w) => {
-                warns.extend(w);
-                Ok(r)
-            }
-            Built::Fail(d) => Err(d.into_error()),
-        })
-    };
-    let x = match coerced(x, &mut warns)? {
-        Ok(v) => v,
-        Err(d) => return Ok(Built::fail(d)),
-    };
-    let table = match coerced(table, &mut warns)? {
-        Ok(v) => v,
-        Err(d) => return Ok(Built::fail(d)),
-    };
-    if x.sexptype() == NILSXP {
-        // both NULL-typed (lengths checked above): nothing to match
-        return Ok(Built::done(cx.alloc_with(n, |_| nmatch)?.finish()).with(warns));
+    if !ix_obj && !it_obj && ix_ty == it_ty && ix_ty <= STRSXP && incomp.is_none() {
+        return match5_lookup(cx, itable, ix, ix_ty, n, nmatch, None, out);
     }
-    // the scalar case, for speed only
-    if n == 1 && incomp.is_none() {
-        let val = scalar_match(cx, table, x, nmatch)?;
-        return Ok(Built::done(cx.alloc_copy(&[val])?.finish()).with(warns));
-    }
-    let inc = match incomp {
-        None => None,
-        Some(i) => match coerced(i, &mut warns)? {
-            Ok(v) => Some(v),
-            Err(d) => return Ok(Built::fail(d)),
-        },
-    };
-    // useBytes / useUTF8 over x, then the table
-    let utf8 = if ty == STRSXP {
-        let mut use_bytes = false;
-        let mut use_utf8 = false;
-        for v in [x, table] {
-            if use_bytes {
-                break;
-            }
-            for &c in v.as_vector::<Char<'g>>().unwrap().as_slice().unwrap() {
-                match c.enc() {
-                    Encoding::Bytes => {
-                        use_bytes = true;
-                        use_utf8 = false;
-                        break;
+    cx.scope(|cx, s| {
+        let x = if ix_obj {
+            s.capture(cx, |cx, o| {
+                cx.build_with(o, |cx| match match_transform(cx, ix.bind(cx))? {
+                    Ok(v) => Ok(Built::done(v)),
+                    Err(m) => Ok(Built::fail(Diag::error(m))),
+                })
+            })?
+        } else {
+            ix
+        };
+        let table = if it_obj {
+            s.capture(cx, |cx, o| {
+                cx.build_with(o, |cx| match match_transform(cx, itable.bind(cx))? {
+                    Ok(v) => Ok(Built::done(v)),
+                    Err(m) => Ok(Built::fail(Diag::error(m))),
+                })
+            })?
+        } else {
+            itable
+        };
+        let (tx, tt) = (x.bind(cx).sexptype(), table.bind(cx).sexptype());
+        let ty = if tx >= STRSXP || tt >= STRSXP { STRSXP } else { tx.max(tt) };
+        let x = if tx == ty { x } else { s.capture(cx, |cx, o| coerce_vector(cx, x, ty, o))? };
+        let table = if tt == ty { table } else { s.capture(cx, |cx, o| coerce_vector(cx, table, ty, o))? };
+        if x.bind(cx).sexptype() == NILSXP {
+            return cx.build(out, |cx| Ok(cx.alloc_with(n, |_| nmatch)?.finish().into()));
+        }
+        if n == 1 && incomp.is_none() {
+            return cx.build(out, |cx| {
+                let val = scalar_match(cx, table.bind(cx), x.bind(cx), nmatch)?;
+                Ok(cx.alloc_copy(&[val])?.finish().into())
+            });
+        }
+        let inc = match incomp {
+            None => None,
+            Some(i) if i.bind(cx).sexptype() == ty => Some(i),
+            Some(i) => Some(s.capture(cx, |cx, o| coerce_vector(cx, i, ty, o))?),
+        };
+        match5_lookup(cx, table, x, ty, n, nmatch, inc, out)
+    })
+}
+
+/// Hash/scalar lookup phase of `match5` once `table`, `x`, and `inc` are all
+/// of common type `ty`.
+#[allow(clippy::too_many_arguments)]
+fn match5_lookup(
+    cx: &mut Cx,
+    table: Root<'_>,
+    x: Root<'_>,
+    ty: u8,
+    n: usize,
+    nmatch: i32,
+    inc: Option<Root<'_>>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.build_with(out, |cx| {
+        let (table, x) = (table.bind(cx), x.bind(cx));
+        let inc = inc.map(|r| r.bind(cx));
+        if x.sexptype() == NILSXP {
+            // both NULL-typed (lengths checked above): nothing to match
+            return Ok(Built::done(cx.alloc_with(n, |_| nmatch)?.finish()));
+        }
+        // the scalar case, for speed only
+        if n == 1 && inc.is_none() {
+            let val = scalar_match(cx, table, x, nmatch)?;
+            return Ok(Built::done(cx.alloc_copy(&[val])?.finish()));
+        }
+        // useBytes / useUTF8 over x, then the table
+        let utf8 = if ty == STRSXP {
+            let mut use_bytes = false;
+            let mut use_utf8 = false;
+            for v in [x, table] {
+                if use_bytes {
+                    break;
+                }
+                for &c in v.as_vector::<Char<'_>>().unwrap().as_slice().unwrap() {
+                    match c.enc() {
+                        Encoding::Bytes => {
+                            use_bytes = true;
+                            use_utf8 = false;
+                            break;
+                        }
+                        Encoding::Latin1 | Encoding::Utf8 => use_utf8 = true,
+                        Encoding::Native => {}
                     }
-                    Encoding::Latin1 | Encoding::Utf8 => use_utf8 = true,
-                    Encoding::Native => {}
                 }
             }
-        }
-        use_utf8
-    } else {
-        false
-    };
-    let mut ans = cx.alloc_vector::<i32>(n)?;
-    {
-        let out = ans.as_mut_slice();
-        macro_rules! run {
-            ($k:ty) => {{
-                let tk = <$k>::of(cx, table, utf8);
-                let xk = <$k>::of(cx, x, utf8);
-                let mut t = tk.table(cx, None)?;
-                for i in 0..tk.len() {
-                    let _ = t.is_dup(&tk, i);
-                }
-                if let Some(iv) = inc {
-                    let ik = <$k>::of(cx, iv, utf8);
-                    for i in 0..ik.len() {
-                        t.remove(&tk, &ik, i);
+            use_utf8
+        } else {
+            false
+        };
+        let mut ans = cx.alloc_vector::<i32>(n)?;
+        {
+            let out = ans.as_mut_slice();
+            macro_rules! run {
+                ($k:ty) => {{
+                    let tk = <$k>::of(cx, table, utf8);
+                    let xk = <$k>::of(cx, x, utf8);
+                    let mut t = tk.table(cx, None)?;
+                    for i in 0..tk.len() {
+                        let _ = t.is_dup(&tk, i);
                     }
-                }
-                for (i, o) in out.iter_mut().enumerate() {
-                    *o = t.lookup(&tk, &xk, i, nmatch);
-                }
-                if let Some(e) = tk.failed().or(xk.failed()) {
-                    return Ok(Built::fail(Diag::error(format!("robigo: {} is not implemented yet", e.0))));
-                }
-            }};
+                    if let Some(iv) = inc {
+                        let ik = <$k>::of(cx, iv, utf8);
+                        for i in 0..ik.len() {
+                            t.remove(&tk, &ik, i);
+                        }
+                    }
+                    for (i, o) in out.iter_mut().enumerate() {
+                        *o = t.lookup(&tk, &xk, i, nmatch);
+                    }
+                    if let Some(e) = tk.failed().or(xk.failed()) {
+                        return Ok(Built::fail(Diag::error(format!("robigo: {} is not implemented yet", e.0))));
+                    }
+                }};
+            }
+            match ty {
+                LGLSXP => run!(LglKeys<'_>),
+                INTSXP => run!(IntKeys<'_>),
+                REALSXP => run!(RealKeys<'_>),
+                CPLXSXP => run!(CplxKeys<'_>),
+                RAWSXP => run!(RawKeys<'_>),
+                STRSXP => run!(StrKeys<'_>),
+                _ => run!(ListKeys<'_>),
+            }
         }
-        match ty {
-            LGLSXP => run!(LglKeys<'g>),
-            INTSXP => run!(IntKeys<'g>),
-            REALSXP => run!(RealKeys<'g>),
-            CPLXSXP => run!(CplxKeys<'g>),
-            RAWSXP => run!(RawKeys<'g>),
-            STRSXP => run!(StrKeys<'g>),
-            _ => run!(ListKeys<'g>),
-        }
-    }
-    Ok(Built::done(ans.finish()).with(warns))
+        Ok(Built::done(ans.finish()))
+    })
 }
 
 /// GNU R's `isValidString(x)`: a character vector with a first element
@@ -1058,11 +1092,7 @@ pub fn do_match(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                 && inc.as_vector::<Lgl>().is_some_and(|v| v.get(0).0 == 0)))
     };
     let (x, table) = (args.root(0), args.root(1));
-    cx.build_with(out, |cx| {
-        let inc = use_incomp.then(|| incomp.bind(cx));
-        match5(cx, table.bind(cx), x.bind(cx), nomatch, inc)
-    })?
-    .signal(cx)
+    match5(cx, table, x, nomatch, use_incomp.then_some(incomp), out)
 }
 
 /// `.Internal(pmatch(x, table, nomatch, duplicates.ok))`: exact matches,

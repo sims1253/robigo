@@ -455,22 +455,26 @@ pub fn do_nzchar(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         k != i32::MIN && k != 0
     };
     let x = args.root(0);
-    cx.build_with(out, |cx| {
-        let s = match crate::coerce::vector::coerce(cx, x.bind(cx), STRSXP, false)? {
-            Built::Done(v, _) => v,
-            Built::Fail(d) => return Ok(Built::fail(d)),
-        };
-        let Some(v) = s.as_vector::<Char<'_>>() else {
-            return Ok(Built::fail(Diag::error("'nzchar()' requires a character vector")));
-        };
-        let na = cx.na_string();
-        let ans: Vec<Lgl> = (0..v.len())
-            .map(|i| {
+    let fill_nz = |cx: &mut Cx, s: Root<'_>, out: Out<'_>| -> RResult<()> {
+        cx.build_with(out, |cx| {
+            let Some(v) = s.bind(cx).as_vector::<Char<'_>>() else {
+                return Ok(Built::fail(Diag::error("'nzchar()' requires a character vector")));
+            };
+            let na = cx.na_string();
+            let mut ans = cx.alloc_vector::<Lgl>(v.len())?;
+            for (i, dst) in ans.as_mut_slice().iter_mut().enumerate() {
                 let c = v.get(i);
-                if keep_na && c == na { Lgl::NA } else { Lgl(!c.bytes().is_empty() as i32) }
-            })
-            .collect();
-        Ok(Built::done(cx.alloc_copy(&ans)?.finish()))
+                *dst = if keep_na && c == na { Lgl::NA } else { Lgl(!c.bytes().is_empty() as i32) };
+            }
+            Ok(Built::done(ans.finish()))
+        })
+    };
+    if x.bind(cx).sexptype() == STRSXP {
+        return fill_nz(cx, x, out);
+    }
+    cx.scope(|cx, s| {
+        let coerced = s.capture(cx, |cx, o| crate::coerce::vector::coerce_vector_with(cx, x, STRSXP, false, o))?;
+        fill_nz(cx, coerced, out)
     })
 }
 

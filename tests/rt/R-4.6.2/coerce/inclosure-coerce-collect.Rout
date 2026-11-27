@@ -1,0 +1,11 @@
+match: 500 1 NA 2 3 
+match-incomp: 1 TRUE 3 
+dup-incomp: 0 FALSE FALSE 
+pmin-pmax: 400 1 200 200 300 
+nzchar: 401 400 TRUE 
+names-pl: 300 1 300 
+class-chr: character 400 1 400 
+class-lst: list 300 1 300 
+vec-pl: pairlist 300 TRUE TRUE 
+as-cplx: complex 1 1+0i TRUE 
+as-vec: integer 1,2,3 TRUE double 10,20 TRUE 

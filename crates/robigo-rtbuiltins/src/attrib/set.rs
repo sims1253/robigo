@@ -12,12 +12,14 @@
 //! `remove_attrib`, `set_tag`, ...), which keep the barrier and the counts.
 
 use super::{dims, get_value, has_attrib, inherits, is_array, is_vector};
-use crate::coerce::vector::{NA_INTEGER, as_character_factor, as_real, coerce, coerce_vector, coerce_vector_with};
+use crate::coerce::vector::{NA_INTEGER, as_character_factor, as_real, coerce_vector, coerce_vector_with};
 use crate::coerce::{dispatch_or_eval, xlength, xlength_mut};
 use crate::util::{is_numeric, is_vector_atomic, not_yet, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Char, Cx, Diag, Dispatched, Generic, Out, RResult, Ref, Root, Scope, View};
+use robigo_rtcore::{
+    Args, Built, Char, Cx, Diag, Dispatched, Generic, Out, RResult, Ref, Root, Safepoint, Scope, View,
+};
 
 // ---- names ------------------------------------------------------------------
 
@@ -142,34 +144,38 @@ pub fn namesgets(cx: &mut Cx, x: Root<'_>, val: Root<'_>) -> RResult<()> {
                 return Err(cx.error("incompatible 'names' argument"));
             }
             let n = xlength_mut(cx, x)?;
-            let steps = cx.build_with(o, |cx| {
-                let mut r = cx.alloc_vector::<Char<'_>>(n)?;
-                let mut c = val.bind(cx).as_cons();
+            cx.build(o, |cx| Ok(cx.alloc_vector::<Char<'_>>(n)?.finish().into()))?;
+            let steps = cx.scope(|cx, s| {
+                let cur = s.root(cx, val.bind(cx));
+                let e = s.root(cx, cx.nil());
+                let sv = s.root(cx, cx.nil());
+                let ch = s.root(cx, cx.nil());
                 let mut i = 0;
-                while i < n
-                    && let Some(cell) = c
-                {
-                    let sv = match coerce(cx, cell.car(), STRSXP, true)? {
-                        Built::Done(sv, _) => sv,
-                        Built::Fail(d) => return Ok(Built::fail(d.into_error())),
-                    };
-                    if sv.is_package_altrep() {
-                        let m =
-                            "robigo: 'names<-' from a pairlist with a package ALTREP element is not implemented yet";
-                        return Ok(Built::fail(Diag::error(m.to_owned())));
+                while i < n && cur.bind(cx).as_cons().is_some() {
+                    e.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().car()))?;
+                    cur.replace_with(cx, |cx| Ok(cur.bind(cx).as_cons().unwrap().cdr()))?;
+                    let sv_out = sv.reset(cx);
+                    coerce_vector(cx, e, STRSXP, sv_out)?;
+                    if sv.bind(cx).is_package_altrep() {
+                        return Err(cx.error(
+                            "robigo: 'names<-' from a pairlist with a package ALTREP element is not implemented yet",
+                        ));
                     }
-                    match sv.as_vector::<Char<'_>>() {
-                        Some(sv) if !sv.is_empty() => r.set(i, sv.get(0)),
+                    let non_empty = sv.bind(cx).as_vector::<Char<'_>>().is_some_and(|v| !v.is_empty());
+                    if !non_empty {
                         // GNU R reads STRING_ELT(s, 0) of an empty vector
-                        _ => {
-                            let m = "robigo: 'names<-' from a pairlist with an empty element is not implemented yet";
-                            return Ok(Built::fail(Diag::error(m.to_owned())));
-                        }
+                        return Err(
+                            cx.error("robigo: 'names<-' from a pairlist with an empty element is not implemented yet")
+                        );
+                    }
+                    ch.replace_with(cx, |cx| Ok(sv.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).into()))?;
+                    cx.owned_list(v)?.set(i, ch);
+                    if cx.gc_due() {
+                        cx.safepoint(Safepoint::Loop)?;
                     }
                     i += 1;
-                    c = cell.cdr().as_cons();
                 }
-                Ok(Built::Done(r.finish().into(), i + 1))
+                Ok(i + 1)
             })?;
             // the loop's test `i < length(vec)` reads the length at each of
             // its `steps` checks (a package class's Length method each time)
@@ -965,8 +971,7 @@ fn set_class<'s>(cx: &mut Cx, s: Scope<'s>, call: Root<'_>, obj: Root<'s>, value
         if can_change {
             let o = s.out(cx);
             let r = o.root();
-            let w = cx.build_with(o, |cx| crate::coerce::builtins::ascommon(cx, call, obj.bind(cx), ty, false))?;
-            w.signal(cx)?;
+            crate::coerce::builtins::ascommon(cx, call, obj, ty, false, o)?;
             return Ok(r);
         }
         let t = obj.bind(cx).sexptype();
