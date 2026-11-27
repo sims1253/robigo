@@ -28,9 +28,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CRATES = ["robigo-rtcore", "robigo-rtbuiltins", "robigo-rt", "robigo-rtapi"]
 
 MAP_NAMES = r"(?:HashMap|HashSet|BTreeMap|BTreeSet|PosMap)"
-MAP_TYPE = re.compile(rf"\b{MAP_NAMES}\s*<")
+MAP_TYPE = re.compile(rf"\b{MAP_NAMES}\s*(?:::\s*)?<")
 ADDR_EXPR = re.compile(r"\.addr\s*\(\)|\bas_ptr\s*\(\)\s*as\s+usize\b")
 JUSTIFY = re.compile(r"//\s*address-key:\s*\S")
+CHAR_LIT = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.)|[^\\'\n])'")
 
 LET_DECL = re.compile(
     rf"\blet\s+(?:mut\s+)?(?P<name>[A-Za-z_]\w*)"
@@ -110,6 +111,22 @@ def strip_comments_and_strings(src):
                         j += 1
                     i = j
                     continue
+        # char/byte literal 'x' or b'x' (a bare `b` falls through the raw-string
+        # branch and lands on the quote); blank it so `b'"'` or `'{'` never
+        # desynchronizes string or brace tracking. Any other `'` is a lifetime.
+        if c == "'":
+            m_ch = CHAR_LIT.match(src, i)
+            if m_ch:
+                for p in range(i, m_ch.end()):
+                    if src[p] != "\n":
+                        out[p] = " "
+                i = m_ch.end()
+                continue
+            j = i + 1
+            while j < n and (src[j].isalnum() or src[j] == "_"):
+                j += 1
+            i = j
+            continue
         # regular string literal "..."
         if c == '"':
             out[i] = " "
@@ -335,7 +352,7 @@ def main(argv):
     paths = argv[1:] or list(files())
     found = []
     for p in paths:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             found += list(hits(os.path.relpath(p, ROOT), f.read()))
     for h in found:
         print(h)

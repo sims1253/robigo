@@ -14,6 +14,22 @@ spec.loader.exec_module(check)
 CASES = [
     # (description, source, expected hit count)
     ("raw Sexp key in HashMap", "let m: HashMap<Sexp, i32> = HashMap::new();", 1),
+    ("raw Sexp key in turbofish", "let m = HashMap::<Sexp, i32>::new();", 1),
+    (
+        "byte-literal quote does not desync the lexer",
+        "fn f(out: &mut Vec<u8>) { out.push(b'\"'); }\nlet m: HashMap<Sexp, i32> = HashMap::new();",
+        1,
+    ),
+    (
+        "byte-literal quote with clean code stays clean",
+        "fn f(out: &mut Vec<u8>) { out.push(b'\"'); let m: HashMap<Ref<'_>, i32> = HashMap::new(); }",
+        0,
+    ),
+    (
+        "brace char literals do not break block scoping",
+        "fn f(src: &str, x: Sexp) {\n    let _ = (src.find('{'), src.find('}'), '\\x22', '\\u{7b}');\n    let mut seen = HashSet::new();\n    seen.insert(x.addr());\n}",
+        1,
+    ),
     ("raw Sexp key in HashSet", "let s: HashSet<Sexp> = HashSet::new();", 1),
     ("raw Sexp tuple key", "let m: BTreeMap<(Sexp, u8), i32> = BTreeMap::new();", 1),
     ("raw Sexp key in PosMap", "struct S { p: PosMap<Sexp, u16> }", 1),
