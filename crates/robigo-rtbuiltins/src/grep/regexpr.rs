@@ -9,7 +9,9 @@ use super::{
 use crate::attrib::{Attr, Attrs};
 use crate::util::{as_bool2, as_logical};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Char, Cx, Encoding, Lgl, Locale, NeedGc, Out, RResult, Ref, Root};
+use robigo_rtcore::{
+    Args, Built, Char, Cx, Encoding, LARGE, Lgl, ListKind, Locale, NeedGc, Out, RResult, Ref, Root, Safepoint, Scope,
+};
 use robigo_text::tre::{self, Match, Regex};
 
 const NA_INTEGER: i32 = i32::MIN;
@@ -105,23 +107,191 @@ pub fn do_regexpr<const CODE: u8>(
         regexpr(cx, p0, &xs, o, &mut rep)
     };
     let res = rep.finish(cx, call, r)?;
-    cx.build_with(out, |cx| {
-        let common = Common::new(cx, &res)?;
-        match &res.found {
-            Found::Regexpr(h) => Ok(Built::done(common.hits(cx, h, h.st.len())?)),
-            Found::Gregexpr(elts) => {
-                let mut ans = cx.alloc_vector::<Ref<'_>>(elts.len())?;
-                for (i, e) in elts.iter().enumerate() {
-                    let v = match e {
+    match &res.found {
+        Found::Regexpr(h) => build_regexpr_hits(cx, out, &res, h),
+        Found::Gregexpr(elts) => fill_hits_list(cx, out, elts, res.use_bytes, res.itype_bytes, res.names.as_deref()),
+    }
+}
+
+/// True if `h` allocates any vector of `>= LARGE` bytes (so its `st`, `ml`,
+/// `cs`, `cl` vectors must be built in separate `&Cx` intervals for Rule 1).
+fn hits_has_large_vec(h: &Hits) -> bool {
+    let int_bytes = std::mem::size_of::<i32>();
+    h.st.len().saturating_mul(int_bytes) >= LARGE
+        || h.ml.len().saturating_mul(int_bytes) >= LARGE
+        || h.cs.len().saturating_mul(int_bytes) >= LARGE
+        || h.cl.len().saturating_mul(int_bytes) >= LARGE
+}
+
+/// Rooted shared attribute values across all elements of a `gregexpr` /
+/// `regexec` list (or a large `regexpr` result).
+struct CommonRoots<'s> {
+    use_bytes: bool,
+    itype: Root<'s>,
+    names: Option<(Root<'s>, Root<'s>)>,
+}
+
+impl<'s> CommonRoots<'s> {
+    fn new(cx: &mut Cx, s: Scope<'s>, use_bytes: bool, itype_bytes: bool, names: Option<&[String]>) -> RResult<Self> {
+        let itype = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut v = cx.alloc_vector::<Char<'_>>(1)?;
+                let it: &[u8] = if itype_bytes { b"bytes" } else { b"chars" };
+                v.set(0, cx.mk_char(it, Encoding::Native)?);
+                Ok(v.finish().into())
+            })
+        })?;
+        let names = match names {
+            None => None,
+            Some(nm) => {
+                let cn = s.capture(cx, |cx, o| {
+                    cx.fill_strings(o, nm.len(), |cx, fill| {
+                        for i in fill.start()..nm.len() {
+                            if fill.put(i, crate::util::mk_char_checked(cx, nm[i].as_bytes(), Encoding::Native))? {
+                                return Ok(Ok(()));
+                            }
+                        }
+                        Ok(Ok(()))
+                    })
+                })?;
+                let dmn = s.capture(cx, |cx, o| {
+                    cx.build(o, |cx| {
+                        let mut d = cx.alloc_vector::<Ref<'_>>(2)?;
+                        d.set(0, cx.nil());
+                        d.set(1, cn.bind(cx));
+                        Ok(d.finish().into())
+                    })
+                })?;
+                Some((cn, dmn))
+            }
+        };
+        Ok(Self { use_bytes, itype, names })
+    }
+
+    fn bind<'g>(&self, cx: &'g Cx) -> Common<'g> {
+        Common {
+            use_bytes: self.use_bytes,
+            itype: self.itype.bind(cx),
+            names: self.names.map(|(cn, dmn)| (cn.bind(cx), dmn.bind(cx))),
+        }
+    }
+}
+
+/// Build one `regexpr` result, separating `st`, `ml`, `cs`, `cl` across `&Cx`
+/// intervals when any vector is `>= LARGE` bytes (Rule 1).
+fn build_regexpr_hits(cx: &mut Cx, out: Out<'_>, res: &Res, h: &Hits) -> RResult<()> {
+    if !hits_has_large_vec(h) {
+        return cx.build_with(out, |cx| {
+            let common = Common::new(cx, res)?;
+            Ok(Built::done(common.hits(cx, h, h.st.len())?))
+        });
+    }
+    cx.scope(|cx, s| {
+        let common = CommonRoots::new(cx, s, res.use_bytes, res.itype_bytes, res.names.as_deref())?;
+        build_large_hits(cx, out, &common, h, h.st.len())
+    })
+}
+
+/// Build one `Hits` element whose vectors may be `>= LARGE` bytes, allocating
+/// each large integer vector in its own `&Cx` build so collections run between
+/// them (Rule 1).
+fn build_large_hits(cx: &mut Cx, out: Out<'_>, common: &CommonRoots<'_>, h: &Hits, rows: usize) -> RResult<()> {
+    let ans = out.root();
+    cx.build(out, |cx| Ok(cx.alloc_copy(&h.st)?.finish().into()))?;
+    cx.scope(|cx, s| {
+        let ml = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(&h.ml)?.finish().into())))?;
+        let caps = match common.names {
+            None => None,
+            Some((cn, dmn)) => {
+                let cc = cn.bind(cx).len().unwrap_or(0);
+                let make_mat = |cx: &mut Cx, v: &[i32]| -> RResult<Root<'_>> {
+                    let m = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.alloc_copy(v)?.finish().into())))?;
+                    let al = s.capture(cx, |cx, o| {
+                        cx.build(o, |cx| {
+                            let mut ma = Attrs::new();
+                            let dim = cx.alloc_copy(&[rows as i32, cc as i32])?.finish();
+                            ma.install(Attr { tag: cx.install(b"dim")?, value: dim.into() });
+                            ma.install(Attr { tag: cx.install(b"dimnames")?, value: dmn.bind(cx) });
+                            ma.pairlist(cx)
+                        })
+                    })?;
+                    cx.set_attrib_list(m, al);
+                    Ok(m)
+                };
+                let cs = make_mat(cx, &h.cs)?;
+                let cl = make_mat(cx, &h.cl)?;
+                Some((cs, cl, cn))
+            }
+        };
+        let al = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut a = Attrs::new();
+                a.install(Attr { tag: cx.install(b"match.length")?, value: ml.bind(cx) });
+                if common.use_bytes {
+                    a.install(Attr { tag: cx.install(b"index.type")?, value: common.itype.bind(cx) });
+                    let mut t = cx.alloc_vector::<Lgl>(1)?;
+                    t.as_mut_slice()[0] = Lgl::TRUE;
+                    a.install(Attr { tag: cx.install(b"useBytes")?, value: t.finish().into() });
+                }
+                if let Some((cs, cl, cn)) = caps {
+                    a.install(Attr { tag: cx.install(b"capture.start")?, value: cs.bind(cx) });
+                    a.install(Attr { tag: cx.install(b"capture.length")?, value: cl.bind(cx) });
+                    a.install(Attr { tag: cx.install(b"capture.names")?, value: cn.bind(cx) });
+                }
+                a.pairlist(cx)
+            })
+        })?;
+        cx.set_attrib_list(ans, al);
+        Ok(())
+    })
+}
+
+/// Build a `gregexpr` or `regexec` list through [`Cx::fill_list`] so
+/// collections run between elements (E4).
+fn fill_hits_list(
+    cx: &mut Cx,
+    out: Out<'_>,
+    elts: &[GElt],
+    use_bytes: bool,
+    itype_bytes: bool,
+    names: Option<&[String]>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let common_roots = CommonRoots::new(cx, s, use_bytes, itype_bytes, names)?;
+        let any_large = elts.iter().any(|e| matches!(e, GElt::Hits(h) if hits_has_large_vec(h)));
+        if !any_large {
+            return cx.fill_list(out, ListKind::List, elts.len(), |cx, fill| {
+                let common = common_roots.bind(cx);
+                for i in fill.start()..elts.len() {
+                    let v = match &elts[i] {
                         GElt::Na => bare(cx, NA_INTEGER)?,
                         GElt::Bad => bare(cx, -1)?,
                         GElt::Hits(h) => common.hits(cx, h, h.st.len())?,
                     };
-                    ans.set(i, v);
+                    if fill.put(i, Ok(v))? {
+                        return Ok(Ok(()));
+                    }
                 }
-                Ok(Built::done(ans.finish()))
+                Ok(Ok(()))
+            });
+        }
+        let res = out.root();
+        cx.build(out, |cx| Ok(cx.alloc_vector::<Ref<'_>>(elts.len())?.finish().into()))?;
+        let slot = s.root(cx, cx.nil());
+        for (i, e) in elts.iter().enumerate() {
+            let elt_out = slot.reset(cx);
+            match e {
+                GElt::Na => cx.build(elt_out, |cx| bare(cx, NA_INTEGER))?,
+                GElt::Bad => cx.build(elt_out, |cx| bare(cx, -1))?,
+                GElt::Hits(h) if hits_has_large_vec(h) => build_large_hits(cx, elt_out, &common_roots, h, h.st.len())?,
+                GElt::Hits(h) => cx.build(elt_out, |cx| common_roots.bind(cx).hits(cx, h, h.st.len()))?,
+            }
+            cx.set_vector_elt_shared(res, i, slot)?;
+            if cx.gc_due() {
+                cx.safepoint(Safepoint::Loop)?;
             }
         }
+        Ok(())
     })
 }
 
@@ -607,21 +777,7 @@ pub fn do_regexec(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
         regexec(cx, p0, &xs, cflags, opt_fixed != 0, use_bytes, loc, &mut rep)
     };
     let (elts, use_bytes, itype_bytes) = rep.finish(cx, call, r)?;
-    cx.build_with(out, |cx| {
-        let res = Res { found: Found::Gregexpr(Vec::new()), use_bytes, itype_bytes, names: None };
-        let common = Common::new(cx, &res)?;
-        let mut ans = cx.alloc_vector::<Ref<'_>>(elts.len())?;
-        for (i, e) in elts.iter().enumerate() {
-            let v = match e {
-                // ScalarInteger(NA) with match.length NA
-                GElt::Na => bare(cx, NA_INTEGER)?,
-                GElt::Bad => unreachable!("robigo: regexec errors on an invalid string"),
-                GElt::Hits(h) => common.hits(cx, h, h.st.len())?,
-            };
-            ans.set(i, v);
-        }
-        Ok(Built::done(ans.finish()))
-    })
+    fill_hits_list(cx, out, &elts, use_bytes, itype_bytes, None)
 }
 
 /// Phase 2 of `regexec`: each string's match and groups, whether the

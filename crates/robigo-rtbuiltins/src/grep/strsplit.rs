@@ -7,7 +7,7 @@ use super::{
 use crate::attrib::{self, Attr, Attrs};
 use crate::util::as_bool2;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Char, Cx, Encoding, Out, RResult, RSym, Ref, Root};
+use robigo_rtcore::{Args, Char, Cx, Encoding, LARGE, ListKind, Out, RResult, RSym, Ref, Root, Safepoint};
 use robigo_text::tre::{self, Match, Regex};
 
 /// The result for one string: NA (`ScalarString(NA_STRING)`), or its
@@ -66,33 +66,86 @@ pub fn do_strsplit(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, 
         split_all(cx, &xs, &toks, fixed, perl, use_bytes, loc, &mut rep)
     };
     let pieces = rep.finish(cx, call, res)?;
-    cx.build_with(out, |cx| {
-        let mut ans = cx.alloc_vector::<Ref<'_>>(pieces.len())?;
-        for (i, p) in pieces.iter().enumerate() {
-            let t = match p {
-                None => {
-                    let mut t = cx.alloc_vector::<Char<'_>>(1)?;
-                    t.set(0, cx.na_string());
-                    t.finish()
-                }
-                Some(v) => {
-                    let mut t = cx.alloc_vector::<Char<'_>>(v.len())?;
-                    for (j, e) in v.iter().enumerate() {
-                        t.set(j, e.make(cx)?);
+    let res = out.root();
+    // Elements with many pieces or a `>= LARGE` piece fill their inner STRSXP
+    // via `Cx::fill_strings` so collections run between pieces and Rule 1 holds
+    // even under `gctorture`. All other calls fill directly via `Cx::fill_list`.
+    let needs_inner_fill =
+        pieces.iter().any(|p| p.as_ref().is_some_and(|v| v.len() >= 4096 || v.iter().any(|e| e.byte_len() >= LARGE)));
+    if !needs_inner_fill {
+        cx.fill_list(out, ListKind::List, pieces.len(), |cx, fill| {
+            for i in fill.start()..pieces.len() {
+                let t: Ref<'_> = match &pieces[i] {
+                    None => {
+                        let mut t = cx.alloc_vector::<Char<'_>>(1)?;
+                        t.set(0, cx.na_string());
+                        t.finish().into()
                     }
-                    t.finish()
+                    Some(v) => {
+                        let mut t = cx.alloc_vector::<Char<'_>>(v.len())?;
+                        for (j, e) in v.iter().enumerate() {
+                            t.set(j, e.make(cx)?);
+                        }
+                        t.finish().into()
+                    }
+                };
+                if fill.put(i, Ok(t))? {
+                    return Ok(Ok(()));
                 }
-            };
-            ans.set(i, t.into());
-        }
-        let xv = x.bind(cx);
-        if let Some(nm) = attrib::names(xv) {
-            let mut a = Attrs::new();
-            a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
-            a.apply(cx, &mut ans)?;
-        }
-        Ok(Built::done(ans.finish()))
-    })
+            }
+            Ok(Ok(()))
+        })?;
+    } else {
+        cx.build(out, |cx| Ok(cx.alloc_vector::<Ref<'_>>(pieces.len())?.finish().into()))?;
+        cx.scope(|cx, s| {
+            let slot = s.root(cx, cx.nil());
+            for (i, p) in pieces.iter().enumerate() {
+                let elt_out = slot.reset(cx);
+                match p {
+                    None => {
+                        cx.build(elt_out, |cx| {
+                            let mut t = cx.alloc_vector::<Char<'_>>(1)?;
+                            t.set(0, cx.na_string());
+                            Ok(t.finish().into())
+                        })?;
+                    }
+                    Some(v) => {
+                        cx.fill_strings(elt_out, v.len(), |cx, fill| {
+                            for j in fill.start()..v.len() {
+                                if fill.put(j, v[j].make_checked(cx))? {
+                                    return Ok(Ok(()));
+                                }
+                            }
+                            Ok(Ok(()))
+                        })?;
+                    }
+                }
+                cx.set_vector_elt_shared(res, i, slot)?;
+                if cx.gc_due() {
+                    cx.safepoint(Safepoint::Loop)?;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    if attrib::names(x.bind(cx)).is_some() {
+        cx.scope(|cx, s| {
+            let al = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut a = Attrs::new();
+                    if let Some(nm) = attrib::names(x.bind(cx)) {
+                        a.install(Attr { tag: cx.sym(RSym::Names), value: nm });
+                    }
+                    a.pairlist(cx)
+                })
+            })?;
+            if al.bind(cx).sexptype() != NILSXP {
+                cx.set_attrib_list(res, al);
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// Phase 2: every string split.

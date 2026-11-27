@@ -1582,8 +1582,7 @@ class OvershootReportOnly(unittest.TestCase):
 
     def test_every_mem_report_program_names_its_family_and_cure_and_is_run(self):
         d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem-report"
-        files = sorted(f.name for f in d.glob("*.R"))
-        self.assertTrue(files, "benchmarks/rt/mem-report has no programs")
+        files = sorted(f.name for f in d.glob("*.R")) if d.is_dir() else []
         report = self.ov.report_only()
         self.assertEqual(sorted(os.path.basename(p) for p in report), files)
         for p, (family, cure) in report.items():
@@ -1592,6 +1591,9 @@ class OvershootReportOnly(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             names = {n for n, _ in self.ov.programs(tmp)}
         self.assertTrue(set(report) <= names)
+        # Every E4 program originally in mem-report has graduated to mem/.
+        mem = {f.name for f in (Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem").glob("*.R")}
+        self.assertTrue({"ascharacter1e6.R", "c1e6.R", "format1e6.R", "sprintf1e6.R", "strsplit1e6.R"} <= mem)
 
     def test_nothing_in_mem_is_report_only(self):
         d = Path(self.ov.ROOT) / "benchmarks" / "rt" / "mem"

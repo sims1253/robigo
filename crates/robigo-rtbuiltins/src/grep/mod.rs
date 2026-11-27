@@ -99,6 +99,22 @@ impl Elt {
         }
     }
 
+    /// The CHARSXP, upholding H's Rule 1 for `fill_strings` (`LARGE` check).
+    pub(crate) fn make_checked<'g>(&self, cx: &'g Cx) -> Result<Char<'g>, robigo_rtcore::NeedGc> {
+        match self {
+            Elt::Na => Ok(cx.na_string()),
+            Elt::Str(b, e) => crate::util::mk_char_checked(cx, b, *e),
+        }
+    }
+
+    /// Byte length of the CHARSXP payload (0 for `NA_STRING`).
+    pub(crate) fn byte_len(&self) -> usize {
+        match self {
+            Elt::Na => 0,
+            Elt::Str(b, _) => b.len(),
+        }
+    }
+
     /// The same CHARSXP as `c`.
     pub(crate) fn of(cx: &Cx, c: Char<'_>) -> Elt {
         if c == cx.na_string() { Elt::Na } else { Elt::Str(c.bytes().to_vec(), c.enc()) }

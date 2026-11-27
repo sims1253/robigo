@@ -6,7 +6,7 @@ use super::{
     only_ascii, pattern, pcre_exec_error, strings, tr_char, tr_native, tr_utf8, tre_exec, tre_fail, utf8_valid,
     utf8clen, wide_utf8, wtrans,
 };
-use crate::attrib::Attrs;
+use crate::attrib::{self, Attrs};
 use crate::text::ctype;
 use crate::util::as_bool2;
 use robigo_rtcore::types::*;
@@ -78,23 +78,58 @@ pub fn do_gsub<const CODE: u8>(
         };
         Some(report.finish(cx, call, r)?)
     };
-    cx.build_with(out, |cx| {
-        let mut ans = cx.alloc_vector::<Char<'_>>(n)?;
-        match &elts {
-            None => (0..n).for_each(|i| ans.set(i, cx.na_string())),
-            Some(es) => {
-                for (i, e) in es.iter().enumerate() {
-                    ans.set(i, e.make(cx)?);
+    match &elts {
+        None => cx.build_with(out, |cx| {
+            let mut ans = cx.alloc_vector::<Char<'_>>(n)?;
+            (0..n).for_each(|i| ans.set(i, cx.na_string()));
+            // SHALLOW_DUPLICATE_ATTRIB(ans, text): this also copies the class,
+            // if any
+            let mut a = Attrs::new();
+            a.copy_all(text.bind(cx));
+            a.apply(cx, &mut ans)?;
+            Ok(Built::done(ans.finish()))
+        }),
+        Some(es) => {
+            let res = out.root();
+            cx.fill_strings(out, n, |cx, fill| {
+                for i in fill.start()..n {
+                    if fill.put(i, es[i].make_checked(cx))? {
+                        return Ok(Ok(()));
+                    }
                 }
+                Ok(Ok(()))
+            })?;
+            // SHALLOW_DUPLICATE_ATTRIB(ans, text): this also copies the class,
+            // if any
+            if attrib::has_attrib(text.bind(cx)) {
+                cx.scope(|cx, s| {
+                    let (object, s4) = {
+                        let mut a = Attrs::new();
+                        a.copy_all(text.bind(cx));
+                        (a.object(), a.s4())
+                    };
+                    let al = s.capture(cx, |cx, o| {
+                        cx.build(o, |cx| {
+                            let mut a = Attrs::new();
+                            a.copy_all(text.bind(cx));
+                            a.pairlist(cx)
+                        })
+                    })?;
+                    if al.bind(cx).sexptype() != NILSXP {
+                        cx.set_attrib_list(res, al);
+                    }
+                    if object {
+                        cx.set_object_bit(res, true);
+                    }
+                    if let Some(b) = s4 {
+                        cx.set_s4_bit(res, b);
+                    }
+                    Ok(())
+                })?;
             }
+            Ok(())
         }
-        // SHALLOW_DUPLICATE_ATTRIB(ans, text): this also copies the class,
-        // if any
-        let mut a = Attrs::new();
-        a.copy_all(text.bind(cx));
-        a.apply(cx, &mut ans)?;
-        Ok(Built::done(ans.finish()))
-    })
+    }
 }
 
 #[derive(Clone, Copy)]

@@ -8,7 +8,7 @@ use super::{
 use crate::attrib::{self, Attr, Attrs};
 use crate::util::as_bool2;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Built, Char, Cx, Encoding, Lgl, Locale, Out, RResult, RSym, Ref, Root};
+use robigo_rtcore::{Args, Built, Char, Cx, Encoding, LARGE, Lgl, Locale, Out, RResult, RSym, Ref, Root};
 use robigo_text::tre::{self, Regex};
 
 /// How the pattern matches.
@@ -75,6 +75,44 @@ pub fn do_grep<const CODE: u8>(
         rep.finish(cx, call, r)?
     };
     let nmatches = ind.iter().filter(|&&m| invert ^ m).count();
+    // Separate large `ans` and `names` vectors across two `&Cx` intervals so
+    // Rule 1 holds if the first crosses the GC trigger.
+    if !grepl
+        && value_opt
+        && nmatches.saturating_mul(std::mem::size_of::<usize>()) >= LARGE
+        && attrib::names(text.bind(cx)).is_some()
+    {
+        let res = out.root();
+        cx.build(out, |cx| {
+            let xs = strings(text.bind(cx));
+            let mut ans = cx.alloc_vector::<Char<'_>>(nmatches)?;
+            for (j, i) in ind.iter().enumerate().filter(|&(_, &m)| invert ^ m).map(|(i, _)| i).enumerate() {
+                ans.set(j, xs.get(i));
+            }
+            Ok(ans.finish().into())
+        })?;
+        return cx.scope(|cx, s| {
+            let nm = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let old = strings(attrib::names(text.bind(cx)).unwrap());
+                    let mut nm = cx.alloc_vector::<Char<'_>>(nmatches)?;
+                    for (j, i) in ind.iter().enumerate().filter(|&(_, &m)| invert ^ m).map(|(i, _)| i).enumerate() {
+                        nm.set(j, old.get(i));
+                    }
+                    Ok(nm.finish().into())
+                })
+            })?;
+            let al = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut a = Attrs::new();
+                    a.install(Attr { tag: cx.sym(RSym::Names), value: nm.bind(cx) });
+                    a.pairlist(cx)
+                })
+            })?;
+            cx.set_attrib_list(res, al);
+            Ok(())
+        });
+    }
     cx.build_with(out, |cx| {
         let tv = text.bind(cx);
         if grepl {
