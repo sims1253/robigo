@@ -798,7 +798,6 @@ impl Cx {
 mod tests {
     use crate::{Diag, Hooks, OwnedIsolate};
     use robigo_heap::types::NILSXP;
-    use std::cell::RefCell;
 
     #[test]
     fn fill_pairlist_builds_front_to_back_and_handles_empty() {
@@ -838,26 +837,10 @@ mod tests {
 
     #[test]
     fn fill_pairlist_warning_stops_and_unwind_leaves_out_unpublished() {
-        thread_local! {
-            static WARNS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-            static FAIL_SECOND: RefCell<bool> = const { RefCell::new(false) };
-        }
         let mut iso = OwnedIsolate::new();
         let cx = iso.cx();
-        cx.install_hooks(Hooks {
-            warning: |cx, _call, msg| {
-                WARNS.with(|w| w.borrow_mut().push(String::from_utf8_lossy(msg).into_owned()));
-                if FAIL_SECOND.with(|f| *f.borrow()) && WARNS.with(|w| w.borrow().len() >= 2) {
-                    return Err(cx.error("handler boom"));
-                }
-                Ok(())
-            },
-            ..Hooks::default()
-        });
 
         // Two warnings (one mid-chain, one on the final element): both fire in order.
-        WARNS.with(|w| w.borrow_mut().clear());
-        FAIL_SECOND.with(|f| *f.borrow_mut() = false);
         cx.scope(|cx, s| {
             let out = s.out(cx);
             let r = out.root();
@@ -880,11 +863,21 @@ mod tests {
             }
             assert_eq!(vals, vec![0, 1, 2]);
         });
-        assert_eq!(WARNS.with(|w| w.borrow().clone()), vec!["warn 0", "warn 2"]);
+        let got: Vec<String> =
+            cx.collected_warnings().into_iter().map(|(_, m)| String::from_utf8_lossy(m.bytes()).into_owned()).collect();
+        assert_eq!(got, vec!["warn 0", "warn 2"]);
+        cx.clear_warnings();
 
         // Handler error on second warning unwinds cleanly with `out` still empty (NULL).
-        WARNS.with(|w| w.borrow_mut().clear());
-        FAIL_SECOND.with(|f| *f.borrow_mut() = true);
+        cx.install_hooks(Hooks {
+            warning: |cx, call, msg| {
+                if msg == b"warn 1" {
+                    return Err(cx.error("handler boom"));
+                }
+                cx.collect_warning(call, msg)
+            },
+            ..Hooks::default()
+        });
         cx.scope(|cx, s| {
             let out = s.out(cx);
             let r = out.root();
@@ -902,6 +895,9 @@ mod tests {
             assert_eq!(r.bind(cx).sexptype(), NILSXP);
             let _ = cx.take_exit(err);
         });
+        let got: Vec<String> =
+            cx.collected_warnings().into_iter().map(|(_, m)| String::from_utf8_lossy(m.bytes()).into_owned()).collect();
+        assert_eq!(got, vec!["warn 0"]);
 
         // Diagnostic error mid-fill leaves `out` untouched.
         cx.scope(|cx, s| {
