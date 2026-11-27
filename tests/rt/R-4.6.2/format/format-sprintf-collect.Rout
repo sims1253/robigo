@@ -1,0 +1,16 @@
+fmt-real: 800   0.1428571  57.1428571 114.2857143 
+fmt-int: 500   1 500 k1 k500 
+fmt-lgl: 400  TRUE FALSE    NA  TRUE 
+fmt-cplx: 300 -10.00000+  1i             NA  10.00000+300i 
+fmt-str: 500  ab  été  中文  NA  TRUE 
+fmt-mat: 10 20   1 200 r10 c20 
+fmt-warn: 3 1::5 2::5 3::5 
+fmtC: 500 00001 00500 0.333 166.667 0 0.00000123 3.14 123456 
+fmtC-zero: 0 0 
+sp-int: 800 s0001 s0800 
+sp-mix: 500 é:  1 a:    2 a:  500 UTF-8 unknown 
+sp-multi: 400 a=1 b=0002 a=399 b=0190 
+sp-coerce: 400 c=v1 c=v400 i=1 i=400 
+sp-trunc: 2 xxxx ok xxxx 
+sp-warn-err: 1 invalid format '%d'; use format %s for character objects 
+sp-unused: 10 x=10 one argument not used by format 'x=%d' 

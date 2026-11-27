@@ -8,10 +8,22 @@
 use crate::print::PrintData;
 use robigo_heap::types::*;
 use robigo_rtbuiltins::util::{as_logical, not_yet};
-use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
+use robigo_rtcore::{Args, Char, Cx, Diag, Encoding, LARGE, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, View};
 use robigo_text::{Str, num};
+use std::borrow::Cow;
 
 const NA: i32 = i32::MIN;
+
+/// `mk_char` upholding H's Rule 1 for `fill_strings`: refuse a `LARGE`
+/// (`>= 1 MiB`) CHARSXP request while a collection is due so the fill serves
+/// the safepoint before allocating it.
+#[inline]
+fn mk_char_checked<'g>(cx: &'g Cx, bytes: &[u8], enc: Encoding) -> Result<Char<'g>, NeedGc> {
+    if bytes.len() >= LARGE && cx.gc_due() {
+        return Err(NeedGc::new(CHARSXP, bytes.len()));
+    }
+    cx.mk_char(bytes, enc)
+}
 
 /// `asInteger(x)` with its coercion warnings.
 fn as_integer(cx: &mut Cx, x: Root<'_>) -> RResult<i32> {
@@ -23,40 +35,39 @@ fn is_vector_atomic(x: Ref<'_>) -> bool {
     matches!(x.sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP)
 }
 
-/// The element `i` of a character vector translated as `do_format` does:
-/// a "bytes" string with each byte outside 0x20..0x7f written `\xhh`,
-/// another `translateChar`'d (its error for one that cannot be); None for
-/// NA.
+/// Translate one non-NA element of a character vector as `do_format` does:
+/// a "bytes" string with each byte outside `0x20..0x80` written `\xhh`,
+/// another `translateChar`'d (returning its error if untranslatable).
+/// Borrows directly from `c` when unchanged; writes into `scratch` otherwise.
 // R: paste.c:do_format
-fn format_string_elt(cx: &mut Cx, x: Root<'_>, i: usize) -> RResult<Option<(Vec<u8>, Encoding)>> {
-    let (na, enc, bytes) = {
-        let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        (c == cx.na_string(), c.enc(), c.bytes().to_vec())
-    };
-    if na {
-        return Ok(None);
-    }
-    if enc == Encoding::Bytes {
-        let mut out = Vec::with_capacity(bytes.len());
-        for &k in &bytes {
+fn format_string_elt<'a>(
+    c: Char<'a>,
+    loc: robigo_rtcore::Locale,
+    scratch: &'a mut Vec<u8>,
+) -> Result<(&'a [u8], Encoding), String> {
+    if c.enc() == Encoding::Bytes {
+        scratch.clear();
+        let bytes = c.bytes();
+        scratch.reserve(bytes.len());
+        for &k in bytes {
             if (0x20..0x80).contains(&k) {
-                out.push(k);
+                scratch.push(k);
             } else {
-                out.extend_from_slice(format!("\\x{k:02x}").as_bytes());
+                scratch.extend_from_slice(format!("\\x{k:02x}").as_bytes());
             }
         }
-        return Ok(Some((out, Encoding::Native)));
+        return Ok((scratch.as_slice(), Encoding::Native));
     }
-    let tr = {
-        let c = x.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-        robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale()).map(|b| b.into_owned())
-    };
-    match tr {
+    match robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), loc) {
         // (translateChar returns CHAR(x) itself when nothing changes: the
         // element keeps its CHARSXP, and so its mark)
-        Ok(b) if b == bytes => Ok(Some((b, enc))),
-        Ok(b) => Ok(Some((b, Encoding::Native))),
-        Err(e) => Err(cx.error(&e.to_string())),
+        Ok(Cow::Borrowed(b)) => Ok((b, c.enc())),
+        Ok(Cow::Owned(b)) if b.as_slice() == c.bytes() => Ok((c.bytes(), c.enc())),
+        Ok(Cow::Owned(b)) => {
+            *scratch = b;
+            Ok((scratch.as_slice(), Encoding::Native))
+        }
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -156,89 +167,155 @@ pub fn do_format(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     pd.scipen = scipen;
     let n = x.bind(cx).len().unwrap();
     let trim = trim != 0;
-    // the strings, built before anything allocates
-    let ys: Vec<Option<(Vec<u8>, Encoding)>> =
-        if n == 0 { Vec::new() } else { format_elements(cx, x, &pd, (trim, wd, adj, na != 0, nsmall), &dec)? };
-    cx.build(out, |cx| {
+    let res = out.root();
+    let warnings = if n == 0 {
+        cx.build(out, |cx| Ok(cx.alloc_vector::<Char<'_>>(0)?.finish().into()))?;
+        0
+    } else {
+        fill_format_elements(cx, x, &pd, (trim, wd, adj, na != 0, nsmall), &dec, out)?
+    };
+    attach_format_attrs(cx, x, res)?;
+    if warnings > 0
+        && let Some(m) = {
+            let pp = pd.params(cx);
+            num::decimal_mark_warning(&dec, &pp)
+        }
+    {
+        for _ in 0..warnings {
+            cx.warning(m)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy `dim` + `dimnames` (or `names`) from `x` onto the formatted result
+/// `res`, matching `paste.c:do_format`.
+fn attach_format_attrs(cx: &mut Cx, x: Root<'_>, res: Root<'_>) -> RResult<()> {
+    let has = {
         let xv = x.bind(cx);
-        let mut y = cx.alloc_vector::<Char<'_>>(n)?;
-        for (i, s) in ys.iter().enumerate() {
-            y.set(
-                i,
-                match s {
-                    None => cx.na_string(),
-                    Some((b, e)) => cx.mk_char(b, *e)?,
-                },
-            );
+        robigo_rtbuiltins::attrib::get_value(xv, b"dim").is_some()
+            || robigo_rtbuiltins::attrib::get_value(xv, b"names").is_some()
+    };
+    if !has {
+        return Ok(());
+    }
+    cx.scope(|cx, s| {
+        let al = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let xv = x.bind(cx);
+                let mut a = robigo_rtbuiltins::attrib::Attrs::new();
+                if let Some(d) = robigo_rtbuiltins::attrib::get_value(xv, b"dim") {
+                    a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Dim), value: d });
+                    if let Some(dn) = robigo_rtbuiltins::attrib::get_value(xv, b"dimnames") {
+                        a.install(robigo_rtbuiltins::attrib::Attr {
+                            tag: cx.sym(robigo_rtcore::RSym::DimNames),
+                            value: dn,
+                        });
+                    }
+                } else if let Some(nm) = robigo_rtbuiltins::attrib::get_value(xv, b"names") {
+                    a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: nm });
+                }
+                a.pairlist(cx)
+            })
+        })?;
+        if al.bind(cx).sexptype() != NILSXP {
+            cx.set_attrib_list(res, al);
         }
-        let mut a = robigo_rtbuiltins::attrib::Attrs::new();
-        if let Some(d) = robigo_rtbuiltins::attrib::get_value(xv, b"dim") {
-            a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Dim), value: d });
-            if let Some(dn) = robigo_rtbuiltins::attrib::get_value(xv, b"dimnames") {
-                a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::DimNames), value: dn });
-            }
-        } else if let Some(nm) = robigo_rtbuiltins::attrib::get_value(xv, b"names") {
-            a.install(robigo_rtbuiltins::attrib::Attr { tag: cx.sym(robigo_rtcore::RSym::Names), value: nm });
-        }
-        a.apply(cx, &mut y)?;
-        Ok(y.finish().into())
+        Ok(())
     })
 }
 
-/// The `n > 0` part of `do_format`: each element's text (None: NA kept).
+/// The `n > 0` part of `do_format`, built element by element through
+/// [`Cx::fill_strings`] so collections run between elements (E4). Returns the
+/// number of `decimal_mark_warning`s to emit.
 // R: paste.c:do_format
-fn format_elements(
+fn fill_format_elements(
     cx: &mut Cx,
     x: Root<'_>,
     pd: &PrintData,
     (trim, wd, adj, na, nsmall): (bool, i32, i32, bool, i32),
     dec: &[u8],
-) -> RResult<Vec<Option<(Vec<u8>, Encoding)>>> {
+    out: Out<'_>,
+) -> RResult<usize> {
     let n = x.bind(cx).len().unwrap();
-    let mut ys = Vec::with_capacity(n);
-    let mut warnings = 0usize;
-    let warning = {
-        let pp = pd.params(cx);
-        num::decimal_mark_warning(dec, &pp)
-    };
-    {
-        let pp = pd.params(cx);
-        let xv = x.bind(cx);
-        let text = |out: Vec<u8>| Some((out, Encoding::Native));
-        match xv.view() {
-            View::Lgl(v) => {
-                let xs: Vec<i32> = v.as_slice().unwrap().iter().map(|l| l.0).collect();
-                let w = if trim { 0 } else { num::format_logical(&xs, &pp) }.max(wd);
-                for &l in &xs {
-                    let mut o = Vec::new();
-                    num::encode_logical(&mut o, l, w, &pp);
-                    ys.push(text(o));
+    let ty = x.bind(cx).sexptype();
+    let mut buf = Vec::new();
+    match ty {
+        LGLSXP => {
+            let w = {
+                let pp = pd.params(cx);
+                let View::Lgl(v) = x.bind(cx).view() else { unreachable!() };
+                if trim {
+                    0
+                } else {
+                    let xs: Vec<i32> = v.as_slice().unwrap().iter().map(|l| l.0).collect();
+                    num::format_logical(&xs, &pp)
                 }
-            }
-            View::Int(v) => {
-                let xs = v.as_slice().unwrap();
-                let w = if trim { 0 } else { num::format_integer(xs, &pp) }.max(wd);
-                for &k in xs {
-                    let mut o = Vec::new();
-                    num::encode_integer(&mut o, k, w, &pp);
-                    ys.push(text(o));
+                .max(wd)
+            };
+            cx.fill_strings(out, n, |cx, fill| {
+                let pp = pd.params(cx);
+                let View::Lgl(v) = x.bind(cx).view() else { unreachable!() };
+                for i in fill.start()..n {
+                    buf.clear();
+                    num::encode_logical(&mut buf, v.get(i).0, w, &pp);
+                    if fill.put(i, mk_char_checked(cx, &buf, Encoding::Native))? {
+                        return Ok(Ok(()));
+                    }
                 }
-            }
-            View::Real(v) => {
-                let xs = v.as_slice().unwrap();
-                let mut f = num::format_real(xs, nsmall, &pp);
+                Ok(Ok(()))
+            })?;
+            Ok(0)
+        }
+        INTSXP => {
+            let w = {
+                let pp = pd.params(cx);
+                let View::Int(v) = x.bind(cx).view() else { unreachable!() };
+                if trim { 0 } else { num::format_integer(v.as_slice().unwrap(), &pp) }.max(wd)
+            };
+            cx.fill_strings(out, n, |cx, fill| {
+                let pp = pd.params(cx);
+                let View::Int(v) = x.bind(cx).view() else { unreachable!() };
+                for i in fill.start()..n {
+                    buf.clear();
+                    num::encode_integer(&mut buf, v.get(i), w, &pp);
+                    if fill.put(i, mk_char_checked(cx, &buf, Encoding::Native))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            })?;
+            Ok(0)
+        }
+        REALSXP => {
+            let f = {
+                let pp = pd.params(cx);
+                let View::Real(v) = x.bind(cx).view() else { unreachable!() };
+                let mut f = num::format_real(v.as_slice().unwrap(), nsmall, &pp);
                 if trim {
                     f.w = 0;
                 }
                 f.w = f.w.max(wd);
-                for &r in xs {
-                    let mut o = Vec::new();
-                    num::encode_real0(&mut o, r, f, dec, &pp);
-                    warnings += 1;
-                    ys.push(text(o));
+                f
+            };
+            cx.fill_strings(out, n, |cx, fill| {
+                let pp = pd.params(cx);
+                let View::Real(v) = x.bind(cx).view() else { unreachable!() };
+                for i in fill.start()..n {
+                    buf.clear();
+                    num::encode_real0(&mut buf, v.get(i), f, dec, &pp);
+                    if fill.put(i, mk_char_checked(cx, &buf, Encoding::Native))? {
+                        return Ok(Ok(()));
+                    }
                 }
-            }
-            View::Cplx(v) => {
+                Ok(Ok(()))
+            })?;
+            Ok(n)
+        }
+        CPLXSXP => {
+            let (fr, fi, warnings) = {
+                let pp = pd.params(cx);
+                let View::Cplx(v) = x.bind(cx).view() else { unreachable!() };
                 let xs: Vec<(f64, f64)> = v.as_slice().unwrap().iter().map(|c: &Rcomplex| (c.r, c.i)).collect();
                 let (mut fr, mut fi) = num::format_complex(&xs, nsmall, &pp);
                 if trim {
@@ -247,77 +324,110 @@ fn format_elements(
                 }
                 fr.w = fr.w.max(wd);
                 fi.w = fi.w.max(wd);
-                for &c in &xs {
-                    let mut o = Vec::new();
-                    num::encode_complex(&mut o, c, fr, fi, dec, &pp);
-                    // (EncodeComplex: EncodeReal0 of each part, NA aside)
-                    if !(robigo_text::is_na(c.0) || robigo_text::is_na(c.1)) {
-                        warnings += 2;
-                    }
-                    ys.push(text(o));
-                }
-            }
-            View::Str(_) => {}
-            _ => return Err(cx.error("Impossible mode ( x )")),
-        }
-    }
-    if x.bind(cx).sexptype() == STRSXP {
-        // (this has to be different from formatString/EncodeString as we
-        // don't actually want to encode here)
-        let mut xx = Vec::with_capacity(n);
-        for i in 0..n {
-            xx.push(format_string_elt(cx, x, i)?);
-        }
-        let pp = pd.params(cx);
-        let loc = pp.locale;
-        let width = |s: &(Vec<u8>, Encoding)| robigo_text::string::rstrlen(text_of(s), 0, loc);
-        let mut w = wd;
-        if adj != 3 {
-            for s in &xx {
-                match s {
-                    Some(s) => w = w.max(width(s)),
-                    None if na => w = w.max(pp.na_width),
-                    None => {}
-                }
-            }
-        } else {
-            w = 0;
-        }
-        for s in &xx {
-            if !na && s.is_none() {
-                ys.push(None);
-                continue;
-            }
-            let (s0, il) = match s {
-                Some(s) => (s.0.clone(), width(s)),
-                None => (pd.na_string.0.clone(), pp.na_width),
+                // (EncodeComplex: EncodeReal0 of each part, NA aside)
+                let warnings =
+                    xs.iter().filter(|&&(r, i)| !(robigo_text::is_na(r) || robigo_text::is_na(i))).count() * 2;
+                (fr, fi, warnings)
             };
-            let mut b = w - il;
-            let mut q = Vec::with_capacity(s0.len() + b.max(0) as usize);
-            if b > 0 && adj != 0 {
-                let b0 = if adj == 2 { b / 2 } else { b };
-                q.extend(std::iter::repeat_n(b' ', b0 as usize));
-                b -= b0;
-            }
-            q.extend_from_slice(&s0);
-            if b > 0 && adj != 1 {
-                q.extend(std::iter::repeat_n(b' ', b as usize));
-            }
-            // mkChar(buff): native
-            ys.push(Some((q, Encoding::Native)));
+            cx.fill_strings(out, n, |cx, fill| {
+                let pp = pd.params(cx);
+                let View::Cplx(v) = x.bind(cx).view() else { unreachable!() };
+                for i in fill.start()..n {
+                    let c = v.get(i);
+                    buf.clear();
+                    num::encode_complex(&mut buf, (c.r, c.i), fr, fi, dec, &pp);
+                    if fill.put(i, mk_char_checked(cx, &buf, Encoding::Native))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            })?;
+            Ok(warnings)
         }
-    }
-    if let Some(m) = warning {
-        for _ in 0..warnings {
-            cx.warning(m)?;
+        STRSXP => {
+            // (this has to be different from formatString/EncodeString as we
+            // don't actually want to encode here)
+            let mut tr_buf = Vec::new();
+            let (w, err) = {
+                let pp = pd.params(cx);
+                let loc = cx.locale();
+                let v = x.bind(cx).as_vector::<Char<'_>>().unwrap();
+                let na_s = cx.na_string();
+                let mut w = if adj != 3 { wd } else { 0 };
+                let mut err: Option<String> = None;
+                for i in 0..n {
+                    let c = v.get(i);
+                    if c == na_s {
+                        if adj != 3 && na {
+                            w = w.max(pp.na_width);
+                        }
+                        continue;
+                    }
+                    match format_string_elt(c, loc, &mut tr_buf) {
+                        Ok((bytes, enc)) => {
+                            if adj != 3 {
+                                w = w.max(robigo_text::string::rstrlen(text_slice(bytes, enc), 0, pp.locale));
+                            }
+                        }
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                    }
+                }
+                (w, err)
+            };
+            if let Some(e) = err {
+                return Err(cx.error(&e));
+            }
+            cx.fill_strings(out, n, |cx, fill| {
+                let pp = pd.params(cx);
+                let loc = cx.locale();
+                let v = x.bind(cx).as_vector::<Char<'_>>().unwrap();
+                let na_s = cx.na_string();
+                for i in fill.start()..n {
+                    let c = v.get(i);
+                    if !na && c == na_s {
+                        if fill.put(i, Ok(na_s))? {
+                            return Ok(Ok(()));
+                        }
+                        continue;
+                    }
+                    let (s0, il) = if c == na_s {
+                        (pd.na_string.0.as_slice(), pp.na_width)
+                    } else {
+                        let (bytes, enc) = format_string_elt(c, loc, &mut tr_buf).expect("checked in width pass");
+                        let il = robigo_text::string::rstrlen(text_slice(bytes, enc), 0, pp.locale);
+                        (bytes, il)
+                    };
+                    let mut b = w - il;
+                    buf.clear();
+                    buf.reserve(s0.len() + b.max(0) as usize);
+                    if b > 0 && adj != 0 {
+                        let b0 = if adj == 2 { b / 2 } else { b };
+                        buf.extend(std::iter::repeat_n(b' ', b0 as usize));
+                        b -= b0;
+                    }
+                    buf.extend_from_slice(s0);
+                    if b > 0 && adj != 1 {
+                        buf.extend(std::iter::repeat_n(b' ', b as usize));
+                    }
+                    // mkChar(buff): native
+                    if fill.put(i, mk_char_checked(cx, &buf, Encoding::Native))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            })?;
+            Ok(0)
         }
+        _ => Err(cx.error("Impossible mode ( x )")),
     }
-    Ok(ys)
 }
 
-/// robigo-text's view of a translated string.
-fn text_of(s: &(Vec<u8>, Encoding)) -> Str<'_> {
-    robigo_rtbuiltins::coerce::text_held(s)
+/// robigo-text's view of a translated string slice and its encoding mark.
+fn text_slice(bytes: &[u8], enc: Encoding) -> Str<'_> {
+    Str::new(bytes, robigo_rtbuiltins::coerce::text_enc(enc))
 }
 
 /// `.Internal(format.info(x, digits, nsmall))`: the width (and for doubles
@@ -403,40 +513,175 @@ pub fn do_formatc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
     let digits = as_integer(cx, args.root(3))?;
     let fmt = first(cx, 4);
     let flag = first(cx, 5);
-    let lens = cx.scope(|cx, s| {
-        let l = s.capture(cx, |cx, o| robigo_rtbuiltins::coerce::vector::coerce_vector(cx, args.root(6), INTSXP, o))?;
-        cx.materialize(l)?;
-        Ok(l.bind(cx).as_vector::<i32>().unwrap().as_slice().unwrap().to_vec())
-    })?;
-    cx.materialize(x)?;
-    let n = x.bind(cx).len().unwrap();
-    let res = {
-        let xv = x.bind(cx);
-        str_signif(xv, n, &ty, width, digits, &fmt, &flag, &lens)
-    };
-    let res = match res {
-        Ok(r) => r,
-        Err(Signif::Error(m)) => return Err(cx.error(m)),
-        Err(Signif::NotYet(m)) => return Err(not_yet(cx, Some(call), m)),
-    };
-    cx.build(out, |cx| {
-        let mut ans = cx.alloc_vector::<Char<'_>>(n)?;
-        for (i, r) in res.iter().enumerate() {
-            ans.set(i, cx.mk_char(r, Encoding::Native)?);
+    cx.scope(|cx, s| {
+        let lens =
+            s.capture(cx, |cx, o| robigo_rtbuiltins::coerce::vector::coerce_vector(cx, args.root(6), INTSXP, o))?;
+        cx.materialize(lens)?;
+        cx.materialize(x)?;
+        let n = x.bind(cx).len().unwrap();
+        let dig = digits.wrapping_abs();
+        let do_fg = fmt == b"fg";
+        if width == 0 {
+            return Err(cx.error("width cannot be zero"));
         }
-        Ok(ans.finish().into())
+        let mut buf = Vec::new();
+        if fmt == b"d" {
+            let mut form = b"%".to_vec();
+            form.extend_from_slice(&flag);
+            form.extend_from_slice(b"*d");
+            if ty != b"integer" {
+                return Err(cx.error("'type' must be \"integer\" for  \"d\"-format"));
+            }
+            if x.bind(cx).sexptype() != INTSXP {
+                return Err(not_yet(cx, Some(call), "formatC() of this type"));
+            }
+            let spec = if n > 0 {
+                match parse_star(&form, width, None) {
+                    Ok(s) => Some(s),
+                    Err(Signif::NotYet(m)) => return Err(not_yet(cx, Some(call), m)),
+                }
+            } else {
+                None
+            };
+            return cx.fill_strings(out, n, |cx, fill| {
+                let Some(spec) = spec.as_ref() else {
+                    return Ok(Ok(()));
+                };
+                let View::Int(v) = x.bind(cx).view() else { unreachable!() };
+                let lv = lens.bind(cx).as_vector::<i32>().unwrap();
+                for i in fill.start()..n {
+                    buf.clear();
+                    spec.int(&mut buf, v.get(i));
+                    cut_buf(&mut buf, lv.get(i));
+                    if fill.put(i, mk_char_checked(cx, &buf, Encoding::Native))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            });
+        }
+        // --- floating point ---
+        let mut form = b"%".to_vec();
+        form.extend_from_slice(&flag);
+        form.extend_from_slice(b"*.*");
+        if do_fg {
+            form.push(b'g');
+        } else {
+            form.extend_from_slice(&fmt);
+        }
+        if ty != b"double" {
+            return Err(cx.error("'type' must be \"real\" for this format"));
+        }
+        if x.bind(cx).sexptype() != REALSXP {
+            return Err(not_yet(cx, Some(call), "formatC() of this type"));
+        }
+        let mut cached_spec: Option<robigo_text::printf::Spec> = None;
+        cx.fill_strings(out, n, |cx, fill| {
+            let View::Real(v) = x.bind(cx).view() else { unreachable!() };
+            let lv = lens.bind(cx).as_vector::<i32>().unwrap();
+            for i in fill.start()..n {
+                let mut xx = v.get(i);
+                if !xx.is_finite() {
+                    // (formatC's R code replaced every non-finite number)
+                    return Ok(Err(Diag::error_call(
+                        Some(call),
+                        "robigo: formatC() of a non-finite number is not implemented yet",
+                    )));
+                }
+                buf.clear();
+                if do_fg {
+                    // do smart "f"
+                    if xx == 0.0 {
+                        buf.extend_from_slice(b"0");
+                        cut_buf(&mut buf, lv.get(i));
+                    } else {
+                        let xxx = xx.abs();
+                        let mut iex = (xxx.log10() + 1e-12).floor() as i32;
+                        let x10 = robigo_numerics::fround::fround(xxx / 10f64.powi(iex) + 1e-12, (dig - 1) as f64);
+                        if iex > 0 && x10 >= 10.0 {
+                            xx = x10 * 10f64.powi(iex);
+                            iex += 1;
+                        }
+                        if iex == -4 && xx.abs() < 1e-4 {
+                            // VERY rare case
+                            iex = -5;
+                        }
+                        if iex < -4 {
+                            // "g" would result in 'e-' representation: f0 is
+                            // "%<flag>.*f" (no width)
+                            let mut ff = b"%".to_vec();
+                            ff.extend_from_slice(&flag);
+                            ff.extend_from_slice(format!(".{}f", dig - 1 - iex).as_bytes());
+                            let filtered: Vec<u8> = ff.into_iter().filter(|&c| c != b'\'' && c != b'I').collect();
+                            let Some(s) = robigo_text::printf::Spec::parse(&filtered) else {
+                                return Ok(Err(Diag::error_call(
+                                    Some(call),
+                                    "robigo: formatC() with this 'flag' is not implemented yet",
+                                )));
+                            };
+                            s.double(&mut buf, xx);
+                            cut_buf(&mut buf, lv.get(i));
+                            // Remove trailing "0"s __ IFF flag has no '#'
+                            if digits >= 0 {
+                                while buf.last() == Some(&b'0') {
+                                    buf.pop();
+                                }
+                            }
+                        } else {
+                            // iex >= -4: NOT "e-"; if iex >= dig, would have "e+"
+                            let prec = if iex >= dig { iex + 1 } else { dig };
+                            match parse_star(&form, width, Some(prec)) {
+                                Ok(s) => s.double(&mut buf, xx),
+                                Err(Signif::NotYet(m)) => {
+                                    return Ok(Err(Diag::error_call(
+                                        Some(call),
+                                        format!("robigo: {m} is not implemented yet"),
+                                    )));
+                                }
+                            }
+                            cut_buf(&mut buf, lv.get(i));
+                        }
+                    }
+                } else {
+                    let s = match &cached_spec {
+                        Some(s) => s,
+                        None => match parse_star(&form, width, Some(dig)) {
+                            Ok(s) => cached_spec.insert(s),
+                            Err(Signif::NotYet(m)) => {
+                                return Ok(Err(Diag::error_call(
+                                    Some(call),
+                                    format!("robigo: {m} is not implemented yet"),
+                                )));
+                            }
+                        },
+                    };
+                    s.double(&mut buf, xx);
+                    cut_buf(&mut buf, lv.get(i));
+                }
+                if fill.put(i, mk_char_checked(cx, &buf, Encoding::Native))? {
+                    return Ok(Ok(()));
+                }
+            }
+            Ok(Ok(()))
+        })
     })
 }
 
-/// Why `str_signif` stopped.
+/// Truncate `buf` to `i.strlen + 2` bytes as `do_formatC`'s `snprintf` buffer does.
+#[inline]
+fn cut_buf(buf: &mut Vec<u8>, len: i32) {
+    let cap = (len as i64 + 2).max(0) as usize;
+    buf.truncate(cap);
+}
+
+/// Why `parse_star` stopped.
 enum Signif {
-    Error(&'static str),
     NotYet(&'static str),
 }
 
-/// `printf(form, width, [prec,] x)` for one conversion spec `form` with
-/// its `*`s given: robigo-text's glibc `printf`.
-fn printf_star(form: &[u8], width: i32, prec: Option<i32>, out: &mut Vec<u8>, val: Val) -> Result<(), Signif> {
+/// Parse one conversion spec `form` with its `*`s given (`width`, optional
+/// `prec`) into `robigo_text::printf::Spec`.
+fn parse_star(form: &[u8], width: i32, prec: Option<i32>) -> Result<robigo_text::printf::Spec, Signif> {
     // flags, then '*' (width), then ".*" (precision), then the conversion
     let body = &form[1..];
     let star = body.iter().position(|&c| c == b'*').unwrap();
@@ -462,124 +707,5 @@ fn printf_star(form: &[u8], width: i32, prec: Option<i32>, out: &mut Vec<u8>, va
         None => rest,
     };
     spec.extend_from_slice(conv);
-    let s = robigo_text::printf::Spec::parse(&spec).ok_or(Signif::NotYet("formatC() with this 'flag'"))?;
-    match val {
-        Val::Int(i) => s.int(out, i),
-        Val::Dbl(d) => s.double(out, d),
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-enum Val {
-    Int(i32),
-    Dbl(f64),
-}
-
-/// `str_signif(x, n, type, width, digits, format, flag, result)`, each
-/// result cut to its buffer (`i.strlen + 2` bytes).
-// R: util.c:str_signif, str_signif_sexp
-#[allow(clippy::too_many_arguments)]
-fn str_signif(
-    x: Ref<'_>,
-    n: usize,
-    ty: &[u8],
-    width: i32,
-    digits: i32,
-    format: &[u8],
-    flag: &[u8],
-    lens: &[i32],
-) -> Result<Vec<Vec<u8>>, Signif> {
-    let dig = digits.wrapping_abs();
-    let do_fg = format == b"fg";
-    if width == 0 {
-        return Err(Signif::Error("width cannot be zero"));
-    }
-    let cut = |mut r: Vec<u8>, i: usize| {
-        let cap = (lens[i] as i64 + 2).max(0) as usize;
-        r.truncate(cap);
-        r
-    };
-    let mut res = Vec::with_capacity(n);
-    if format == b"d" {
-        let mut form = b"%".to_vec();
-        form.extend_from_slice(flag);
-        form.extend_from_slice(b"*d");
-        if ty != b"integer" {
-            return Err(Signif::Error("'type' must be \"integer\" for  \"d\"-format"));
-        }
-        let View::Int(v) = x.view() else { return Err(Signif::NotYet("formatC() of this type")) };
-        for i in 0..n {
-            let mut o = Vec::new();
-            printf_star(&form, width, None, &mut o, Val::Int(v.get(i)))?;
-            res.push(cut(o, i));
-        }
-        return Ok(res);
-    }
-    // --- floating point ---
-    let mut form = b"%".to_vec();
-    form.extend_from_slice(flag);
-    form.extend_from_slice(b"*.*");
-    if do_fg {
-        form.push(b'g');
-    } else {
-        form.extend_from_slice(format);
-    }
-    if ty != b"double" {
-        return Err(Signif::Error("'type' must be \"real\" for this format"));
-    }
-    let View::Real(v) = x.view() else { return Err(Signif::NotYet("formatC() of this type")) };
-    for i in 0..n {
-        let mut xx = v.get(i);
-        if !xx.is_finite() {
-            // (formatC's R code replaced every non-finite number)
-            return Err(Signif::NotYet("formatC() of a non-finite number"));
-        }
-        let mut o = Vec::new();
-        if do_fg {
-            // do smart "f"
-            if xx == 0.0 {
-                o.extend_from_slice(b"0");
-            } else {
-                let xxx = xx.abs();
-                let mut iex = (xxx.log10() + 1e-12).floor() as i32;
-                let x10 = robigo_numerics::fround::fround(xxx / 10f64.powi(iex) + 1e-12, (dig - 1) as f64);
-                if iex > 0 && x10 >= 10.0 {
-                    xx = x10 * 10f64.powi(iex);
-                    iex += 1;
-                }
-                if iex == -4 && xx.abs() < 1e-4 {
-                    // VERY rare case
-                    iex = -5;
-                }
-                if iex < -4 {
-                    // "g" would result in 'e-' representation: f0 is
-                    // "%<flag>.*f" (no width)
-                    let mut ff = b"%".to_vec();
-                    ff.extend_from_slice(flag);
-                    ff.extend_from_slice(format!(".{}f", dig - 1 - iex).as_bytes());
-                    let s = robigo_text::printf::Spec::parse(
-                        &ff.iter().copied().filter(|&c| c != b'\'' && c != b'I').collect::<Vec<u8>>(),
-                    )
-                    .ok_or(Signif::NotYet("formatC() with this 'flag'"))?;
-                    s.double(&mut o, xx);
-                    let mut o = cut(o, i);
-                    // Remove trailing "0"s __ IFF flag has no '#'
-                    if digits >= 0 {
-                        while o.last() == Some(&b'0') {
-                            o.pop();
-                        }
-                    }
-                    res.push(o);
-                    continue;
-                }
-                // iex >= -4: NOT "e-"; if iex >= dig, would have "e+"
-                printf_star(&form, width, Some(if iex >= dig { iex + 1 } else { dig }), &mut o, Val::Dbl(xx))?;
-            }
-        } else {
-            printf_star(&form, width, Some(dig), &mut o, Val::Dbl(xx))?;
-        }
-        res.push(cut(o, i));
-    }
-    Ok(res)
+    robigo_text::printf::Spec::parse(&spec).ok_or(Signif::NotYet("formatC() with this 'flag'"))
 }
