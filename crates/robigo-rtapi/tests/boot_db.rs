@@ -761,6 +761,149 @@ fn a_broken_compiler_database_ends_the_start_as_in_gnu_r() {
     assert_eq!((out.as_str(), err.as_str(), status), ("ran\n", PROFILE_STOPS, Some(0)));
 }
 
+/// Stage 0 (`library/base/R/base` and `library/base/R/Rprofile`), as GNU R
+/// 4.6.2 runs it (recorded on the oracle against its `R_HOME` copy): each
+/// file runs under its own top-level `SETJMP` (`setup_Rmainloop` and
+/// `R_LoadProfile`), so a runtime or parse error skips the rest of that
+/// file and is `check_session_exit`'s — halting a script (status 1,
+/// "Execution halted"), and continuing to the next step interactively or
+/// with `options(catch.script.errors = TRUE)`. A missing system profile is
+/// no profile; an unopenable base file is `R_Suicide` (status 2).
+#[test]
+fn stage0_errors_end_the_start_as_in_gnu_r() {
+    use std::os::unix::fs::PermissionsExt;
+    let tree = test_tree().join(".robigo/rt-home-db");
+    let dir = Scratch(db_tree::unique_dir(&std::env::temp_dir(), "robigo-boot-db-stage0"));
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_robigo-rt"), dir.join("bin/robigo-rt")).unwrap();
+    let ok = Command::new("cp").arg("-a").arg(&tree).arg(dir.join("lib/robigo")).status().unwrap().success();
+    assert!(ok, "copying {}", tree.display());
+    let bin = dir.join("bin/robigo-rt");
+    let base_path = dir.join("lib/robigo/library/base/R/base");
+    let prof_path = dir.join("lib/robigo/library/base/R/Rprofile");
+    let orig_base = std::fs::read(&base_path).unwrap();
+    let orig_prof = std::fs::read(&prof_path).unwrap();
+    let base_lines = orig_base.iter().filter(|&&b| b == b'\n').count();
+    let prof_lines = orig_prof.iter().filter(|&&b| b == b'\n').count();
+    let script_args: &[&std::ffi::OsStr] =
+        &["--vanilla".as_ref(), "--no-echo".as_ref(), "-e".as_ref(), "cat(\"script\\n\")".as_ref()];
+    let inter_args: &[&std::ffi::OsStr] = &[
+        "--no-readline".as_ref(),
+        "--interactive".as_ref(),
+        "--vanilla".as_ref(),
+        "--quiet".as_ref(),
+        "--no-save".as_ref(),
+    ];
+    let write_with = |p: &std::path::Path, orig: &[u8], extra: &[u8]| {
+        let mut buf = Vec::with_capacity(orig.len() + extra.len() + 1);
+        buf.extend_from_slice(orig);
+        if !buf.ends_with(b"\n") {
+            buf.push(b'\n');
+        }
+        buf.extend_from_slice(extra);
+        std::fs::write(p, buf).unwrap();
+    };
+
+    // 1. Runtime error in library/base/R/base: halts a script, continues
+    //    to Rprofile and the console interactively, or with catch.script.errors.
+    write_with(&base_path, &orig_base, b"cat(\"base before\\n\")\nstop(\"base boom\")\ncat(\"base after\\n\")\n");
+    write_with(&prof_path, &orig_prof, b"cat(\"sysprof ran\\n\")\n");
+    let r = boot_bin(&bin, script_args, &[]);
+    assert_eq!((r.0.as_str(), r.1.as_str(), r.2), ("base before\n", "Error: base boom\nExecution halted\n", Some(1)));
+    let r = boot_bin_reading(&bin, inter_args, &[], &[], Some(b"cat(\"console\\n\")\n1 + 1\n"));
+    assert_eq!(
+        (r.0.as_str(), r.1.as_str(), r.2),
+        ("base before\nsysprof ran\n> console\n> [1] 2\n> \n", "Error: base boom\n", Some(0))
+    );
+    write_with(
+        &base_path,
+        &orig_base,
+        b"options(catch.script.errors = TRUE)\ncat(\"base before\\n\")\nstop(\"base boom\")\ncat(\"base after\\n\")\n",
+    );
+    let r = boot_bin(&bin, script_args, &[]);
+    assert_eq!(
+        (r.0.as_str(), r.1.as_str(), r.2),
+        ("base before\nsysprof ran\nscript\n", "Error: base boom\n", Some(0))
+    );
+
+    // 2. Parse error in library/base/R/base: statements before it run,
+    //    halts a script, continues to Rprofile and the console interactively.
+    write_with(&base_path, &orig_base, b"cat(\"base before\\n\")\n)\ncat(\"base after\\n\")\n");
+    let line = base_lines + 2;
+    let parse_msg = format!("Error: {line}:1: unexpected ')'\n{line}: )\n      ^\n");
+    let r = boot_bin(&bin, script_args, &[]);
+    assert_eq!(
+        (r.0.as_str(), r.1.as_str(), r.2),
+        ("base before\n", format!("{parse_msg}Execution halted\n").as_str(), Some(1))
+    );
+    let r = boot_bin_reading(&bin, inter_args, &[], &[], Some(b"cat(\"console\\n\")\n"));
+    assert_eq!(
+        (r.0.as_str(), r.1.as_str(), r.2),
+        ("base before\nsysprof ran\n> console\n> \n", parse_msg.as_str(), Some(0))
+    );
+
+    // 3. System profile runtime and parse errors (base restored).
+    std::fs::write(&base_path, &orig_base).unwrap();
+    write_with(&prof_path, &orig_prof, b"cat(\"sys before\\n\")\nstop(\"sys boom\")\ncat(\"sys after\\n\")\n");
+    let r = boot_bin(&bin, script_args, &[]);
+    assert_eq!((r.0.as_str(), r.1.as_str(), r.2), ("sys before\n", "Error: sys boom\nExecution halted\n", Some(1)));
+    let r = boot_bin_reading(&bin, inter_args, &[], &[], Some(b"cat(\"console\\n\")\n"));
+    assert_eq!((r.0.as_str(), r.1.as_str(), r.2), ("sys before\n> console\n> \n", "Error: sys boom\n", Some(0)));
+    write_with(
+        &prof_path,
+        &orig_prof,
+        b"options(catch.script.errors = TRUE)\ncat(\"sys before\\n\")\nstop(\"sys boom\")\ncat(\"sys after\\n\")\n",
+    );
+    let r = boot_bin(&bin, script_args, &[]);
+    assert_eq!((r.0.as_str(), r.1.as_str(), r.2), ("sys before\nscript\n", "Error: sys boom\n", Some(0)));
+    write_with(&prof_path, &orig_prof, b"cat(\"sys before\\n\")\n)\ncat(\"sys after\\n\")\n");
+    let pline = prof_lines + 2;
+    let pmsg = format!("Error: {pline}:1: unexpected ')'\n{pline}: )\n      ^\nExecution halted\n");
+    let r = boot_bin(&bin, script_args, &[]);
+    assert_eq!((r.0.as_str(), r.1.as_str(), r.2), ("sys before\n", pmsg.as_str(), Some(1)));
+
+    // 4. Missing system profile: skipped without error; with JIT off the
+    //    script runs cleanly, with JIT on compiler fails to load as in GNU R.
+    std::fs::remove_file(&prof_path).unwrap();
+    let r = boot_bin(&bin, script_args, &[("R_ENABLE_JIT", "0".as_ref())]);
+    assert_eq!((r.0.as_str(), r.1.as_str(), r.2), ("script\n", "", Some(0)));
+    // (with Rprofile removed, GNU R 4.6.2 has no options(useFancyQuotes = TRUE)
+    // and prints ASCII `'compiler'`; robigo-rt still seeds Rprofile.unix's
+    // options in InitOptions for INTERIM(L5) M1's loader)
+    let r = boot_bin(&bin, script_args, &[]);
+    assert_eq!(
+        (r.0.as_str(), r.1.as_str(), r.2),
+        ("", "Error: package \u{2018}compiler\u{2019} does not have a namespace\nExecution halted\n", Some(1))
+    );
+
+    // 5. ROBIGO_BOOT_VERBOSE=1 on a clean boot (Rprofile restored).
+    std::fs::write(&prof_path, &orig_prof).unwrap();
+    let r = boot_bin(&bin, script_args, &[("ROBIGO_BOOT_VERBOSE", "1".as_ref())]);
+    assert_eq!((r.0.as_str(), r.2), ("script\n", Some(0)));
+    assert!(
+        r.1.starts_with("robigo-rt: stage 0: ")
+            && r.1.ends_with(" names.c entries not implemented\n")
+            && !r.1.contains("failed"),
+        "unexpected ROBIGO_BOOT_VERBOSE output: {:?}",
+        r.1
+    );
+
+    // 6. Unopenable library/base/R/base: R_Suicide, status 2 (mode 000 is
+    //    still readable by root, so unit test stage0_suicides_when_base_file_does_not_open
+    //    covers CI's root containers too).
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        std::fs::set_permissions(&base_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let r = boot_bin(&bin, script_args, &[]);
+        std::fs::set_permissions(&base_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            (r.0.as_str(), r.1.as_str(), r.2),
+            ("", "Fatal error: unable to open the base package\n\n", Some(2))
+        );
+    }
+}
+
 /// The boot heap's freeze in steady state (step 2, the foreman's clause):
 /// once a workload has run once, running it again collects without a
 /// frozen-reachability pass. Each shape runs a warm-up and then 0 or

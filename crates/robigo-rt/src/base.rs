@@ -957,10 +957,31 @@ mod tests {
         let sh = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/r-src.sh")).unwrap();
         assert!(sh.contains(&format!("sha256={RSRC_SHA256}\n")), "scripts/r-src.sh pins another tarball");
     }
+
+    /// `R_OpenLibraryFile("base") == NULL` is `R_Suicide("unable to open the
+    /// base package\n")`: runs under root too (CI's containers can read a
+    /// mode-000 file, and `has_base` stops a missing file before `stage0`).
+    #[test]
+    fn stage0_suicides_when_base_file_does_not_open() {
+        let dir = std::env::temp_dir().join(format!("robigo-stage0-missing-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut iso = robigo_rtcore::OwnedIsolate::new();
+        let cx = iso.cx();
+        crate::install(cx);
+        let (c, out, err) = robigo_rtcore::Console::capture();
+        let old = cx.replace_console(c);
+        let res = stage0(cx, &dir);
+        cx.replace_console(old);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(res, Ok(Stage0::Suicide));
+        assert_eq!(String::from_utf8(out.take()).unwrap(), "");
+        assert_eq!(String::from_utf8(err.take()).unwrap(), "Fatal error: unable to open the base package\n\n");
+    }
 }
 
 /// How [`stage0`] ended.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage0 {
     /// base's file and the system profile read (an error in one, in an
     /// interactive R, ended that file only): the top-level expressions
@@ -1020,10 +1041,10 @@ pub fn stage0(cx: &mut Cx, home: &Path) -> Result<Stage0, String> {
     // in the base namespace, the same way; a file that does not open is no
     // profile (setup_Rmainloop's next steps, the locks, .OptRequireMethods,
     // the site and user profiles, .First.sys and the JIT, are L5's boot)
-    if let Ok(bytes) = std::fs::read(home.join("library/base/R/Rprofile")) {
-        if !repl_file(cx, &bytes, |cx| cx.base_namespace(), &mut exprs) {
-            return Ok(Stage0::Halt);
-        }
+    if let Ok(bytes) = std::fs::read(home.join("library/base/R/Rprofile"))
+        && !repl_file(cx, &bytes, |cx| cx.base_namespace(), &mut exprs)
+    {
+        return Ok(Stage0::Halt);
     }
     lock_base(cx).map_err(|e| failed(cx, e))?;
     Ok(Stage0::Done { exprs, stubs })
@@ -1303,7 +1324,7 @@ fn repl_file(cx: &mut Cx, bytes: &[u8], rho: for<'g> fn(&'g Cx) -> Ref<'g>, expr
         };
         let ws = between(start, p.consumed_end());
         *exprs += 1;
-        if repl_eval_toplevel(cx, &e, None, &ws, rho, savestack, (1, 0)).is_err() {
+        if !repl_eval_toplevel(cx, &e, None, &ws, rho, savestack, (1, 0)) {
             return crate::repl::check_session_exit(cx);
         }
     }
@@ -1328,7 +1349,6 @@ pub fn lock_base(cx: &mut Cx) -> RResult<()> {
     })
 }
 
-
 /// The PARSE_OK body `R_ReplFile` and `Rf_ReplIteration` share, for one
 /// parsed top-level expression: `R_PPStackTop = savestack`, then at the top
 /// level `R_Visible = FALSE`, `eval(expr, rho)`, `.Last.value`, the value
@@ -1336,8 +1356,8 @@ pub fn lock_base(cx: &mut Cx) -> RResult<()> {
 /// warnings (`PrintWarnings`). `warnings` are the parse's (the lexer's),
 /// raised first. `pp` is the protections GNU R's loop holds
 /// during the evaluation and during the print (robigo-rtcore's ppacct).
-/// The error, if one ended it, comes back as its report's text (written
-/// where it was raised); a failure to lower the expression as `None`.
+/// False when an error or top-level jump ended it (reported where it was
+/// raised).
 // R: main.c:Rf_ReplIteration, R_ReplFile
 pub(crate) fn repl_eval_toplevel(
     cx: &mut Cx,
@@ -1347,7 +1367,7 @@ pub(crate) fn repl_eval_toplevel(
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
     savestack: i32,
     pp: (i32, i32),
-) -> Result<(), Option<String>> {
+) -> bool {
     // a C routine's imbalance does not outlive its statement
     cx.set_pp_top(savestack);
     cx.scope(|cx, s| {
@@ -1358,8 +1378,6 @@ pub(crate) fn repl_eval_toplevel(
         let env = s.root(cx, rho(cx));
         let o = s.out(cx);
         let or = o.root();
-        let mut msg = None;
-        let mut lowered = true;
         // R_Toplevel, the session's record: the handler and restart stacks
         // kept (the global calling handlers last from one expression to the
         // next), and an error's jump lands on it
@@ -1369,38 +1387,26 @@ pub(crate) fn repl_eval_toplevel(
                 // (R_Parse1Buffer, R_Parse1File), so an error there lands on it;
                 // so are the lexer's warnings (`warning()`, no call), which
                 // print with the statement's own
-                if let Err(err) = warnings.iter().try_for_each(|w| cx.warning(w)) {
-                    msg = Some(crate::repl::error_text(cx, &err));
-                    return Err(err);
-                }
-                let low = match src {
-                    Some(b) => crate::reader::lower_console(cx, b, expr, e),
-                    None => crate::reader::lower_one(cx, expr, e),
-                };
-                if let Err(err) = low {
-                    lowered = false;
-                    return Err(err);
+                warnings.iter().try_for_each(|w| cx.warning(w))?;
+                match src {
+                    Some(b) => crate::reader::lower_console(cx, b, expr, e)?,
+                    None => crate::reader::lower_one(cx, expr, e)?,
                 }
                 cx.set_visible(false);
-                let r = cx.with_pp_excess(pp.0, |cx| crate::eval(cx, er, env, o)).and_then(|()| {
-                    cx.set_last_value(or)?;
-                    if cx.visible() {
-                        cx.with_pp_excess(pp.1, |cx| crate::print::print_value_env(cx, or, env))?;
-                    }
-                    Ok(())
-                });
-                if let Err(e) = &r {
-                    msg = Some(crate::repl::error_text(cx, e));
+                cx.with_pp_excess(pp.0, |cx| crate::eval(cx, er, env, o))?;
+                cx.set_last_value(or)?;
+                if cx.visible() {
+                    cx.with_pp_excess(pp.1, |cx| crate::print::print_value_env(cx, or, env))?;
                 }
-                r
+                Ok(())
             })
             .expect("robigo: an exit that passed the top level");
         if !done {
             // a jump to the top level: the error (or restart) reported
             // where it was raised
-            return Err(if lowered { Some(msg.unwrap_or_default()) } else { None });
+            return false;
         }
         crate::repl::print_warnings(cx);
-        Ok(())
+        true
     })
 }
