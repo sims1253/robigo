@@ -163,9 +163,9 @@ fn arithmetic_matches_gnu_r() {
     replay("arith", include_str!("oracle/arith.out"), &[]);
 }
 
-/// relop's gaps: a list (coerceVectorList), and orderings of text that is
-/// not FCD to ICU's collation (robigo_text::collate).
-const RELOP_NOT_YET: &[&str] = &["bad.list", "I.nonfcd", "I.tibetan"];
+/// relop's gaps: orderings of text that is not FCD to ICU's collation
+/// (robigo_text::collate).
+const RELOP_NOT_YET: &[&str] = &["I.nonfcd", "I.tibetan"];
 
 /// min/max/pmin/pmax's: text that is not FCD to ICU's collation.
 const COLLATE_NOT_YET: &[&str] = &["max.nonfcd", "pmin.nonfcd"];
