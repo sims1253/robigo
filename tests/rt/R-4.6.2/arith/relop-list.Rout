@@ -1,0 +1,64 @@
+-- list(2) > 0 
+[1] TRUE
+-- list(2) >= 3 
+[1] FALSE
+-- 0 < list(2) 
+[1] TRUE
+-- list(1, 2, 3) == c(1, 2, 4) 
+[1]  TRUE  TRUE FALSE
+-- list(1.5) == 1L 
+[1] TRUE
+-- list(1.5) == 1.0 
+[1] FALSE
+-- list(2, 0, NA) == TRUE 
+[1]  TRUE FALSE    NA
+-- list('abc') == 1.0 
+warning: NAs introduced by coercion 
+[1] NA
+-- list(1:2, 'a') == c('1:2', 'a') 
+[1] TRUE TRUE
+-- list('a', 'b') == quote(a) 
+[1]  TRUE FALSE
+-- expression(x + 1) == 'x + 1' 
+[1] TRUE
+-- list(1, 2+1i) == c(1+0i, 2+1i) 
+[1] TRUE TRUE
+-- list(1) < 1i 
+error: invalid comparison with complex values 
+-- list(1:2) < 1i 
+error: 'list' object cannot be coerced to type 'complex' 
+-- list(1, 255) == as.raw(c(1, 255)) 
+[1] TRUE TRUE
+-- list(300) == as.raw(0) 
+warning: out-of-range values treated as 0 in coercion to raw 
+[1] TRUE
+-- list(1) == list(1) 
+error: comparison of these types is not implemented 
+-- expression(1) == expression(1) 
+error: comparison of these types is not implemented 
+-- list(1) == expression(1) 
+error: comparison of these types is not implemented 
+-- list(1:2) > 0 
+error: 'list' object cannot be coerced to type 'double' 
+-- expression(1) > 0 
+error: 'list' object cannot be coerced to type 'double' 
+-- list() == list() 
+logical(0)
+-- list(1:2) == integer(0) 
+logical(0)
+-- list() == 1 
+logical(0)
+-- expression() == 1 
+logical(0)
+-- list(1) == NULL 
+logical(0)
+-- mismatch before coerce err 
+warning: longer object length is not a multiple of shorter object length 
+error: 'list' object cannot be coerced to type 'double' 
+-- named list == 1:2 
+   a    b 
+TRUE TRUE 
+-- list matrix > 2 
+      c1   c2
+r1 FALSE TRUE
+r2 FALSE TRUE
