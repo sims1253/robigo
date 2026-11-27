@@ -691,7 +691,11 @@ pub fn do_mapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
         let fcall = match cv.sexptype() {
             NILSXP => s.root(cx, cx.nil()),
             VECSXP | EXPRSXP => {
-                s.capture(cx, |cx, o| cx.build(o, |cx| coerce::vector::vector_to_pair_list(cx, constant.bind(cx))))?
+                let o = s.out(cx);
+                let r = o.root();
+                let w = cx.build_with(o, |cx| coerce::vector::vector_to_pair_list(cx, constant.bind(cx)))?;
+                w.signal(cx)?;
+                r
             }
             // a pairlist passes the check but is not used: fcall stays
             // R_NilValue

@@ -772,21 +772,19 @@ fn pairs_to_list_root(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
 }
 
 /// `VectorToPairList(x)` then `SET_TYPEOF(x, LANGSXP)`: the list in root
-/// `x` as a call, its names as tags.
+/// `x` as a call, its non-empty names installed as tags via `installTrChar`.
 fn list_to_lang_root(cx: &mut Cx, x: Root<'_>) -> RResult<()> {
     cx.scope(|cx, s| {
+        let n = x.bind(cx).as_vector::<Ref<'_>>().unwrap().len();
+        let tags = crate::text::install_names(cx, s, x, n)?;
         let o = s.out(cx);
         let r = o.root();
         cx.build(o, |cx| {
             let l = x.bind(cx);
             let v = l.as_vector::<Ref<'_>>().unwrap();
-            let names = attrib::names(l).and_then(|n| n.as_vector::<Char<'_>>());
             let mut tail = cx.nil();
             for i in (0..v.len()).rev() {
-                let tag = match names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty()) {
-                    Some(n) => Some(cx.install(n.bytes())?),
-                    None => None,
-                };
+                let tag = tags.get(i).copied().flatten().map(|t| t.bind(cx).as_sym().unwrap());
                 tail = match (i, tag) {
                     (0, Some(t)) => cx.lcons_tagged(v.get(i), tail, t)?,
                     (0, None) => cx.lcons(v.get(i), tail)?,

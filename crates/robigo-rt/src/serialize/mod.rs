@@ -771,11 +771,8 @@ pub fn do_get_vars_from_frame(
         let vals: Vec<Root<'_>> = (0..n).map(|_| s.out(cx).root()).collect();
         for (i, &slot) in vals.iter().enumerate() {
             cx.scope(|cx, t| {
-                let c = vars.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
-                let name = robigo_rtbuiltins::text::to_native(robigo_rtbuiltins::coerce::text(c), cx.locale())
-                    .map(|b| b.into_owned())
-                    .unwrap_or_else(|_| c.bytes().to_vec());
-                let sym = cx.install_rooted(t, &name)?;
+                // R: serialize.c:R_getVarsFromFrame (`installTrChar(STRING_ELT(vars, i))`)
+                let sym = robigo_rtbuiltins::text::install_tr_char(cx, t, vars, i)?;
                 let o = t.out(cx);
                 let v = o.root();
                 cx.find_var_in_frame3(env, sym, true, o)?;

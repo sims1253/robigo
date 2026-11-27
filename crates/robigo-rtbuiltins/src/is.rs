@@ -134,28 +134,25 @@ fn is(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out<'_>, 
     cx.build_scalar(out, Lgl(ans as i32))
 }
 
-/// The names a list's element `i` carries as a tag (`ItemName`, `!StringBlank`):
-/// None when unnamed or blank.
-fn item_names(x: robigo_rtcore::Ref<'_>, n: usize) -> Vec<Option<Vec<u8>>> {
-    let nm = attrib::get_value(x, b"names").and_then(|nm| nm.as_vector::<robigo_rtcore::Char<'_>>());
-    (0..n).map(|i| nm.map(|v| v.get(i).bytes().to_vec()).filter(|b| !b.is_empty())).collect()
-}
-
-/// A call from the list `args[[0]]`'s elements, its tags the non-blank
-/// names (`allocList` filled, then `SET_TYPEOF(LANGSXP)`), the first
-/// element's tag dropped.
-fn call_from_list(cx: &mut Cx, args: Args<'_>, idx: usize, names: &[Option<Vec<u8>>], out: Out<'_>) -> RResult<()> {
-    let n = names.len();
-    cx.build(out, |cx| {
-        let v = args.get(cx, idx).as_vector::<robigo_rtcore::Ref<'_>>().unwrap();
-        let mut l = cx.nil();
-        for i in (1..n).rev() {
-            l = match &names[i] {
-                Some(b) => cx.cons_tagged(v.get(i), l, cx.install(b)?)?,
-                None => cx.cons(v.get(i), l)?,
-            };
-        }
-        cx.lcons(v.get(0), l)
+/// A call from the list `args[[idx]]`'s elements, its tags the non-blank
+/// names installed via `installTrChar` in forward order (`allocList`
+/// filled, then `SET_TYPEOF(LANGSXP)`), the first element's tag dropped
+/// afterwards (`SET_TAG(ans, R_NilValue)`).
+// R: coerce.c:do_ascall
+fn call_from_list(cx: &mut Cx, args: Args<'_>, idx: usize, n: usize, out: Out<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let tags = crate::text::install_names(cx, s, args.root(idx), n)?;
+        cx.build(out, |cx| {
+            let v = args.get(cx, idx).as_vector::<robigo_rtcore::Ref<'_>>().unwrap();
+            let mut l = cx.nil();
+            for i in (1..n).rev() {
+                l = match tags.get(i).copied().flatten() {
+                    Some(t) => cx.cons_tagged(v.get(i), l, t.bind(cx).as_sym().unwrap())?,
+                    None => cx.cons(v.get(i), l)?,
+                };
+            }
+            cx.lcons(v.get(0), l)
+        })
     })
 }
 
@@ -182,8 +179,7 @@ pub fn do_ascall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
             if n == 0 {
                 return Err(cx.error_call(Some(call), "invalid length 0 argument"));
             }
-            let names = item_names(x, n);
-            call_from_list(cx, args, 0, &names, out)
+            call_from_list(cx, args, 0, n, out)
         }
         LISTSXP => Err(crate::util::not_yet(cx, Some(call), "as.call() of a pairlist")),
         STRSXP => Err(cx.error_call(Some(call), "as.call(<character>) not feasible; consider str2lang(<char.>)")),
