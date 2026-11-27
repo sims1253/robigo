@@ -20,6 +20,7 @@ CHECKS=(
   "python3 scripts/test_corpus.py"
   "python3 scripts/test-oracle-diff.py"
   "python3 scripts/test-check-sexp-safety.py"
+  "python3 scripts/test-check-address-keys.py"
   "python3 scripts/test-wall13.py"
   "python3 scripts/test-pgo-build.py"
   "python3 scripts/test-prune-target.py"

@@ -209,10 +209,13 @@ impl Cx {
                 &format!("robigo: an environment of more than {MAX_SLOTS} variables is not implemented yet"),
             ));
         }
-        let mut seen = std::collections::HashSet::with_capacity(n);
-        // SAFETY: the cells are live binding cells (checked); their tags
-        // are read.
-        if !cells.iter().all(|c| seen.insert(unsafe { c.tag() }.addr())) {
+        let dup = {
+            let mut seen: std::collections::HashSet<Ref<'_>> = std::collections::HashSet::with_capacity(n);
+            // SAFETY: the cells are live binding cells (checked); their tags
+            // are live symbols for this shared borrow of `self`.
+            !cells.iter().all(|c| seen.insert(unsafe { Ref::from_sexp(c.tag(), self) }))
+        };
+        if dup {
             return Err(env_error(
                 self,
                 "robigo: a serialized frame that binds a variable twice is not implemented yet",

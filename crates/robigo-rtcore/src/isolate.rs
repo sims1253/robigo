@@ -203,6 +203,7 @@ impl Roots {
         // global environment itself is seen from the start, so a chain led
         // back to it, `parent.env(globalenv()) <- e` with e's parent the
         // global one in a profile, never offers it as a root)
+        // address-key: stop-the-world GC/freeze root walk on Roots (no &Cx); non-moving visitor asserted below
         let mut seen = std::collections::HashSet::from([e.addr()]);
         loop {
             // SAFETY: the global environment and its enclosures are live

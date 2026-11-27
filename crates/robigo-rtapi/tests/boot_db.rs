@@ -1031,3 +1031,73 @@ fn no_frozen_reachability_pass_in_steady_state() {
         }
     }
 }
+
+/// `serialize`'s address-keyed `refs`, `jit`, and `reps` tables
+/// (`robigo-rt/src/serialize/write.rs`) live across `&mut Cx`, because every
+/// collection restarts the walk and clears or rebuilds them. Serializing a
+/// shared structure (shared environment, JIT-compiled closure, and bytecode
+/// with shared language cells) whose `refhook` triggers a moving collection
+/// mid-walk under `ROBIGO_GC_MOVE=young:16` with `gctorture` must produce
+/// the exact bytes of an untortured run.
+#[test]
+fn serialize_mid_walk_moving_gc_matches_untortured_bytes() {
+    let script = r#"
+local({
+  e1 <- new.env()
+  e1$a <- 1:5
+  e1$b <- c("x", "y")
+  e2 <- new.env()
+  e2$a <- 6:10
+  f <- function(x) { s <- 0L; for (i in seq_len(x)) s <- s + i; s }
+  for (k in 1:4) f(3L)
+  q <- quote(x + 1)
+  bc <- .Internal(mkCode(c(12L, 16L, 0L, 1L), list(q, e2, q)))
+  hits <- 0L
+  hook <- function(x) {
+    if (identical(x, e2)) {
+      hits <<- hits + 1L
+      trash <- lapply(1:8, function(i) rep(i, 32L))
+      invisible(gc())
+      "e2-hook"
+    } else {
+      NULL
+    }
+  }
+  obj <- list(e1, f, e2, e1, f, bc)
+  raw <- serialize(obj, NULL, refhook = hook)
+  back <- unserialize(raw, refhook = function(s) e2)
+  stopifnot(
+    hits >= 1L,
+    identical(back[[1]], back[[4]]),
+    typeof(.Internal(bodyCode(back[[2]]))) == "bytecode",
+    typeof(.Internal(bodyCode(back[[5]]))) == "bytecode",
+    back[[2]](4L) == 10L,
+    back[[5]](4L) == 10L,
+    identical(back[[3]], e2)
+  )
+  cat(gctorture(), "\n", sep = "")
+  cat(paste(as.character(raw), collapse = ""), "\n", sep = "")
+})
+"#;
+    let run = |extra: &[(&str, &str)]| {
+        let env: Vec<(&str, &std::ffi::OsStr)> = extra.iter().map(|&(k, v)| (k, std::ffi::OsStr::new(v))).collect();
+        let (out, err, code) =
+            boot(&[std::ffi::OsStr::new("--vanilla"), std::ffi::OsStr::new("-e"), std::ffi::OsStr::new(script)], &env);
+        assert_eq!(code, Some(0), "failed (extra={extra:?}):\nstdout: {out}\nstderr: {err}");
+        let mut lines = out.lines();
+        let tortured = lines.next().expect("gctorture line").to_owned();
+        let hex = lines.next().expect("hex line").to_owned();
+        assert!(!hex.is_empty(), "empty serialized bytes");
+        (tortured, hex)
+    };
+    let (base_tortured, base_hex) = run(&[("ROBIGO_GC_FREEZE", "0")]);
+    assert_eq!(base_tortured, "FALSE");
+    let (move_tortured, move_hex) = run(&[
+        ("ROBIGO_GC_FREEZE", "0"),
+        ("ROBIGO_TORTURE_AFTER_START", "1"),
+        ("ROBIGO_GC_MOVE", "young:16"),
+        ("R_GCTORTURE", "1"),
+    ]);
+    assert_eq!(move_tortured, "TRUE");
+    assert_eq!(move_hex, base_hex, "serialized bytes differed under young:16 + gctorture");
+}

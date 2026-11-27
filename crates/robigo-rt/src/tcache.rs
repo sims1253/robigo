@@ -48,7 +48,7 @@ use crate::ir::{Ins, NO_CONST, Op, SPECIAL_INTERNAL};
 use format::{Entry, Imm, KRef, Key, Step};
 use robigo_heap::types::*;
 use robigo_heap::{NeedGc, Sexp};
-use robigo_rtcore::Cx;
+use robigo_rtcore::{Cx, Ref};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1043,7 +1043,7 @@ unsafe fn to_entry(
     args: &[(Sexp, Built)],
 ) -> Result<Entry, &'static str> {
     // SAFETY: the caller's contract.
-    let paths = unsafe { pool_paths(bc) };
+    let paths = unsafe { pool_paths(cx, bc) };
     let one = |b: &Built| -> Result<Entry, &'static str> {
         let consts = b
             .consts
@@ -1077,7 +1077,9 @@ unsafe fn to_entry(
     let mut e = one(b)?;
     e.source = source;
     for (arg, a) in args {
-        let Some(p) = paths.get(&(arg.as_ptr() as usize)) else {
+        // SAFETY: the caller's contract: `arg` is live for `cx`.
+        let key = unsafe { Ref::from_sexp(*arg, cx) };
+        let Some(p) = paths.get(&key) else {
             return Err("an argument code of a call not in the pool");
         };
         e.args.push((KRef::Pool(p.clone()), one(a)?));
@@ -1089,9 +1091,9 @@ unsafe fn to_entry(
 ///
 /// # Safety
 /// `x` is live.
-unsafe fn to_ref(
-    cx: &Cx,
-    paths: &HashMap<usize, Vec<Step>>,
+unsafe fn to_ref<'g>(
+    cx: &'g Cx,
+    paths: &HashMap<Ref<'g>, Vec<Step>>,
     imm: &[(Sexp, Imm)],
     x: Sexp,
     depth: usize,
@@ -1107,7 +1109,7 @@ unsafe fn to_ref(
             NILSXP => return Ok(KRef::Imm(Imm::Nil)),
             _ => {}
         }
-        if let Some(p) = paths.get(&(x.as_ptr() as usize)) {
+        if let Some(p) = paths.get(&Ref::from_sexp(x, cx)) {
             return Ok(KRef::Pool(p.clone()));
         }
         // (attributes are read of a vector only: a CHARSXP's word there is
@@ -1187,12 +1189,12 @@ unsafe fn to_ref(
 }
 
 /// Every object reachable from `bc`'s constants by [`Step`]s (into lists,
-/// cells, and nested byte code's constants), by address, with its first
+/// cells, and nested byte code's constants), by [`Ref`], with its first
 /// path. Environments and closures are not entered.
 ///
 /// # Safety
 /// `bc` is live.
-unsafe fn pool_paths(bc: Sexp) -> HashMap<usize, Vec<Step>> {
+unsafe fn pool_paths<'g>(cx: &'g Cx, bc: Sexp) -> HashMap<Ref<'g>, Vec<Step>> {
     let mut m = HashMap::new();
     let mut todo: Vec<(Sexp, Vec<Step>)> = Vec::new();
     // SAFETY: the caller's contract; each object is tested before its words
@@ -1206,10 +1208,11 @@ unsafe fn pool_paths(bc: Sexp) -> HashMap<usize, Vec<Step>> {
             todo.push((*(pool.std_data() as *const Sexp).add(i), vec![Step::Elt(i as u32)]));
         }
         while let Some((x, p)) = todo.pop() {
-            if p.len() > 64 || m.len() > 1 << 20 || m.contains_key(&(x.as_ptr() as usize)) {
+            let key = Ref::from_sexp(x, cx);
+            if p.len() > 64 || m.len() > 1 << 20 || m.contains_key(&key) {
                 continue;
             }
-            m.insert(x.as_ptr() as usize, p.clone());
+            m.insert(key, p.clone());
             let with = |s: Step| {
                 let mut q = p.clone();
                 q.push(s);
