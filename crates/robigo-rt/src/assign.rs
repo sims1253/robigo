@@ -215,10 +215,8 @@ pub(crate) fn ensure_local<'s>(
         let en = enclos(cx, s, rho);
         eval(cx, sym, en, vl)?;
         if vr.bind(cx) == cx.unbound() {
-            // SAFETY: a rooted symbol.
             // R: error(_("object '%s' not found"), EncodeChar(PRINTNAME(symbol)))
-            let msg =
-                format!("object '{}' not found", unsafe { crate::eval::sym_name_encoded(cx, sym.bind(cx).sexp()) });
+            let msg = format!("object '{}' not found", cx.encode_sym_name(sym.bind(cx).as_sym().unwrap()));
             return Err(cx.error(&msg));
         }
         dup(cx, s, vr)?;
