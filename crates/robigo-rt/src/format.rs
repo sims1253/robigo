@@ -7,23 +7,12 @@
 
 use crate::print::PrintData;
 use robigo_heap::types::*;
-use robigo_rtbuiltins::util::{as_logical, not_yet};
-use robigo_rtcore::{Args, Char, Cx, Diag, Encoding, LARGE, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, View};
+use robigo_rtbuiltins::util::{as_logical, mk_char_checked, not_yet, not_yet_diag};
+use robigo_rtcore::{Args, Char, Cx, Encoding, Lgl, Out, RResult, Rcomplex, Ref, Root, View};
 use robigo_text::{Str, num};
 use std::borrow::Cow;
 
 const NA: i32 = i32::MIN;
-
-/// `mk_char` upholding H's Rule 1 for `fill_strings`: refuse a `LARGE`
-/// (`>= 1 MiB`) CHARSXP request while a collection is due so the fill serves
-/// the safepoint before allocating it.
-#[inline]
-fn mk_char_checked<'g>(cx: &'g Cx, bytes: &[u8], enc: Encoding) -> Result<Char<'g>, NeedGc> {
-    if bytes.len() >= LARGE && cx.gc_due() {
-        return Err(NeedGc::new(CHARSXP, bytes.len()));
-    }
-    cx.mk_char(bytes, enc)
-}
 
 /// `asInteger(x)` with its coercion warnings.
 fn as_integer(cx: &mut Cx, x: Root<'_>) -> RResult<i32> {
@@ -583,10 +572,7 @@ pub fn do_formatc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                 let mut xx = v.get(i);
                 if !xx.is_finite() {
                     // (formatC's R code replaced every non-finite number)
-                    return Ok(Err(Diag::error_call(
-                        Some(call),
-                        "robigo: formatC() of a non-finite number is not implemented yet",
-                    )));
+                    return Ok(Err(not_yet_diag(Some(call), "formatC() of a non-finite number")));
                 }
                 buf.clear();
                 if do_fg {
@@ -614,10 +600,7 @@ pub fn do_formatc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                             ff.extend_from_slice(format!(".{}f", dig - 1 - iex).as_bytes());
                             let filtered: Vec<u8> = ff.into_iter().filter(|&c| c != b'\'' && c != b'I').collect();
                             let Some(s) = robigo_text::printf::Spec::parse(&filtered) else {
-                                return Ok(Err(Diag::error_call(
-                                    Some(call),
-                                    "robigo: formatC() with this 'flag' is not implemented yet",
-                                )));
+                                return Ok(Err(not_yet_diag(Some(call), "formatC() with this 'flag'")));
                             };
                             s.double(&mut buf, xx);
                             cut_buf(&mut buf, lv.get(i));
@@ -633,10 +616,7 @@ pub fn do_formatc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                             match parse_star(&form, width, Some(prec)) {
                                 Ok(s) => s.double(&mut buf, xx),
                                 Err(Signif::NotYet(m)) => {
-                                    return Ok(Err(Diag::error_call(
-                                        Some(call),
-                                        format!("robigo: {m} is not implemented yet"),
-                                    )));
+                                    return Ok(Err(not_yet_diag(Some(call), m)));
                                 }
                             }
                             cut_buf(&mut buf, lv.get(i));
@@ -648,10 +628,7 @@ pub fn do_formatc(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                         None => match parse_star(&form, width, Some(dig)) {
                             Ok(s) => cached_spec.insert(s),
                             Err(Signif::NotYet(m)) => {
-                                return Ok(Err(Diag::error_call(
-                                    Some(call),
-                                    format!("robigo: {m} is not implemented yet"),
-                                )));
+                                return Ok(Err(not_yet_diag(Some(call), m)));
                             }
                         },
                     };

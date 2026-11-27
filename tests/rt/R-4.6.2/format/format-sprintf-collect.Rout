@@ -13,4 +13,5 @@ sp-multi: 400 a=1 b=0002 a=399 b=0190
 sp-coerce: 400 c=v1 c=v400 i=1 i=400 
 sp-trunc: 2 xxxx ok xxxx 
 sp-warn-err: 1 invalid format '%d'; use format %s for character objects 
+sp-same-row-warn-err: 1 required resulting string length 9000 is greater than maximal 8192 
 sp-unused: 10 x=10 one argument not used by format 'x=%d' 

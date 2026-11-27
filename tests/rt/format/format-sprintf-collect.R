@@ -80,6 +80,17 @@ err2 <- tryCatch(
 )
 cat("sp-warn-err:", length(tw2), err2, "\n")
 
+# Same-row truncation warning before an error on row >= 1
+tw3 <- character(0)
+err3 <- tryCatch(
+  withCallingHandlers(
+    sprintf(c("%.4s", "%9000s"), c("ok", big)),
+    warning = function(w) { tw3 <<- c(tw3, conditionMessage(w)); invokeRestart("muffleWarning") }
+  ),
+  error = conditionMessage
+)
+cat("sp-same-row-warn-err:", length(tw3), err3, "\n")
+
 # Unused argument warning
 uw <- character(0)
 withCallingHandlers(

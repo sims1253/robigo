@@ -2,9 +2,9 @@
 //! glibc's `snprintf` does it ([`robigo_text::printf`]).
 
 use crate::coerce::vector::coerce;
-use crate::util::{not_yet, type2char};
+use crate::util::{mk_char_checked, not_yet, not_yet_diag, type2char};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Char, Cx, Diag, Encoding, LARGE, NeedGc, Out, RResult, Ref, Root, Scope, View};
+use robigo_rtcore::{Args, Char, Cx, Diag, Encoding, Out, RResult, Ref, Root, Scope, View};
 use robigo_text::printf::Spec;
 use std::borrow::Cow;
 
@@ -12,22 +12,6 @@ use std::borrow::Cow;
 const MAXLINE: usize = 8192;
 /// `MAXNARGS`.
 const MAXNARGS: usize = 100;
-
-/// `mk_char` upholding H's Rule 1 for `fill_strings`: refuse a `LARGE`
-/// (`>= 1 MiB`) CHARSXP request while a collection is due so the fill serves
-/// the safepoint before allocating it.
-#[inline]
-fn mk_char_checked<'g>(cx: &'g Cx, bytes: &[u8], enc: Encoding) -> Result<Char<'g>, NeedGc> {
-    if bytes.len() >= LARGE && cx.gc_due() {
-        return Err(NeedGc::new(CHARSXP, bytes.len()));
-    }
-    cx.mk_char(bytes, enc)
-}
-
-/// GNU R's "robigo: ... is not implemented yet" as a [`Diag`] against `call`.
-fn not_yet_diag<'r>(call: Root<'r>, what: &str) -> Diag<'r> {
-    Diag::error_call(Some(call), format!("robigo: {what} is not implemented yet"))
-}
 
 /// GNU R's truncation warning message for character strings longer than `MAXLINE`.
 fn trunc_warn_msg() -> String {
@@ -165,7 +149,7 @@ fn format_value<'r>(
             let c = fmtp[findspec(fmtp)];
             if x.is_finite() {
                 if c == b'a' || c == b'A' {
-                    return Err(not_yet_diag(call, "sprintf() with %a (hexadecimal floating point)"));
+                    return Err(not_yet_diag(Some(call), "sprintf() with %a (hexadecimal floating point)"));
                 }
                 conv_diag(output, bit, fmtp, |sp, o| sp.double(o, x))?;
             } else {
@@ -230,7 +214,9 @@ fn row_use_utf8(cx: &Cx, fc: Char<'_>, a: &[Root<'_>], lens: &[usize], ns: usize
 }
 
 /// Format row `ns >= 1` under `&Cx` (no coercions or R callbacks run after
-/// row 0), reusing `bufs`. Returns `(use_utf8, row_trunc_warns)`.
+/// row 0), reusing `bufs`. Returns `(use_utf8, row_trunc_warns)` on success,
+/// or `(diag, row_trunc_warns)` on failure so any truncation warnings counted
+/// earlier in the failing row are preserved ahead of the error.
 #[allow(clippy::too_many_arguments)]
 fn format_row_n<'r>(
     cx: &Cx,
@@ -242,7 +228,7 @@ fn format_row_n<'r>(
     used: &mut [bool],
     ns: usize,
     bufs: &mut RowBufs,
-) -> Result<(bool, usize), Diag<'r>> {
+) -> Result<(bool, usize), (Diag<'r>, usize)> {
     let nargs = a.len();
     let fv = fmt_arg.bind(cx).as_vector::<Char<'_>>().unwrap();
     let fc = fv.get(ns % nfmt);
@@ -250,7 +236,7 @@ fn format_row_n<'r>(
     let format = tr_cow(cx, fc, use_utf8);
     let n = format.len();
     if n > MAXLINE {
-        return Err(Diag::error(format!("'fmt' length exceeds maximal format length {MAXLINE}")));
+        return Err((Diag::error(format!("'fmt' length exceeds maximal format length {MAXLINE}")), 0));
     }
     bufs.output.clear();
     let mut cnt = 0usize;
@@ -271,29 +257,35 @@ fn format_row_n<'r>(
         }
         let chunk = cf[1..].iter().position(|c| b"diosfeEgGxXaA".contains(c)).unwrap_or(cf.len() - 1) + 2;
         if cur + chunk > n {
-            return Err(Diag::error(format!("unrecognised format specification '{}'", String::from_utf8_lossy(cf))));
+            return Err((
+                Diag::error(format!("unrecognised format specification '{}'", String::from_utf8_lossy(cf))),
+                row_trunc_warns,
+            ));
         }
         bufs.fmt.clear();
         bufs.fmt.extend_from_slice(&cf[..chunk]);
         cur += chunk;
         // %n$ and %nn$
-        let nthis = strip_arg_index(&mut bufs.fmt, 0, nargs)?;
+        let nthis = strip_arg_index(&mut bufs.fmt, 0, nargs).map_err(|d| (d, row_trunc_warns))?;
         // `*`
         let mut star: Option<i32> = None;
         if let Some(sp) = bufs.fmt.iter().position(|&c| c == b'*') {
-            let nstar = strip_arg_index(&mut bufs.fmt, sp, nargs)?;
+            let nstar = strip_arg_index(&mut bufs.fmt, sp, nargs).map_err(|d| (d, row_trunc_warns))?;
             let k = match nstar {
                 Some(k) => k,
                 None => {
                     if cnt >= nargs {
-                        return Err(Diag::error("too few arguments"));
+                        return Err((Diag::error("too few arguments"), row_trunc_warns));
                     }
                     cnt += 1;
                     cnt - 1
                 }
             };
             if bufs.fmt[sp + 1..].contains(&b'*') {
-                return Err(Diag::error("at most one asterisk '*' is supported in each conversion specification"));
+                return Err((
+                    Diag::error("at most one asterisk '*' is supported in each conversion specification"),
+                    row_trunc_warns,
+                ));
             }
             used[k] = true;
             let t = a[k].bind(cx);
@@ -302,14 +294,20 @@ fn format_row_n<'r>(
                 _ => i32::MIN,
             };
             if v == i32::MIN {
-                return Err(Diag::error("argument for '*' conversion specification must be a number"));
+                return Err((
+                    Diag::error("argument for '*' conversion specification must be a number"),
+                    row_trunc_warns,
+                ));
             }
             star = Some(v);
         }
         if bufs.fmt.last() == Some(&b'%') {
             // "%5%" and the like: copied as written (or with `*`)
             if star.is_some() {
-                return Err(not_yet_diag(call, "sprintf() of a '%' conversion with a '*' width"));
+                return Err((
+                    not_yet_diag(Some(call), "sprintf() of a '%' conversion with a '*' width"),
+                    row_trunc_warns,
+                ));
             }
             bufs.output.extend_from_slice(&bufs.fmt);
             continue;
@@ -318,7 +316,7 @@ fn format_row_n<'r>(
             Some(k) => k,
             None => {
                 if cnt >= nargs {
-                    return Err(Diag::error("too few arguments"));
+                    return Err((Diag::error("too few arguments"), row_trunc_warns));
                 }
                 cnt += 1;
                 cnt - 1
@@ -331,15 +329,18 @@ fn format_row_n<'r>(
             None => bufs.fmtp.extend_from_slice(&bufs.fmt),
         }
         if bufs.fmtp.len() > MAXLINE {
-            return Err(Diag::error(format!("'fmt' length exceeds maximal format length {MAXLINE}")));
+            return Err((
+                Diag::error(format!("'fmt' length exceeds maximal format length {MAXLINE}")),
+                row_trunc_warns,
+            ));
         }
         let this = a[k].bind(cx);
         let thislen = lens[k];
         debug_assert_eq!(thislen, crate::coerce::xlength(this));
         if thislen == 0 {
-            return Err(Diag::error("coercion has changed vector length to 0"));
+            return Err((Diag::error("coercion has changed vector length to 0"), row_trunc_warns));
         }
-        format_value(
+        if let Err(d) = format_value(
             cx,
             call,
             this,
@@ -350,7 +351,9 @@ fn format_row_n<'r>(
             &mut bufs.output,
             &mut bufs.bit,
             &mut row_trunc_warns,
-        )?;
+        ) {
+            return Err((d, row_trunc_warns));
+        }
     }
     Ok((use_utf8, row_trunc_warns))
 }
@@ -587,8 +590,10 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                             return Ok(Ok(()));
                         }
                     }
-                    Err(d) => {
-                        let d = if trunc_warns > 0 { d.after_warnings(vec![trunc_warn_msg(); trunc_warns]) } else { d };
+                    Err((d, row_warns)) => {
+                        let d = if row_warns > 0 { d.prepend_warnings(vec![trunc_warn_msg(); row_warns]) } else { d };
+                        let d =
+                            if trunc_warns > 0 { d.prepend_warnings(vec![trunc_warn_msg(); trunc_warns]) } else { d };
                         return Ok(Err(d));
                     }
                 }
