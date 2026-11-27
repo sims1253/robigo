@@ -840,7 +840,7 @@ pub(crate) fn run(cx: &mut Cx, act: &mut Act, mut pc: usize) -> RResult<Flow> {
                 cx.set_visible(true);
             }
             Op::MkClosure => {
-                mk_closure(cx, act, i.a, i.e, i.f, i.c, i.g == 1)?;
+                mk_closure(cx, act, i)?;
                 if i.fl & F_VIS != 0 {
                     cx.set_visible(true);
                 }
@@ -1506,11 +1506,37 @@ pub fn inherits(cx: &Cx, x: Ref<'_>, what: &[u8]) -> bool {
     false
 }
 
+/// MkClosure's srcref (keep.source = TRUE): the new closure in register
+/// `a` gets the "srcref" attribute `consts[ks]` when that is not NULL, as
+/// do_function and MAKECLOSURE set it. The very constant, no copy (the
+/// translation cache replays it from the record's own pool).
+// R: eval.c:do_function, MAKECLOSURE
+#[cold]
+#[inline(never)]
+fn closure_srcref(cx: &mut Cx, act: &Act, a: Reg, ks: u16) -> RResult<()> {
+    cx.retry_alloc(|cx| {
+        // SAFETY: the closure is rooted in register `a`, the srcref is a
+        // constant of the rooted code; a fresh closure has no attributes.
+        unsafe {
+            let srcref = View::of(act.obj(R_CODE)).k(ks);
+            if srcref == cx.nil().sexp() {
+                return Ok(());
+            }
+            let sym = cx.install(b"srcref")?.as_ref().sexp();
+            let node = cx.alloc_node_raw(LISTSXP, srcref, cx.nil().sexp(), sym)?;
+            act.obj(a).set_attrib(node);
+            Ok(())
+        }
+    })
+}
+
 /// `mkCLOSXP(formals, body, rho)` into register `a`, the formals and body
 /// the code's constants `kf` and `kb` (read afresh on each attempt: a
 /// refused allocation collects).
 // R: dstruct.c:mkCLOSXP
-fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, installed: bool) -> RResult<()> {
+fn mk_closure(cx: &mut Cx, act: &Act, i: Ins) -> RResult<()> {
+    // (the instruction whole: its fields read here, not at the call)
+    let (a, kf, kb, kc, ks, installed) = (i.a, i.e, i.f, i.c, i.b, i.g == 1);
     // SAFETY: the rooted code object's constant.
     let body = unsafe { View::of(act.obj(R_CODE)).k(kb) };
     // SAFETY: as above.
@@ -1534,6 +1560,9 @@ fn mk_closure(cx: &mut Cx, act: &Act, a: Reg, kf: u16, kb: u16, kc: u16, install
             x.set_extra(x.extra() | robigo_heap::extra::closure::BYTECODE);
         }
         act.set(a, Slot::object(x));
+    }
+    if ks != 0 {
+        closure_srcref(cx, act, a, ks)?;
     }
     if installed && crate::prims::state(cx).forced != Some(Profile::Eval) {
         // base's installed byte code: compiled as base's build compiled it

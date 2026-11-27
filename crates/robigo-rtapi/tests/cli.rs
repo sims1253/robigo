@@ -313,26 +313,6 @@ fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)])
     (o.stdout, err, o.status.code().unwrap_or(-1))
 }
 
-/// INTERIM(srcref): the interactive cases, whose start runs the system
-/// profile's `options(keep.source = interactive())`, which robigo-rt
-/// refuses until it keeps source references. Each is GNU R's transcript
-/// under M1's loader (`ROBIGO_RT_BOOT=m1`, which runs no profile: the
-/// console's tests), and under the default boot GNU R's but for the
-/// refusal's one line first on stderr ([`SRCREF_LINE`]); when source
-/// references exist the default boot's run passes, this check fails, and
-/// the case leaves the list.
-const SRCREF: &[&str] = &[
-    "interactive",
-    "interactive-nul",
-    "interactive-tb",
-    "interactive-then-e",
-    "interactive-then-f",
-    "interactive-then-quiet",
-];
-
-/// The profile's error under the default boot (INTERIM(srcref)).
-const SRCREF_LINE: &[u8] = db_tree::SRCREF_LINE.as_bytes();
-
 #[test]
 fn the_command_line_and_transcript_are_gnu_rs() {
     let dir: PathBuf = std::env::temp_dir().join(format!("robigo-rt-cli-{}", std::process::id()));
@@ -344,24 +324,7 @@ fn the_command_line_and_transcript_are_gnu_rs() {
     let long_src = &inputs.iter().find(|(n, _)| *n == "long.R").unwrap().1;
     let mut failed = Vec::new();
     for (name, args, stdin, out, err, status) in cases(long_src) {
-        if SRCREF.contains(&name) {
-            let rdb = run_env(&dir, &args, stdin, &[("ROBIGO_RT_BOOT", "")]);
-            let want = (out.clone(), [SRCREF_LINE, err].concat(), status);
-            if rdb != want {
-                failed.push(format!(
-                    "{name} (the default boot, INTERIM(srcref): GNU R's transcript but for the keep.source refusal \
-                     first; if it is GNU R's now, take it out of SRCREF): got\n  stdout {:?}\n  stderr {:?}\n  status {}",
-                    String::from_utf8_lossy(&rdb.0),
-                    String::from_utf8_lossy(&rdb.1),
-                    rdb.2
-                ));
-            }
-        }
-        let got = if SRCREF.contains(&name) {
-            run_env(&dir, &args, stdin, &[("ROBIGO_RT_BOOT", "m1")])
-        } else {
-            run(&dir, &args, stdin)
-        };
+        let got = run(&dir, &args, stdin);
         if got != (out.clone(), err.to_vec(), status) {
             failed.push(format!(
                 "{name}: got\n  stdout {:?}\n  stderr {:?}\n  status {}\nwant\n  stdout {:?}\n  stderr {:?}\n  status {status}",
@@ -498,69 +461,40 @@ fn the_console_answers_before_stdin_ends() {
     }
 }
 
-/// `options(keep.source = TRUE)` would have the console keep source
-/// references (gram.c's R_Parse1Buffer), which robigo-rt cannot yet: it is
-/// refused, where GNU R accepts it (so no oracle case). `R_KEEP_PKG_SOURCE=yes`
-/// starts `keep.source.pkgs` TRUE, as options.c's InitOptions does
-/// (`keep.source` is Common.R's `interactive()`).
+/// `options(keep.source = TRUE)` is accepted (options.c: a logical of
+/// length one, else "invalid value for 'keep.source'"), and the console
+/// keeps source references from the next statement on (R_Parse1Buffer).
+/// `R_KEEP_PKG_SOURCE=yes` starts `keep.source.pkgs` TRUE, as options.c's
+/// InitOptions does (`keep.source` is Common.R's `interactive()`), and
+/// sys.source then keeps them (loadNamespace's path).
 #[test]
-fn keep_source_true_is_refused_and_keep_pkg_source_read() {
-    let expr = "cat(tryCatch(options(keep.source = TRUE), error = conditionMessage), getOption('keep.source'), '\\n')";
+fn keep_source_true_is_accepted_and_keep_pkg_source_read() {
+    let expr = "options(keep.source = TRUE); f <- function(x)  x # k\nf; cat(getOption('keep.source'), '\n')";
     let (out, err, status) = run(&std::env::temp_dir(), &["--vanilla", "-e", expr], None);
-    assert_eq!(
-        String::from_utf8_lossy(&out),
-        "robigo: options(keep.source = TRUE) (source references) is not implemented yet FALSE \n"
-    );
+    // (the srcref ends at the body: the comment after it is not the
+    // function's; GNU R 4.6.2's output)
+    assert_eq!(String::from_utf8_lossy(&out), "function(x)  x\nTRUE \n");
     assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
     let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\\n')";
-    // (under M1's loader, which loads no compiler at the start: under the
-    // default boot the start's loadNamespace("compiler") sys.sources its
-    // loader file with keep.source.pkgs, INTERIM(srcref), below)
     for (v, want) in [("yes", "FALSE TRUE \n"), ("no", "FALSE FALSE \n"), ("YES", "FALSE FALSE \n")] {
-        let (out, _, status) = run_env(
-            &std::env::temp_dir(),
-            &["--vanilla", "-e", expr],
-            None,
-            &[("R_KEEP_PKG_SOURCE", v), ("ROBIGO_RT_BOOT", "m1")],
-        );
+        let (out, _, status) =
+            run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);
         assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (want, 0), "R_KEEP_PKG_SOURCE={v}");
     }
-    // INTERIM(srcref): the default boot with the JIT on halts at the start
-    // with the refusal (try's report in loadNamespace) before
-    // loadNamespace's own error; when source references exist this fails
-    // and the "yes" case above runs under the default boot
-    let (out, err, status) = run_env(
-        &std::env::temp_dir(),
-        &["--vanilla", "-e", expr],
-        None,
-        &[("R_KEEP_PKG_SOURCE", "yes"), ("ROBIGO_RT_BOOT", ""), ("R_ENABLE_JIT", "3")],
-    );
-    assert_eq!(
-        (String::from_utf8_lossy(&out).as_ref(), String::from_utf8_lossy(&err).as_ref(), status),
-        (
-            "",
-            format!(
-                "{}Error: unable to load R code in package \u{2018}compiler\u{2019}\nExecution halted\n",
-                db_tree::SRCREF_LINE
-            )
-            .as_str(),
-            1
-        )
-    );
-    // so sys.source (loadNamespace's) refuses where it sets the option, by
-    // design: the refusal at the point of use
+    // sys.source(keep.source = getOption("keep.source.pkgs")): the
+    // function it defines keeps its source
     let dir = std::env::temp_dir();
     let f = dir.join(format!("robigo-rt-cli-keep-pkg-source-{}.R", std::process::id()));
-    std::fs::write(&f, "x <- 1\n").unwrap();
-    let expr =
-        format!("cat(tryCatch(sys.source('{}', envir = new.env()), error = conditionMessage), '\\n')", f.display());
-    let (out, _, status) =
-        run_env(&dir, &["--vanilla", "-e", &expr], None, &[("R_KEEP_PKG_SOURCE", "yes"), ("ROBIGO_RT_BOOT", "m1")]);
-    let _ = std::fs::remove_file(&f);
-    assert_eq!(
-        (String::from_utf8_lossy(&out).as_ref(), status),
-        ("robigo: options(keep.source = TRUE) (source references) is not implemented yet \n", 0)
+    std::fs::write(&f, "g <- function(y)   y  # kept\n").unwrap();
+    let expr = format!(
+        "e <- new.env(); sys.source('{}', envir = e, keep.source = getOption('keep.source.pkgs')); e$g",
+        f.display()
     );
+    let (out, _, status) = run_env(&dir, &["--vanilla", "-e", &expr], None, &[("R_KEEP_PKG_SOURCE", "yes")]);
+    let _ = std::fs::remove_file(&f);
+    // (then its environment's line, an address)
+    let out = String::from_utf8_lossy(&out);
+    assert!(out.starts_with("function(y)   y\n<environment: 0x") && status == 0, "{out:?} {status}");
 }
 
 /// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error

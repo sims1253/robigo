@@ -7,7 +7,8 @@
 //! The console's statement-at-a-time parse (`R_Parse1Buffer`) is
 //! [`crate::repl`]'s; the base loader parses whole files ([`crate::base`]).
 
-use robigo_rtcore::{Char, Cx, Out, RResult, Ref, Root};
+use robigo_heap::types::{ENVSXP, LISTSXP, VECSXP};
+use robigo_rtcore::{Char, Cx, Encoding, Out, RResult, Ref, Root};
 
 /// GNU R's `ParseStatus` (R_ext/Parse.h), with its values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +135,255 @@ pub fn lower_all(cx: &mut Cx, exprs: &[robigo_syntax::Expr<'_>], known: bool, ou
             v.set(i, unsafe { Ref::from_sexp(x, cx) });
         }
         Ok(v.finish().into())
+    })
+}
+
+/// [`lower_all`] with source references (`keep.source = TRUE`): each
+/// expression lowered with its srcrefs (a `function`'s 4th element, each
+/// `{`'s list), and the expression vector given gram.y's attachSrcrefs
+/// attributes: "srcref" (one per expression), "srcfile" and "wholeSrcref".
+/// `src` is the text parsed; `srcfile` the srcfile environment, which a
+/// `#line N "file"` directive replaces from its next line on by a
+/// "srcfilealias" environment (gram.y's setParseFilename).
+// R: gram.y:R_Parse, attachSrcrefs, setParseFilename
+pub fn lower_all_src(
+    cx: &mut Cx,
+    src: &[u8],
+    exprs: &[robigo_syntax::Expr<'_>],
+    known: bool,
+    srcfile: Root<'_>,
+    in_string: &[bool],
+    out: Out<'_>,
+) -> RResult<()> {
+    let pos = crate::srcref::Positions::new(src, known, cx.locale().utf8, |i| in_string[i]);
+    cx.scope(|cx, s| {
+        let class = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"srcref", Encoding::Native)))?;
+        let files = src_files(cx, s, &pos, srcfile, known)?;
+        cx.build(out, |cx| {
+            let ctx = crate::lower::SrcCtx {
+                src,
+                pos: &pos,
+                files: files.iter().map(|(at, f)| (*at, f.bind(cx).sexp())).collect(),
+                class: class.bind(cx).sexp(),
+                attached: std::cell::Cell::new(false),
+            };
+            let mut v = cx.alloc_expression(exprs.len())?;
+            // SAFETY: fresh objects reachable from the vectors made here;
+            // nothing collects under `&Cx`.
+            #[allow(unsafe_code)]
+            unsafe {
+                let refs = cx.alloc_vector_raw(VECSXP, exprs.len())?;
+                for (i, e) in exprs.iter().enumerate() {
+                    let x = crate::lower::lower_in(cx, e, known, &ctx)?;
+                    v.set(i, Ref::from_sexp(x, cx));
+                    refs.set_elt(i, ctx.srcref(cx, e.span())?);
+                }
+                let v: Ref<'_> = v.finish().into();
+                let last = src.len().saturating_sub(1);
+                ctx.attach(cx, v.sexp(), refs, pos.end(), last)?;
+                Ok(v)
+            }
+        })
+    })
+}
+
+/// The srcfile in effect from each offset of a parse with source
+/// references: the parse's `srcfile`, then an alias environment per `#line`
+/// directive naming another file (setParseFilename), rooted in `s`.
+// R: gram.y:setParseFilename
+fn src_files<'s>(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'s>,
+    pos: &crate::srcref::Positions,
+    srcfile: Root<'_>,
+    known: bool,
+) -> RResult<Vec<(usize, Root<'s>)>> {
+    let first = s.root(cx, srcfile.bind(cx));
+    let mut files: Vec<(usize, Root<'s>)> = vec![(0, first)];
+    for a in &pos.aliases {
+        let cur = files.last().unwrap().1;
+        if filename_is(cx, cur, &a.filename) {
+            continue;
+        }
+        let env = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(cx.empty_env(), false, 0)))?;
+        // mkString2: a non-ASCII name of a parse known to be UTF-8 is marked so
+        let fenc = if known && !a.filename.is_ascii() { Encoding::Utf8 } else { Encoding::Native };
+        let name = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(&a.filename, fenc)))?;
+        let fsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into())))?;
+        let osym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"original")?.into())))?;
+        cx.define_var(fsym, name, env)?;
+        cx.define_var(osym, srcfile, env)?;
+        let klass = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let mut v = cx.alloc_vector::<Char<'_>>(2)?;
+                v.set(0, cx.mk_char(b"srcfilealias", Encoding::Native)?);
+                v.set(1, cx.mk_char(b"srcfile", Encoding::Native)?);
+                Ok(v.finish().into())
+            })
+        })?;
+        set_class(cx, env, klass);
+        files.push((a.from, env));
+    }
+    Ok(files)
+}
+
+/// The bytes inside the string tokens of `toks` (strings, raw strings,
+/// backquoted names): where StringValue double-counts a multibyte
+/// character's bytes and a `#line` is no directive. From the tokens, so a
+/// parse that fails has them up to its error too.
+pub(crate) fn string_bytes(toks: &[robigo_syntax::lexer::Token<'_>], src: &[u8]) -> Vec<bool> {
+    use robigo_syntax::lexer::Tok;
+    let mut m = vec![false; src.len()];
+    for t in toks {
+        let quoted = match &t.tok {
+            Tok::Str(_) => true,
+            Tok::Sym(_) => src.get(t.span.start as usize) == Some(&b'`'),
+            _ => false,
+        };
+        if quoted {
+            for b in m.iter_mut().take(t.span.end as usize).skip(t.span.start as usize) {
+                *b = true;
+            }
+        }
+    }
+    m
+}
+
+/// Srcfile `f`'s `filename` (`R_findVar`: `f` and its enclosures, no
+/// promise forced) when it is a character vector of positive length.
+// R: gram.y:setParseFilename, getFilename (their R_findVar of "filename")
+pub(crate) fn srcfile_filename(cx: &mut Cx, f: Root<'_>) -> Option<Vec<u8>> {
+    if f.bind(cx).sexptype() != ENVSXP {
+        return None;
+    }
+    cx.scope(|cx, s| {
+        let sym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into()))).ok()?;
+        let v = s.capture(cx, |cx, o| cx.find_var(sym, f, o)).ok()?;
+        let c = v.bind(cx).as_vector::<Char<'_>>()?;
+        (!c.is_empty()).then(|| c.get(0).bytes().to_vec())
+    })
+}
+
+/// Whether srcfile `f`'s `filename` is the string `name` (setParseFilename's
+/// test before it makes an alias).
+fn filename_is(cx: &mut Cx, f: Root<'_>, name: &[u8]) -> bool {
+    srcfile_filename(cx, f).is_some_and(|n| n == name)
+}
+
+/// The `filename` of a parse error at byte `at` of `src` (gram.y's
+/// getFilename): that of the srcfile in effect there, the parse's or a
+/// `#line` alias read before `at` (setParseFilename makes an alias only
+/// under an environment srcfile; else PS_SRCFILE is a string and the name
+/// "<input>"), "<input>" when it is not a non-empty string.
+// R: gram.y:getFilename, setParseFilename, processLineDirective
+pub(crate) fn error_filename(
+    cx: &mut Cx,
+    src: &[u8],
+    known: bool,
+    srcfile: Option<Root<'_>>,
+    in_string: &[bool],
+    at: usize,
+) -> Vec<u8> {
+    let Some(f) = srcfile.filter(|f| f.bind(cx).sexptype() == ENVSXP) else {
+        return crate::parse_cond::NO_SRCFILE.as_bytes().to_vec();
+    };
+    let pos = crate::srcref::Positions::new(src, known, cx.locale().utf8, |i| in_string.get(i) == Some(&true));
+    // the last alias read before `at` names the file (an alias's filename
+    // is its directive's string; one equal to the current name makes none,
+    // and the name is the same)
+    let name = match pos.aliases.iter().rev().find(|a| a.from <= at) {
+        Some(a) => Some(a.filename.clone()),
+        None => srcfile_filename(cx, f),
+    };
+    match name {
+        Some(n) if !n.is_empty() => n,
+        _ => crate::parse_cond::NO_SRCFILE.as_bytes().to_vec(),
+    }
+}
+
+/// `x`'s class attribute set to `klass` (an environment: its OBJECT bit).
+fn set_class(cx: &mut Cx, x: Root<'_>, klass: Root<'_>) {
+    // SAFETY: rooted objects of this heap; the attribute list is fresh.
+    #[allow(unsafe_code)]
+    let _ = cx.retry_alloc(|cx| unsafe {
+        let csym = cx.install(b"class")?.as_ref().sexp();
+        let a = cx.alloc_node_raw(LISTSXP, klass.bind(cx).sexp(), cx.nil().sexp(), csym)?;
+        let xs = x.bind(cx).sexp();
+        xs.set_attrib(a);
+        xs.set_object(true);
+        Ok(())
+    });
+}
+
+/// The console's statement `e`, parsed from the console buffer `src`,
+/// lowered into `out` as R_Parse1Buffer's code-generating parse makes it:
+/// with source references when `getOption("keep.source")` is TRUE (read
+/// once per statement, as GNU R does). Its srcfile is a new environment;
+/// when a srcref was attached (a `function`'s or a `{`'s), it becomes a
+/// "srcfilecopy" with `filename` "" and `lines`, the buffer as one string.
+// R: gram.y:R_Parse1Buffer
+pub fn lower_console(cx: &mut Cx, src: &[u8], e: &robigo_syntax::Expr<'_>, out: Out<'_>) -> RResult<()> {
+    let keep = cx.scope(|cx, s| {
+        let o = robigo_rtbuiltins::options::get_option(cx, s, b"keep.source")?;
+        robigo_rtbuiltins::util::as_bool(cx, o)
+    })?;
+    if !keep {
+        return lower_one(cx, e, out);
+    }
+    // known_to_be_utf8: the session's (mkString2's UTF-8 mark)
+    let known = cx.locale().utf8;
+    let text = robigo_syntax::lexable(src);
+    let source = robigo_syntax::Source::new(&text, src).known_to_be_utf8(known);
+    let in_string = match robigo_syntax::lexer::Lexer::new(source).lex() {
+        Ok(l) => string_bytes(&l.toks, src),
+        Err(_) => vec![false; src.len()],
+    };
+    let pos = crate::srcref::Positions::new(src, known, cx.locale().utf8, |i| in_string[i]);
+    cx.scope(|cx, s| {
+        let class = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"srcref", Encoding::Native)))?;
+        // NewEnvironment(R_NilValue, R_NilValue, R_EmptyEnv): PS_SRCFILE and
+        // PS_ORIGINAL
+        let srcfile = s.capture(cx, |cx, o| cx.build(o, |cx| cx.new_env(cx.empty_env(), false, 0)))?;
+        let files = src_files(cx, s, &pos, srcfile, known)?;
+        let mut attached = false;
+        let x = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let ctx = crate::lower::SrcCtx {
+                    src,
+                    pos: &pos,
+                    files: files.iter().map(|(at, f)| (*at, f.bind(cx).sexp())).collect(),
+                    class: class.bind(cx).sexp(),
+                    attached: std::cell::Cell::new(false),
+                };
+                let x = crate::lower::lower_in(cx, e, known, &ctx)?;
+                attached = ctx.attached.get();
+                // SAFETY: fresh; nothing collects under `&Cx`.
+                #[allow(unsafe_code)]
+                Ok(unsafe { Ref::from_sexp(x, cx) })
+            })
+        })?;
+        if attached {
+            let fsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"filename")?.into())))?;
+            let empty = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(b"", Encoding::Native)))?;
+            cx.define_var(fsym, empty, srcfile)?;
+            let lsym = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"lines")?.into())))?;
+            // mkChar2: UTF-8 marked when the parse is known to be UTF-8
+            let enc = if known && !src.is_ascii() { Encoding::Utf8 } else { Encoding::Native };
+            let lines = s.capture(cx, |cx, o| cx.build(o, |cx| cx.mk_string(src, enc)))?;
+            cx.define_var(lsym, lines, srcfile)?;
+            let klass = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut v = cx.alloc_vector::<Char<'_>>(2)?;
+                    v.set(0, cx.mk_char(b"srcfilecopy", Encoding::Native)?);
+                    v.set(1, cx.mk_char(b"srcfile", Encoding::Native)?);
+                    Ok(v.finish().into())
+                })
+            })?;
+            set_class(cx, srcfile, klass);
+        }
+        let x = x.bind(cx);
+        out.set(cx, x);
+        Ok(())
     })
 }
 

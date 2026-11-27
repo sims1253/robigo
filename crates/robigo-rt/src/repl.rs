@@ -262,7 +262,7 @@ pub fn run_console(cx: &mut Cx, input: &mut Input<'_>) -> bool {
                         error_at_top_after(cx, &warnings, crate::reader::NON_ASCII_REFUSED);
                         false
                     } else {
-                        eval_statement(cx, &exprs[0], &warnings, savestack)
+                        eval_statement(cx, &exprs[0], &iob, &warnings, savestack)
                     }
                 }
             };
@@ -571,9 +571,15 @@ pub(crate) fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syn
 /// environment at the top level, set `.Last.value`, print a visible value,
 /// then the deferred warnings. False when an error ended the statement.
 // R: main.c:Rf_ReplIteration
-fn eval_statement(cx: &mut Cx, expr: &robigo_syntax::Expr<'_>, warnings: &[String], savestack: i32) -> bool {
+fn eval_statement(
+    cx: &mut Cx,
+    expr: &robigo_syntax::Expr<'_>,
+    src: &[u8],
+    warnings: &[String],
+    savestack: i32,
+) -> bool {
     // under PROTECT(thisExpr), then PROTECT(value) for the print
-    crate::base::repl_eval_toplevel(cx, expr, warnings, |cx| cx.global_env(), savestack, (1, 2)).is_ok()
+    crate::base::repl_eval_toplevel(cx, expr, Some(src), warnings, |cx| cx.global_env(), savestack, (1, 2)).is_ok()
 }
 
 /// `R_dot_Last()`, which `R_CleanUp` runs when a session ends normally

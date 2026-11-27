@@ -1,0 +1,50 @@
+function(x) {
+  # a comment
+  y <- x + 1
+  y * 2
+}
+function(x) {
+  # a comment
+  y <- x + 1
+  y * 2
+}
+[1] "function (x) "  "{"              "    y <- x + 1" "    y * 2"     
+[5] "}"             
+function (x) 
+{
+    y <- x + 1
+    y * 2
+}
+{
+    y <- x + 1
+    y * 2
+}
+[1] "srcref"      "srcfile"     "wholeSrcref"
+[1] "function(x) {" "  # a comment" "  y <- x + 1"  "  y * 2"      
+[5] "}"            
+f <- function(x) {
+  # a comment
+  y <- x + 1
+  y * 2
+}
+expression(f <- function(x) {
+  # c
+  x
+}, g <- 3)
+f <- function(x) {
+    x
+}
+expression(f <- function(x) {
+  # c
+  x
+})
+[1] "structure(expression(f <- function(x) {"                                   
+[2] "    x"                                                                     
+[3] "}, g <- 3), srcfile = <environment>, wholeSrcref = structure(c(1L, "       
+[4] "0L, 6L, 0L, 0L, 0L, 1L, 6L), srcfile = <environment>, class = \"srcref\"))"
+function(x) {
+  # changed
+  x
+}
+function (x) 
+x

@@ -37,6 +37,9 @@ their "ok" line:
 - tests/bc-mutate/or2nd-inline.R: AND2ND/OR2ND with no AND1ST/OR1ST and an
   integer below, called directly and from a compiled caller's loop (an
   inline run), with GNU R 4.6.2's values.
+- tests/bc-mutate/makeclosure-srcref.R: MAKECLOSURE's third element (a
+  srcref, another object, NULL, none) as the closure's "srcref" attribute,
+  with GNU R 4.6.2's values, and the constant's index past the pool.
 """
 import argparse
 import concurrent.futures
@@ -62,6 +65,9 @@ FIXED = [
     # the VM and the inline run keep AND2ND/OR2ND's first operand as bcEval
     ("AND2ND/OR2ND's first operand, run directly and inline (tests/bc-mutate/or2nd-inline.R)",
      os.path.join(ROOT, "tests", "bc-mutate", "or2nd-inline.R"), {}, b"or2nd ok"),
+    # MAKECLOSURE's srcref element handed on as the very object
+    ("MAKECLOSURE's srcref element (tests/bc-mutate/makeclosure-srcref.R)",
+     os.path.join(ROOT, "tests", "bc-mutate", "makeclosure-srcref.R"), {}, b"makeclosure ok"),
 ]
 FIXED_OK = {script: ok for _, script, _, ok in FIXED}
 # the generator the corpus was found with: its entries name mutations of

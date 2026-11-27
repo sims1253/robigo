@@ -184,10 +184,6 @@ pub fn shell_word(s: &str) -> String {
     if plain { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
 }
 
-/// The system profile's refusal under the default boot, first on stderr (INTERIM(srcref): E's PR deletes it).
-pub const SRCREF_LINE: &str =
-    "Error in options(...) : \n  robigo: options(keep.source = TRUE) (source references) is not implemented yet\n";
-
 /// [`command_for`] of cargo's robigo-rt for this test binary.
 pub fn rt_command() -> Command {
     command_for(Path::new(env!("CARGO_BIN_EXE_robigo-rt")))

@@ -1541,15 +1541,13 @@ jobs:
           python3 scripts/test-perf-rt-bars.py
           main_flag=()
           if [ -f dist/robigo-rt-main ]; then
-            main_flag=(--main dist/robigo-rt-main)
+            main_flag=(--main dist/robigo-rt-main --main-trees dist/rt-trees-main.tar)
           fi
-          # (rt-bars' --boot: the rows' boot for both binaries. Still m1, M1's
-          # interim loader, though rdb is the default since L5's flip:
-          # rt-bars cannot yet point each binary at its own packed trees, as
-          # rt-starts does with --trees; X's harness PR does, and moves this
-          # to rdb. The starts judge rdb meanwhile; docs/verification.md)
-          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt "${main_flag[@]}" --gnur rt-gnur.json \
-            --boot m1 --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # (rt-bars' --boot: the rows' boot for both binaries, the default
+          # boot's since the flip; each binary boots the trees perf-rt-build
+          # packed for it, as in the starts below)
+          python3 scripts/perf.py rt-bars --robigo-rt dist/robigo-rt --trees dist/rt-trees.tar "${main_flag[@]}" \
+            --gnur rt-gnur.json --boot rdb --cycles --jobs "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       # The starts ([[startup]]): an invocation of their own, with its own
       # JSON, in this job. Each binary boots from the trees perf-rt-build
       # packed for it, over rt-startup.py's 15 layout shifts. Run when the bars

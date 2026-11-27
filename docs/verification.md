@@ -56,6 +56,7 @@ swept by process id.
 | conformance | `cargo test --release -p robigo-cli --test conformance` | `tests/r/**/*.R`: stdout, stderr, exit status as bytes, under the interpreter, the VM and the VM with JIT |
 | rt conformance | `scripts/rt-home-db.sh --robigo-rt BIN && cargo test --release -p robigo-rtapi --test conformance` | `robigo-rt` on `tests/rt/**/*.R` and its ratcheted `tests/r` cases, against GNU R 4.6.2 (§ Oracles, "Ratchet columns"), under its default boot: base from the database tree (`.robigo/rt-home-db`, which the default boot needs: without it a start exits 2 naming the script). `ROBIGO_RT_BOOT=m1` runs M1's loader instead (INTERIM(L5): rt-ci keeps three such steps until its deletion). The cases that load tools' native code (`.requires` `r-home-tools`) run when `robigo-rt`'s `R_HOME` tree has it: `scripts/rt-home.sh` builds `library/tools/libs/tools.so` from GNU R's sources against robigo's headers for the natives (`crates/robigo-rtapi/internal`), and `scripts/rt-home-db.sh`'s tree copies it, as the rt job does before its conformance steps |
 | rt boot from base's database | `scripts/rt-home-db.sh --robigo-rt "$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/release/robigo-rt" && ROBIGO_RT_HOME_DB=1 cargo test --release -p robigo-rtapi --test boot_db` | robigo-rt's default boot (`ROBIGO_RT_BOOT` unset, or `rdb`): `scripts/rt-home-db.sh` runs base's database rule (`makebasedb.R`, robigo-rt booted from base's source) into a copy of the `R_HOME` tree and installs `baseloader.R` as its base file; the test boots from it (byte-code closures, baseloader.R's symbols and S3 table, base's 1407 names) and pins the system profile's lines that still stop. The rt job runs both after the `R_HOME` tree |
+| rt translation cache with source references | `scripts/rt-srcref-tcache.sh --robigo-rt BIN` | a tree built with `R_KEEP_PKG_SOURCE=yes` (about 35 s with its cache): the compiler's functions keep their srcrefs through its database, and the closures `compiler:::make.codeBuf` makes (MAKECLOSURE) get the srcref that is their pool constant (`identical()`), with the translation cache on (hits), off and in verify mode (none differing). The cache reads only the tree's own databases, so no smaller database stands in. A release check, not yet in CI |
 | corpora | `scripts/corpus.py run NAME` | below |
 | fuzzing | `scripts/fuzz.py parse\|rds` | mutated scripts through `parse()` and mutated RDS files through `readRDS()`: a panic, failed allocation, stack overflow or fatal signal is a finding; reproducers land in `.robigo/fuzz/` |
 | builtin differential | `scripts/builtin-diff.py run [--only NAME]` | robigo-rt's builtins against GNU R 4.6.2 on generated inputs, out of process (§ Builtin differential) |
@@ -977,10 +978,12 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
    under the moving collector (E3, `ROBIGO_CONF_TIMEOUT` lets a case run
    longer there; a case whose `.requires` names `volume` is left out, for a
    smaller one that covers its paths; under gctorture the boot heap's
-   freeze is checked with `ROBIGO_GC_FREEZE_CHECK=16,16`: the direct loop
-   at every 16th collection, a full check, I2, I3 and the comparison with
-   the independent trace, at each process's freezing collection and every
-   16th check after, the step failing if none ran; the check names a
+   freeze is checked with `ROBIGO_GC_FREEZE_CHECK=16,16,524288`: the direct
+   loop at every 16th collection for a process's first 524,288 collections
+   and every 64th after (leaving 973 of 976 slice cases at their full rate
+   and cutting only the three >1M-collection outliers), a full check, I2, I3
+   and the comparison with the independent trace, at each process's freezing
+   collection and every 16th check after, the step failing if none ran; the check names a
    marking defect only at a full check, so an E3 failure with an
    unexplained error under the freeze is rerun with
    `ROBIGO_GC_FREEZE_CHECK=1` before anything else: a child marked but not
@@ -1196,16 +1199,17 @@ cargo +nightly miri test -p robigo-runtime --lib -- value::
         binaries, and GNU R's side, get the same shifts. The 0.5% rule
         applies to the median, and the report gives the range over the
         shifts (`docs/ledger/g3/2026-11-17-address-rows.md`).
-      - **The rows' boot (a known gap, INTERIM):** CI's rows and peak-RSS
-        runs still measure both binaries under `--boot m1`, M1's loader,
-        though the default boot is rdb since L5's flip: `rt-bars` cannot
-        yet point each binary at its own packed trees (`rt-starts` can,
-        with `--trees`/`--main-trees`), and a binary boots rdb only from
-        its tree. The starts judge rdb meanwhile. X's harness PR gives
-        `rt-bars` the trees and moves CI to `--boot rdb`; the flip's PR
-        body has the one-binary rdb-against-m1 rows table as its baseline.
-        Locally, `perf.py rt-bars --boot rdb` works when each binary's
-        build checkout has its tree (`scripts/rt-home-db.sh`).
+      - **The rows' boot:** CI's rows and peak-RSS runs measure both
+        binaries under `--boot rdb`, the default boot, each from the trees
+        its own build wrote: `perf.py rt-bars --trees`/`--main-trees` (the
+        tarballs perf-rt-build packs), through `rt-startup.py`'s
+        `trees_home`, the one function `rt-starts` uses. Without them
+        (locally) each binary's trees are built from this checkout's
+        sources. A binary whose trees lack its boot's tree (`BOOT_TREES`)
+        is refused by name before anything is measured.
+      - **Peak RSS against its caps:** each row's margin under every cap
+        is printed, and a margin under 5% (`RSS_MARGIN_WARN`) is warned
+        of, never failed: the next change that grows it fails the bar.
       - **The starts** (`[[startup]]` in `m1-bars.toml`, `perf.py rt-starts`, a
         step of its own in perf-rt with its own JSON):
         - each robigo-rt start (interim, rdb-jit, the default, and the

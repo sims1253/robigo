@@ -431,17 +431,6 @@ pub fn do_options(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, o
                         let msg = format!("options({} = )", String::from_utf8_lossy(nm));
                         return Err(not_yet(cx, Some(call), &msg));
                     }
-                    // keep.source: C reads it only where the console parses
-                    // (R_Parse1Buffer keeps source references when it is
-                    // TRUE, which robigo-rt's console cannot yet) and in
-                    // edit(); parse, source and sys.source read it in R.
-                    // FALSE is honoured as it is; TRUE is refused.
-                    if nm.as_slice() == b"keep.source"
-                        && let Some(k) = v
-                        && crate::util::as_logical(cx, k.bind(cx)) == 1
-                    {
-                        return Err(not_yet(cx, Some(call), "options(keep.source = TRUE) (source references)"));
-                    }
                     if v.is_none() && MANDATORY.contains(&std::str::from_utf8(nm).unwrap_or("")) {
                         let msg = format!("option '{}' cannot be deleted", String::from_utf8_lossy(nm));
                         return Err(cx.error(&msg));

@@ -719,6 +719,9 @@ class RtCi(unittest.TestCase):
         "scripts/rt-fail-alloc.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-tcache-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree",
         "scripts/rt-bc-mutate.py": "rt-ci's step after the tree; by hand, the checkout's tree (--checkout)",
+        "scripts/rt-srcref-tcache.sh": "writes its own tree with the binary it is given (R_KEEP_PKG_SOURCE=yes "
+                                       "scripts/rt-home-db.sh --robigo-rt BIN) and boots it at ROBIGO_RT_BOOT=rdb "
+                                       "through the install layout",
         ".github/workflows/ci.yml": "rt-ci's shards; rt-corpora unpacks dist/rt-trees.tar; perf-rt boots "
                                    "--trees dist/rt-trees.tar",
     }
@@ -1038,13 +1041,14 @@ class RtCi(unittest.TestCase):
         self.assertIn("--full-move and --shard select different steps", err.getvalue())
 
     def test_the_freeze_check_runs_at_every_collection_in_the_nightly_only(self):
-        # CI's E3 checks every 16th collection, with a full check (I2, I3,
+        # CI's E3 checks every 16th collection for the first 524,288
+        # collections and every 64th after, with a full check (I2, I3,
         # the comparison) at the first check and every 16th after; the
         # nightly's --freeze-check every one, its slow cases named and given
-        # longer (the ledger's amendment to #948 (c), and its note of
-        # 2026-11-24)
+        # longer (the ledger's amendment to #948 (c), and its notes of
+        # 2026-11-24 and 2026-11-27)
         e3 = [e for t, e, _ in rt.steps(["robigo-rt"]) if t == "conformance under gctorture (E3)"]
-        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK"], "16,16")
+        self.assertEqual(e3[0]["ROBIGO_GC_FREEZE_CHECK"], "16,16,524288")
         # the check runs on the freeze (on by default; named, so the step
         # does not depend on the default)
         self.assertEqual(e3[0]["ROBIGO_GC_FREEZE"], "1")
