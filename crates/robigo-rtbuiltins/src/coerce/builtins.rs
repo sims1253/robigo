@@ -34,17 +34,17 @@ pub fn do_asfunction(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
         return Err(cx.error("argument must have length at least 1"));
     }
     cx.scope(|cx, s| {
-        // the formals: elements 1..n-1, tagged by their non-empty names
+        // the formals: elements 1..n-1, tagged by their non-empty names via
+        // installTrChar in forward order (R: coerce.c:do_asfunction)
+        let tags = crate::text::install_names(cx, s, arglist, n - 1)?;
         let formals = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
                 let l = arglist.bind(cx);
                 let v = l.as_vector::<Ref<'_>>().unwrap();
-                let names = attrib::names(l).and_then(|nm| nm.as_vector::<Char<'_>>());
                 let mut p = cx.nil();
                 for i in (0..n - 1).rev() {
-                    let tag = names.map(|nm| nm.get(i)).filter(|c| !c.bytes().is_empty());
-                    p = match tag {
-                        Some(t) => cx.cons_tagged(v.get(i), p, cx.install(crate::coerce::text(t).bytes())?)?,
+                    p = match tags.get(i).copied().flatten() {
+                        Some(t) => cx.cons_tagged(v.get(i), p, t.bind(cx).as_sym().unwrap())?,
                         None => cx.cons(v.get(i), p)?,
                     };
                 }
@@ -702,9 +702,6 @@ pub fn do_docall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
     if envir.bind(cx).sexptype() != ENVSXP {
         return Err(cx.error("'envir' must be an environment"));
     }
-    if is_str && fun.bind(cx).as_vector::<Char<'_>>().unwrap().get(0).bytes() == b".Internal" {
-        return Err(cx.error("illegal usage"));
-    }
     if fun.bind(cx).sexptype() == SPECIALSXP {
         // PRIMNAME(fun) == ".Internal": the primitive object base binds
         let is_internal = cx.scope(|cx, s| {
@@ -718,29 +715,40 @@ pub fn do_docall(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, ou
         }
     }
     cx.scope(|cx, s| {
+        // R: coerce.c:do_docall: translateChar(STRING_ELT(fun, 0)), then
+        // check ".Internal" and install(str)
+        let froot = if is_str {
+            let fname = crate::text::native_elt(cx, fun, 0)?;
+            if fname == b".Internal" {
+                return Err(cx.error("illegal usage"));
+            }
+            if let Err(m) = crate::text::check_install_name(&fname) {
+                return Err(cx.error(&m));
+            }
+            cx.install_rooted(s, &fname)?
+        } else {
+            fun
+        };
+        let n = match a.bind(cx).view() {
+            View::List(v) => v.len(),
+            _ => 0,
+        };
+        let tags = crate::text::install_names(cx, s, a, n)?;
         let c = s.capture(cx, |cx, o| {
             cx.build(o, |cx| {
-                let f: Ref<'_> = if is_str {
-                    let c = fun.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
-                    cx.install(c.bytes())?.into()
-                } else {
-                    fun.bind(cx)
-                };
                 let av = a.bind(cx);
                 let items: Vec<Ref<'_>> = match av.view() {
                     View::List(v) => (0..v.len()).map(|i| v.get(i)).collect(),
                     _ => Vec::new(),
                 };
-                let names = attrib::names(av).and_then(|n| n.as_vector::<Char<'_>>());
                 let mut l = cx.nil();
                 for (i, &e) in items.iter().enumerate().rev() {
-                    let tag = names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty());
-                    l = match tag {
-                        Some(t) => cx.cons_tagged(e, l, cx.install(t.bytes())?)?,
+                    l = match tags.get(i).copied().flatten() {
+                        Some(t) => cx.cons_tagged(e, l, t.bind(cx).as_sym().unwrap())?,
                         None => cx.cons(e, l)?,
                     };
                 }
-                cx.lcons(f, l)
+                cx.lcons(froot.bind(cx), l)
             })
         })?;
         // under PROTECT(names) and PROTECT(c) (robigo_rtcore's ppacct)

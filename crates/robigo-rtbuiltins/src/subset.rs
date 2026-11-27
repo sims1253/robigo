@@ -287,17 +287,16 @@ fn pairs_to_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
 }
 
 /// A list as a call (`do_subset_dflt`'s LANGSXP result): its elements, its
-/// names as tags.
-fn list_to_call<'g>(cx: &'g Cx, l: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+/// names installed as tags via `installTrChar`.
+fn list_to_call<'g>(cx: &'g Cx, l: Ref<'g>) -> Result<crate::coerce::vector::Coerced<'g>, NeedGc> {
     let v = l.as_vector::<Ref<'g>>().unwrap();
-    let names = attrib::names(l).and_then(|n| n.as_vector::<Char<'g>>());
-    let na = cx.na_string();
+    let (tags, w) = match crate::coerce::vector::pairlist_tags(cx, attrib::names(l), v.len(), true)? {
+        Ok(r) => r,
+        Err(d) => return Ok(robigo_rtcore::Built::fail(d)),
+    };
     let mut tail = cx.nil();
     for i in (0..v.len()).rev() {
-        let tag = match names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty() && *c != na) {
-            Some(n) => Some(cx.install(n.bytes())?),
-            None => None,
-        };
+        let tag = tags.get(i).copied().flatten();
         tail = match (i, tag) {
             (0, Some(t)) => cx.lcons_tagged(v.get(i), tail, t)?,
             (0, None) => cx.lcons(v.get(i), tail)?,
@@ -305,7 +304,7 @@ fn list_to_call<'g>(cx: &'g Cx, l: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
             (_, None) => cx.cons(v.get(i), tail)?,
         };
     }
-    Ok(tail)
+    Ok(robigo_rtcore::Built::Done(tail, w))
 }
 
 /// The symbol `name`, after a collection if the table needs room.
@@ -430,10 +429,15 @@ pub fn do_subset_dflt(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_
         if t == LANGSXP {
             let o = s.out(cx);
             let r = o.root();
-            cx.build(o, |cx| {
+            let w = cx.build_with(o, |cx| {
                 let a = ansr.bind(cx);
-                if a.len().unwrap_or(0) == 0 { Ok(cx.nil()) } else { list_to_call(cx, a) }
+                if a.len().unwrap_or(0) == 0 {
+                    Ok(robigo_rtcore::Built::Done(cx.nil(), crate::coerce::vector::Warns::new()))
+                } else {
+                    list_to_call(cx, a)
+                }
             })?;
+            w.signal(cx)?;
             if r.bind(cx).sexptype() != NILSXP {
                 for name in [&b"dim"[..], b"dimnames"] {
                     if let Some(v) = attrib::get_value(ansr.bind(cx), name) {

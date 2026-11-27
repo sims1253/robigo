@@ -535,7 +535,7 @@ pub fn coerce<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8, keep_attrs: bool) -> Result<Co
                 done(r, w)
             }
             EXPRSXP | VECSXP => done(atomic_to_list(cx, v, ty)?, Warns::new()),
-            LISTSXP => done(atomic_to_pairlist(cx, v)?, Warns::new()),
+            LISTSXP => atomic_to_pairlist(cx, v),
             _ => fail(coerce_error(v, ty)),
         },
         _ => fail(coerce_error(v, ty)),
@@ -799,39 +799,66 @@ fn atomic_to_list<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Ref<'g>, NeedGc>
     Ok(r.finish().into())
 }
 
-/// `coerceToPairList(v)` of an atomic vector (names kept as `names`, which
-/// a pairlist shows as its tags).
-// R: coerce.c:coerceToPairList
-fn atomic_to_pairlist<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
-    let n = v.len().unwrap_or(0);
-    let mut head = cx.nil();
-    for i in (0..n).rev() {
-        head = cx.cons(scalar_elt(cx, v, i)?, head)?;
+/// Translate names `0..n` in forward order via `installTrChar`, skipping
+/// empty strings (and `NA_STRING` when `skip_na` is true). Any
+/// `unable to translate` warnings are collected in order; on an error,
+/// earlier warnings are prepended to the returned `Diag` so `Cx::raise`
+/// signals them first.
+// R: coerce.c:VectorToPairList, attrib.c:namesgets
+pub(crate) fn pairlist_tags<'g>(
+    cx: &'g Cx,
+    names: Option<Ref<'g>>,
+    n: usize,
+    skip_na: bool,
+) -> Result<Result<(Vec<Option<robigo_rtcore::Sym<'g>>>, Warns), Diag<'static>>, NeedGc> {
+    let Some(nm) = names.and_then(|nm| nm.as_vector::<Char<'g>>()) else {
+        return Ok(Ok((Vec::new(), Warns::new())));
+    };
+    let na = cx.na_string();
+    let loc = cx.locale();
+    let len = nm.len().min(n);
+    let mut tags = Vec::with_capacity(len);
+    let mut warns = Vec::new();
+    for i in 0..len {
+        let s = nm.get(i);
+        if s.bytes().is_empty() || (skip_na && s == na) {
+            tags.push(None);
+            continue;
+        }
+        let (name, untranslated) = match crate::text::install_tr_name(crate::coerce::text(s), loc) {
+            Ok(r) => r,
+            Err(d) => return Ok(Err(d.prepend_warnings(warns))),
+        };
+        if let Some(m) = untranslated {
+            warns.push(m);
+        }
+        tags.push(Some(cx.install_tr(s, &name)?));
     }
-    set_pairlist_names(cx, head, attrib::names(v))
+    let mut w = Warns::new();
+    for m in warns {
+        w.push_message(m);
+    }
+    Ok(Ok((tags, w)))
 }
 
-/// `setAttrib(ans, R_NamesSymbol, names)` on a fresh pairlist: the names
-/// become its tags (`""` and NA none). NULL stays NULL.
-fn set_pairlist_names<'g>(cx: &'g Cx, head: Ref<'g>, names: Option<Ref<'g>>) -> Result<Ref<'g>, NeedGc> {
-    let Some(nm) = names.and_then(|n| n.as_vector::<Char<'g>>()) else { return Ok(head) };
-    // rebuild with tags: the cells are fresh, but have no tag writer
-    let mut items = Vec::new();
-    let mut c = head.as_cons();
-    while let Some(cell) = c {
-        items.push(cell.car());
-        c = cell.cdr().as_cons();
-    }
-    let mut out = cx.nil();
-    for (i, &e) in items.iter().enumerate().rev() {
-        let s = nm.get(i);
-        out = if s == cx.na_string() || s.bytes().is_empty() {
-            cx.cons(e, out)?
-        } else {
-            cx.cons_tagged(e, out, cx.install(s.bytes())?)?
+/// `coerceToPairList(v)` of an atomic vector (names set via `namesgets`,
+/// which skips `""` and `NA_STRING` and installs tags via `installTrChar`).
+// R: coerce.c:coerceToPairList, attrib.c:namesgets
+fn atomic_to_pairlist<'g>(cx: &'g Cx, v: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
+    let n = v.len().unwrap_or(0);
+    let (tags, w) = match pairlist_tags(cx, attrib::names(v), n, true)? {
+        Ok(r) => r,
+        Err(d) => return Ok(Built::fail(d)),
+    };
+    let mut head = cx.nil();
+    for i in (0..n).rev() {
+        let e = scalar_elt(cx, v, i)?;
+        head = match tags.get(i).copied().flatten() {
+            Some(t) => cx.cons_tagged(e, head, t)?,
+            None => cx.cons(e, head)?,
         };
     }
-    Ok(out)
+    done(head, w)
 }
 
 /// `coerceSymbol(v, type)`.
@@ -1026,7 +1053,7 @@ fn coerce_vector_list<'g>(cx: &'g Cx, v: Ref<'g>, ty: u8) -> Result<Coerced<'g>,
             // VectorToPairList's copyMostAttrib onto a pairlist
             return fail("robigo: as.pairlist() of a list with attributes besides names is not implemented yet".into());
         }
-        return done(vector_to_pair_list(cx, v)?, Warns::new());
+        return vector_to_pair_list(cx, v);
     }
     let a = names_only(cx, attrib::names(v))?;
     let mut w = Warns::new();
@@ -1082,23 +1109,27 @@ pub fn pair_to_vector_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc
 }
 
 /// `VectorToPairList(x)`: a list's elements as a pairlist, its non-empty
-/// names as tags; for a list whose only attribute is its names (the
-/// caller refuses others: GNU R's `copyMostAttrib` onto a pairlist).
+/// names installed as tags via `installTrChar`; for a list whose only
+/// attribute is its names (the caller refuses others: GNU R's
+/// `copyMostAttrib` onto a pairlist).
 // R: coerce.c:VectorToPairList
-pub fn vector_to_pair_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
+pub fn vector_to_pair_list<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Coerced<'g>, NeedGc> {
     let items: Vec<Ref<'g>> = match x.view() {
         View::List(v) | View::Expr(v) => v.as_slice().unwrap().to_vec(),
         _ => Vec::new(),
     };
-    let names = attrib::names(x).and_then(|n| n.as_vector::<Char<'g>>());
+    let (tags, w) = match pairlist_tags(cx, attrib::names(x), items.len(), false)? {
+        Ok(r) => r,
+        Err(d) => return Ok(Built::fail(d)),
+    };
     let mut head = cx.nil();
     for (i, &e) in items.iter().enumerate().rev() {
-        head = match names.map(|n| n.get(i)).filter(|s| !s.bytes().is_empty()) {
-            Some(s) => cx.cons_tagged(e, head, cx.install(s.bytes())?)?,
+        head = match tags.get(i).copied().flatten() {
+            Some(t) => cx.cons_tagged(e, head, t)?,
             None => cx.cons(e, head)?,
         };
     }
-    Ok(head)
+    done(head, w)
 }
 
 /// `.Internal(asCharacterFactor(x))`.

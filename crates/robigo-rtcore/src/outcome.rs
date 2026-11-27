@@ -55,6 +55,13 @@ impl<'r> Diag<'r> {
         self
     }
 
+    /// Prepend `before` warnings ahead of any warnings already on `self`.
+    pub fn prepend_warnings(mut self, mut before: Vec<String>) -> Diag<'r> {
+        before.extend(self.before);
+        self.before = before;
+        self
+    }
+
     /// The same error as GNU R's `error(msg)` (the context's call), its
     /// warnings kept.
     pub fn into_error(self) -> Diag<'r> {

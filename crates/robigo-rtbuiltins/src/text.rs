@@ -178,6 +178,32 @@ pub fn install_tr_char<'s>(
     Ok(r)
 }
 
+/// Resolve the non-empty `names` of `x` (`0..n`) in forward order via
+/// `installTrChar` (`coerce.c`: `do_asfunction`, `do_ascall`, `do_docall`;
+/// `subassign.c`: `VectorToPairList`). Returns an empty `Vec` when `x` has
+/// no character `names` attribute.
+pub(crate) fn install_names<'s>(
+    cx: &mut Cx,
+    s: robigo_rtcore::Scope<'s>,
+    x: Root<'_>,
+    n: usize,
+) -> robigo_rtcore::RResult<Vec<Option<Root<'s>>>> {
+    let Some(nm) = crate::attrib::names(x.bind(cx))
+        .filter(|nm| nm.sexptype() == robigo_rtcore::types::STRSXP)
+        .map(|nm| s.root(cx, nm))
+    else {
+        return Ok(Vec::new());
+    };
+    let len = nm.bind(cx).len().unwrap_or(0).min(n);
+    let mut tags = Vec::with_capacity(len);
+    for i in 0..len {
+        let empty = nm.bind(cx).as_vector::<robigo_rtcore::Char<'_>>().unwrap().get(i).bytes().is_empty();
+        let tag = if empty { None } else { Some(install_tr_char(cx, s, nm, i)?) };
+        tags.push(tag);
+    }
+    Ok(tags)
+}
+
 /// `translateCharFP(s)`: `s` in the native encoding, or the message of GNU
 /// R's `error()`: a "bytes" string, or what iconv could not convert.
 // R: sysutils.c:translateCharFP, translateToNative(mustWork = 1)

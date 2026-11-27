@@ -1,0 +1,57 @@
+-- as.pairlist(alist) 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+[1] "caf<U+00E9>"
+-- as.pairlist(list) 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+$`caf<U+00E9>`
+[1] 1
+
+-- as.pairlist(list 2 names) 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+warning: unable to translate 'na<U+00EF>ve' to native encoding 
+[1] "caf<U+00E9>"  "na<U+00EF>ve"
+-- as.pairlist(list utf8+bytes) 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+error: translating strings with "bytes" encoding is not allowed 
+-- as.pairlist(list NA name) 
+[1] "NA"
+-- as.pairlist(atomic) 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+warning: unable to translate 'na<U+00EF>ve' to native encoding 
+[1] "caf<U+00E9>"  "na<U+00EF>ve"
+-- as.pairlist(atomic NA name) 
+-- as.pairlist(atomic bytes) 
+error: translating strings with "bytes" encoding is not allowed 
+-- as.function 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+[1] "caf<U+00E9>"
+-- as.function bytes 
+error: translating strings with "bytes" encoding is not allowed 
+-- as.call arg name 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+[1] ""            "caf<U+00E9>"
+-- as.call head name 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+warning: unable to translate 'na<U+00EF>ve' to native encoding 
+[1] ""             "na<U+00EF>ve"
+-- as.call bytes 
+error: translating strings with "bytes" encoding is not allowed 
+-- do.call arg name 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+[1] "caf<U+00E9>"
+-- do.call fun utf8 
+error: could not find function "caf<U+00E9>" 
+-- do.call fun bytes 
+error: translating strings with "bytes" encoding is not allowed 
+-- do.call arg bytes 
+error: translating strings with "bytes" encoding is not allowed 
+-- mapply MoreArgs utf8 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+     [,1]         
+[1,] ""           
+[2,] "caf<U+00E9>"
+-- call subassign utf8 
+warning: unable to translate 'caf<U+00E9>' to native encoding 
+[1] ""            ""            "caf<U+00E9>"
+-- call subassign bytes 
+error: translating strings with "bytes" encoding is not allowed 

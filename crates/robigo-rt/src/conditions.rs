@@ -1618,23 +1618,25 @@ fn find_call(cx: &Cx) -> Ref<'_> {
 }
 
 /// The message argument of `stop`/`warning`: `coerceVector(x, STRSXP)`'s
-/// first element translated, None when it is not a valid string
-/// (`isValidString`).
+/// first element translated (`translateChar`), None when it is not a valid
+/// string (`isValidString`).
+// R: errors.c:do_stop, do_warning
 fn message_arg(cx: &mut Cx, x: Root<'_>) -> RResult<Option<Vec<u8>>> {
     let v = x.bind(cx);
     if v.sexptype() == STRSXP {
-        let s = v.as_vector::<Char<'_>>().unwrap();
-        if s.is_empty() || s.get(0) == cx.na_string() {
-            // (NA_STRING is a valid string; an empty vector is not)
-            return Ok((!s.is_empty()).then(|| b"NA".to_vec()));
+        if v.len() == Some(0) {
+            return Ok(None);
         }
-        return Ok(Some(robigo_rtbuiltins::coerce::text(s.get(0)).bytes().to_vec()));
+        return robigo_rtbuiltins::text::native_elt(cx, x, 0).map(Some);
     }
-    match robigo_rtbuiltins::coerce::Strings::of(cx, v) {
-        Ok(s) if !s.is_empty() => Ok(Some(s.get_or_na(0).bytes().to_vec())),
+    let r = match robigo_rtbuiltins::coerce::Strings::of(cx, v) {
+        Ok(s) if !s.is_empty() => robigo_rtbuiltins::text::to_native(s.get_or_na(0), cx.locale())
+            .map(|b| Some(b.into_owned()))
+            .map_err(|e| e.to_string()),
         Ok(_) => Ok(None),
-        Err(e) => Err(cx.error(&e.message())),
-    }
+        Err(e) => Err(e.message().to_owned()),
+    };
+    r.map_err(|m| cx.error(&m))
 }
 
 /// `.Internal(stop(call., message))`.
