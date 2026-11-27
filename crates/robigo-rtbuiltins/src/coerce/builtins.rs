@@ -91,6 +91,16 @@ fn without_attrib<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Ref<'g>, NeedGc> {
     copy_with(cx, x, &none)
 }
 
+/// Replace `res` with a copy stripped of its attributes (rooting the previous
+/// value before [`Root::reset`] clears the slot to `NULL`).
+fn strip_attrib_in_place(cx: &mut Cx, res: Root<'_>) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let prev = s.root(cx, res.bind(cx));
+        let o = res.reset(cx);
+        cx.build(o, |cx| without_attrib(cx, prev.bind(cx)))
+    })
+}
+
 /// A copy of the vector `x` with the attributes `a` (none of `x`'s own).
 pub fn copy_with<'g>(cx: &'g Cx, x: Ref<'g>, a: &Attrs<'g>) -> Result<Ref<'g>, NeedGc> {
     macro_rules! plain {
@@ -147,8 +157,7 @@ pub(crate) fn ascommon(cx: &mut Cx, call: Root<'_>, u: Root<'_>, ty: u8, clear: 
         // stay: they are the pairlist's names)
         let rv = res.bind(cx);
         if clear && !matches!(rv.sexptype(), NILSXP | LISTSXP | LANGSXP) && attrib::has_attrib(rv) {
-            let o = res.reset(cx);
-            cx.build(o, |cx| without_attrib(cx, res.bind(cx)))?;
+            strip_attrib_in_place(cx, res)?;
         }
         return Ok(());
     }
@@ -293,8 +302,7 @@ pub fn do_asvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
     ascommon(cx, call, x, ty, clear, out)?;
     let rv = res.bind(cx);
     if !matches!(rv.sexptype(), NILSXP | LISTSXP | LANGSXP | VECSXP | EXPRSXP) && attrib::has_attrib(rv) {
-        let o = res.reset(cx);
-        cx.build(o, |cx| without_attrib(cx, res.bind(cx)))?;
+        strip_attrib_in_place(cx, res)?;
     }
     Ok(())
 }

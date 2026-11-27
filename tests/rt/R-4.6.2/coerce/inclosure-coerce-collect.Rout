@@ -7,3 +7,5 @@ names-pl: 300 1 300
 class-chr: character 400 1 400 
 class-lst: list 300 1 300 
 vec-pl: pairlist 300 TRUE TRUE 
+as-cplx: complex 1 1+0i TRUE 
+as-vec: integer 1,2,3 TRUE double 10,20 TRUE 

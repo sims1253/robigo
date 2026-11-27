@@ -40,3 +40,11 @@ cat("class-lst:", typeof(z), length(z), z[[1]], z[[300]], "\n")
 # 7. vector("pairlist", n) through Cx::fill_pairlist
 vp <- vector("pairlist", 300)
 cat("vec-pl:", typeof(vp), length(vp), is.null(vp[[1]]), is.null(vp[[300]]), "\n")
+
+# 8. ascommon / as.vector attribute stripping on attributed list & pairlist
+ac <- as.complex(structure(list(a = 1), .Names = "a"))
+cat("as-cplx:", typeof(ac), length(ac), ac[1], is.null(attributes(ac)), "\n")
+av1 <- as.vector(structure(list(1, 2, 3), myattr = 42), "integer")
+av2 <- as.vector(structure(as.pairlist(list(a = 10, b = 20)), myattr = 99), "double")
+cat("as-vec:", typeof(av1), paste(av1, collapse = ","), is.null(attributes(av1)),
+    typeof(av2), paste(av2, collapse = ","), is.null(attributes(av2)), "\n")
