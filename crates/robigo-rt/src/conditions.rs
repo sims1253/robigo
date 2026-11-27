@@ -1634,7 +1634,7 @@ fn message_arg(cx: &mut Cx, x: Root<'_>) -> RResult<Option<Vec<u8>>> {
             .map(|b| Some(b.into_owned()))
             .map_err(|e| e.to_string()),
         Ok(_) => Ok(None),
-        Err(e) => Err(e.message().to_owned()),
+        Err(e) => Err(e.message()),
     };
     r.map_err(|m| cx.error(&m))
 }

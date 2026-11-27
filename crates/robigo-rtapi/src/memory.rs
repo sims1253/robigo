@@ -481,6 +481,7 @@ entry! {
     /// `VectorToPairList(x)`.
     // R: coerce.c:VectorToPairList
     [1] fn Rf_VectorToPairList(x: Sexp) -> Sexp => |cx, s| {
+        safepoint(cx)?;
         let o = s.out(cx);
         let r = o.root();
         let w = cx.build_with(o, |cx| robigo_rtbuiltins::coerce::vector::vector_to_pair_list(cx, x.bind(cx)))?;
