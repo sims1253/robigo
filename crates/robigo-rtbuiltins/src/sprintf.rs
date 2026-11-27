@@ -2,15 +2,21 @@
 //! glibc's `snprintf` does it ([`robigo_text::printf`]).
 
 use crate::coerce::vector::coerce;
-use crate::util::{not_yet, type2char};
+use crate::util::{mk_char_checked, not_yet, not_yet_diag, type2char};
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Ref, Root, Scope, View};
+use robigo_rtcore::{Args, Char, Cx, Diag, Encoding, Out, RResult, Ref, Root, Scope, View};
 use robigo_text::printf::Spec;
+use std::borrow::Cow;
 
 /// `MAXLINE` (`MAXELTSIZE`): the longest format and conversion.
 const MAXLINE: usize = 8192;
 /// `MAXNARGS`.
 const MAXNARGS: usize = 100;
+
+/// GNU R's truncation warning message for character strings longer than `MAXLINE`.
+fn trunc_warn_msg() -> String {
+    format!("likely truncation of character string to {} characters", MAXLINE - 1)
+}
 
 /// `findspec(str)`: past `%` and the flags, width and precision.
 fn findspec(f: &[u8]) -> usize {
@@ -35,20 +41,321 @@ fn checkfmt(f: &[u8], pattern: &[u8]) -> bool {
 }
 
 /// `snprintf(bit, MAXLINE+1, fmt, ...)` through the parsed spec, with GNU
-/// R's length error.
-fn conv(cx: &mut Cx, out: &mut Vec<u8>, fmt: &[u8], f: impl FnOnce(&Spec, &mut Vec<u8>)) -> RResult<()> {
+/// R's length error, reusing `bit`.
+fn conv_diag<'r>(
+    out: &mut Vec<u8>,
+    bit: &mut Vec<u8>,
+    fmt: &[u8],
+    f: impl FnOnce(&Spec, &mut Vec<u8>),
+) -> Result<(), Diag<'r>> {
     let Some(spec) = Spec::parse(fmt) else {
-        let msg = format!("unrecognised format specification '{}'", String::from_utf8_lossy(fmt));
-        return Err(cx.error(&msg));
+        return Err(Diag::error(format!("unrecognised format specification '{}'", String::from_utf8_lossy(fmt))));
     };
-    let mut bit = Vec::new();
-    f(&spec, &mut bit);
+    bit.clear();
+    f(&spec, bit);
     if bit.len() > MAXLINE {
-        let msg = format!("required resulting string length {} is greater than maximal {}", bit.len(), MAXLINE);
-        return Err(cx.error(&msg));
+        return Err(Diag::error(format!(
+            "required resulting string length {} is greater than maximal {}",
+            bit.len(),
+            MAXLINE
+        )));
     }
-    out.extend_from_slice(&bit);
+    out.extend_from_slice(bit);
     Ok(())
+}
+
+/// Scratch buffers reused across rows of `do_sprintf`'s `fill_strings` loop.
+struct RowBufs {
+    output: Vec<u8>,
+    fmt: Vec<u8>,
+    fmtp: Vec<u8>,
+    bit: Vec<u8>,
+}
+
+impl RowBufs {
+    fn new() -> Self {
+        Self { output: Vec::new(), fmt: Vec::new(), fmtp: Vec::new(), bit: Vec::new() }
+    }
+}
+
+/// Parse an optional `%n$` / `%nn$` argument index starting at `pos` inside
+/// `fmt`, stripping it from `fmt` if present.
+fn strip_arg_index<'r>(fmt: &mut Vec<u8>, pos: usize, nargs: usize) -> Result<Option<usize>, Diag<'r>> {
+    let rest = &fmt[pos..];
+    if rest.len() > 3 && (b'1'..=b'9').contains(&rest[1]) {
+        let v1 = (rest[1] - b'0') as usize;
+        if rest[2] == b'$' {
+            if v1 > nargs {
+                return Err(Diag::error(format!("reference to non-existent argument {v1}")));
+            }
+            fmt.drain(pos + 1..pos + 3);
+            return Ok(Some(v1 - 1));
+        } else if rest[2].is_ascii_digit() && rest[3] == b'$' {
+            let v = 10 * v1 + (rest[2] - b'0') as usize;
+            if v > nargs {
+                return Err(Diag::error(format!("reference to non-existent argument {v}")));
+            }
+            fmt.drain(pos + 1..pos + 4);
+            return Ok(Some(v - 1));
+        }
+    }
+    Ok(None)
+}
+
+/// Format one already-coerced argument `this` at row `ns` into `output`.
+#[allow(clippy::too_many_arguments)]
+fn format_value<'r>(
+    cx: &Cx,
+    call: Root<'r>,
+    this: Ref<'_>,
+    ns: usize,
+    thislen: usize,
+    fmtp: &mut Vec<u8>,
+    use_utf8: bool,
+    output: &mut Vec<u8>,
+    bit: &mut Vec<u8>,
+    trunc_warns: &mut usize,
+) -> Result<(), Diag<'r>> {
+    match this.view() {
+        View::Lgl(v) => {
+            let x = v.get(ns % thislen).0;
+            if checkfmt(fmtp, b"di") {
+                return Err(invalid_format_diag(fmtp, "use format %d or %i for logical objects"));
+            }
+            if x == i32::MIN {
+                *fmtp.last_mut().unwrap() = b's';
+                conv_diag(output, bit, fmtp, |sp, o| sp.string(o, b"NA"))?;
+            } else {
+                conv_diag(output, bit, fmtp, |sp, o| sp.int(o, x))?;
+            }
+        }
+        View::Int(v) => {
+            let x = v.get(ns % thislen);
+            if checkfmt(fmtp, b"dioxX") {
+                return Err(invalid_format_diag(fmtp, "use format %d, %i, %o, %x or %X for integer objects"));
+            }
+            if x == i32::MIN {
+                *fmtp.last_mut().unwrap() = b's';
+                conv_diag(output, bit, fmtp, |sp, o| sp.string(o, b"NA"))?;
+            } else {
+                conv_diag(output, bit, fmtp, |sp, o| sp.int(o, x))?;
+            }
+        }
+        View::Real(v) => {
+            let x = v.get(ns % thislen);
+            if checkfmt(fmtp, b"aAfeEgG") {
+                return Err(invalid_format_diag(fmtp, "use format %f, %e, %g or %a for numeric objects"));
+            }
+            let c = fmtp[findspec(fmtp)];
+            if x.is_finite() {
+                if c == b'a' || c == b'A' {
+                    return Err(not_yet_diag(Some(call), "sprintf() with %a (hexadecimal floating point)"));
+                }
+                conv_diag(output, bit, fmtp, |sp, o| sp.double(o, x))?;
+            } else {
+                match fmtp.iter().position(|&ch| ch == b'.') {
+                    Some(p) => {
+                        fmtp.truncate(p);
+                        fmtp.push(b's');
+                    }
+                    None => *fmtp.last_mut().unwrap() = b's',
+                }
+                let has = |ch: u8| fmtp.contains(&ch);
+                let txt: &[u8] = if robigo_text::is_na(x) {
+                    if has(b' ') { b" NA" } else { b"NA" }
+                } else if x.is_nan() {
+                    if has(b' ') { b" NaN" } else { b"NaN" }
+                } else if x > 0.0 {
+                    if has(b'+') {
+                        b"+Inf"
+                    } else if has(b' ') {
+                        b" Inf"
+                    } else {
+                        b"Inf"
+                    }
+                } else {
+                    b"-Inf"
+                };
+                conv_diag(output, bit, fmtp, |sp, o| sp.string(o, txt))?;
+            }
+        }
+        View::Str(v) => {
+            if checkfmt(fmtp, b"s") {
+                return Err(invalid_format_diag(fmtp, "use format %s for character objects"));
+            }
+            let ss = tr_cow(cx, v.get(ns % thislen), use_utf8);
+            if fmtp.get(1) != Some(&b's') {
+                if ss.len() > MAXLINE {
+                    *trunc_warns += 1;
+                }
+                conv_diag(output, bit, fmtp, |sp, o| sp.string(o, &ss))?;
+            } else {
+                output.extend_from_slice(&ss);
+            }
+        }
+        _ => return Err(Diag::error("unsupported type")),
+    }
+    Ok(())
+}
+
+/// Whether row `ns` uses UTF-8 output encoding (`use_UTF8` in `sprintf.c`).
+fn row_use_utf8(cx: &Cx, fc: Char<'_>, a: &[Root<'_>], lens: &[usize], ns: usize) -> bool {
+    if fc.enc() == Encoding::Utf8 {
+        return true;
+    }
+    for (i, r) in a.iter().enumerate() {
+        if let View::Str(v) = r.bind(cx).view()
+            && v.get(ns % lens[i]).enc() == Encoding::Utf8
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Format row `ns >= 1` under `&Cx` (no coercions or R callbacks run after
+/// row 0), reusing `bufs`. Returns `(use_utf8, row_trunc_warns)` on success,
+/// or `(diag, row_trunc_warns)` on failure so any truncation warnings counted
+/// earlier in the failing row are preserved ahead of the error.
+#[allow(clippy::too_many_arguments)]
+fn format_row_n<'r>(
+    cx: &Cx,
+    call: Root<'r>,
+    fmt_arg: Root<'_>,
+    nfmt: usize,
+    a: &[Root<'_>],
+    lens: &[usize],
+    used: &mut [bool],
+    ns: usize,
+    bufs: &mut RowBufs,
+) -> Result<(bool, usize), (Diag<'r>, usize)> {
+    let nargs = a.len();
+    let fv = fmt_arg.bind(cx).as_vector::<Char<'_>>().unwrap();
+    let fc = fv.get(ns % nfmt);
+    let use_utf8 = row_use_utf8(cx, fc, a, lens, ns);
+    let format = tr_cow(cx, fc, use_utf8);
+    let n = format.len();
+    if n > MAXLINE {
+        return Err((Diag::error(format!("'fmt' length exceeds maximal format length {MAXLINE}")), 0));
+    }
+    bufs.output.clear();
+    let mut cnt = 0usize;
+    let mut cur = 0usize;
+    let mut row_trunc_warns = 0usize;
+    while cur < n {
+        let cf = &format[cur..];
+        if format[cur] != b'%' {
+            let chunk = cf.iter().position(|&c| c == b'%').unwrap_or(cf.len());
+            bufs.output.extend_from_slice(&cf[..chunk]);
+            cur += chunk;
+            continue;
+        }
+        if cur < n - 1 && format[cur + 1] == b'%' {
+            bufs.output.push(b'%');
+            cur += 2;
+            continue;
+        }
+        let chunk = cf[1..].iter().position(|c| b"diosfeEgGxXaA".contains(c)).unwrap_or(cf.len() - 1) + 2;
+        if cur + chunk > n {
+            return Err((
+                Diag::error(format!("unrecognised format specification '{}'", String::from_utf8_lossy(cf))),
+                row_trunc_warns,
+            ));
+        }
+        bufs.fmt.clear();
+        bufs.fmt.extend_from_slice(&cf[..chunk]);
+        cur += chunk;
+        // %n$ and %nn$
+        let nthis = strip_arg_index(&mut bufs.fmt, 0, nargs).map_err(|d| (d, row_trunc_warns))?;
+        // `*`
+        let mut star: Option<i32> = None;
+        if let Some(sp) = bufs.fmt.iter().position(|&c| c == b'*') {
+            let nstar = strip_arg_index(&mut bufs.fmt, sp, nargs).map_err(|d| (d, row_trunc_warns))?;
+            let k = match nstar {
+                Some(k) => k,
+                None => {
+                    if cnt >= nargs {
+                        return Err((Diag::error("too few arguments"), row_trunc_warns));
+                    }
+                    cnt += 1;
+                    cnt - 1
+                }
+            };
+            if bufs.fmt[sp + 1..].contains(&b'*') {
+                return Err((
+                    Diag::error("at most one asterisk '*' is supported in each conversion specification"),
+                    row_trunc_warns,
+                ));
+            }
+            used[k] = true;
+            let t = a[k].bind(cx);
+            let v = match t.as_vector::<i32>() {
+                Some(v) if t.sexptype() == INTSXP && !v.is_empty() => v.get(ns % v.len()),
+                _ => i32::MIN,
+            };
+            if v == i32::MIN {
+                return Err((
+                    Diag::error("argument for '*' conversion specification must be a number"),
+                    row_trunc_warns,
+                ));
+            }
+            star = Some(v);
+        }
+        if bufs.fmt.last() == Some(&b'%') {
+            // "%5%" and the like: copied as written (or with `*`)
+            if star.is_some() {
+                return Err((
+                    not_yet_diag(Some(call), "sprintf() of a '%' conversion with a '*' width"),
+                    row_trunc_warns,
+                ));
+            }
+            bufs.output.extend_from_slice(&bufs.fmt);
+            continue;
+        }
+        let k = match nthis {
+            Some(k) => k,
+            None => {
+                if cnt >= nargs {
+                    return Err((Diag::error("too few arguments"), row_trunc_warns));
+                }
+                cnt += 1;
+                cnt - 1
+            }
+        };
+        used[k] = true;
+        bufs.fmtp.clear();
+        match star {
+            Some(w) => expand_star_into(&bufs.fmt, w, &mut bufs.fmtp),
+            None => bufs.fmtp.extend_from_slice(&bufs.fmt),
+        }
+        if bufs.fmtp.len() > MAXLINE {
+            return Err((
+                Diag::error(format!("'fmt' length exceeds maximal format length {MAXLINE}")),
+                row_trunc_warns,
+            ));
+        }
+        let this = a[k].bind(cx);
+        let thislen = lens[k];
+        debug_assert_eq!(thislen, crate::coerce::xlength(this));
+        if thislen == 0 {
+            return Err((Diag::error("coercion has changed vector length to 0"), row_trunc_warns));
+        }
+        if let Err(d) = format_value(
+            cx,
+            call,
+            this,
+            ns,
+            thislen,
+            &mut bufs.fmtp,
+            use_utf8,
+            &mut bufs.output,
+            &mut bufs.bit,
+            &mut row_trunc_warns,
+        ) {
+            return Err((d, row_trunc_warns));
+        }
+    }
+    Ok((use_utf8, row_trunc_warns))
 }
 
 /// `.Internal(sprintf(fmt, ...))`.
@@ -57,7 +364,8 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
     if args.is_empty() || args.get(cx, 0).sexptype() != STRSXP {
         return Err(cx.error("'fmt' is not a character vector"));
     }
-    let nfmt = args.get(cx, 0).len().unwrap_or(0);
+    let fmt_arg = args.root(0);
+    let nfmt = fmt_arg.bind(cx).len().unwrap_or(0);
     if nfmt == 0 {
         return cx.build(out, |cx| Ok(cx.alloc_vector::<Char<'_>>(0)?.finish().into()));
     }
@@ -91,24 +399,16 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
         };
         let mut maxlen = check_maxlen(cx, &lens)?;
         let mut used = vec![false; nargs];
-        let loc = cx.locale();
-        let mut rows: Vec<(Vec<u8>, bool)> = Vec::new();
-        let mut ns = 0;
-        while ns < maxlen {
+        let mut bufs = RowBufs::new();
+
+        // Row 0 runs first under `&mut Cx` because minimal coercion (including
+        // `as.double` / `as.character` R calls) may replace `a[k]` and adjust
+        // `maxlen` before `allocVector(STRSXP, maxlen)` (sprintf.c:469).
+        let (row0, row0_utf8) = {
             let (format, use_utf8) = {
-                let fv = args.get(cx, 0).as_vector::<Char<'_>>().unwrap();
-                let fc = fv.get(ns % nfmt);
-                let mut u = fc.enc() == Encoding::Utf8;
-                if !u {
-                    for i in 0..nargs {
-                        if let View::Str(v) = a[i].bind(cx).view()
-                            && v.get(ns % lens[i]).enc() == Encoding::Utf8
-                        {
-                            u = true;
-                            break;
-                        }
-                    }
-                }
+                let fv = fmt_arg.bind(cx).as_vector::<Char<'_>>().unwrap();
+                let fc = fv.get(0);
+                let u = row_use_utf8(cx, fc, &a, &lens, 0);
                 (tr(cx, fc, u), u)
             };
             let n = format.len();
@@ -136,49 +436,21 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                     let msg = format!("unrecognised format specification '{}'", String::from_utf8_lossy(cf));
                     return Err(cx.error(&msg));
                 }
-                let mut fmt = cf[..chunk].to_vec();
+                bufs.fmt.clear();
+                bufs.fmt.extend_from_slice(&cf[..chunk]);
                 cur += chunk;
                 // %n$ and %nn$
-                let mut nthis: Option<usize> = None;
-                if fmt.len() > 3 && (b'1'..=b'9').contains(&fmt[1]) {
-                    let v1 = (fmt[1] - b'0') as usize;
-                    if fmt[2] == b'$' {
-                        if v1 > nargs {
-                            return Err(cx.error(&format!("reference to non-existent argument {v1}")));
-                        }
-                        nthis = Some(v1 - 1);
-                        fmt.drain(1..3);
-                    } else if fmt[2].is_ascii_digit() && fmt[3] == b'$' {
-                        let v = 10 * v1 + (fmt[2] - b'0') as usize;
-                        if v > nargs {
-                            return Err(cx.error(&format!("reference to non-existent argument {v}")));
-                        }
-                        nthis = Some(v - 1);
-                        fmt.drain(1..4);
-                    }
-                }
+                let nthis = match strip_arg_index(&mut bufs.fmt, 0, nargs) {
+                    Ok(v) => v,
+                    Err(d) => return Err(cx.raise(d)),
+                };
                 // `*`
                 let mut star: Option<i32> = None;
-                if let Some(sp) = fmt.iter().position(|&c| c == b'*') {
-                    let mut nstar: Option<usize> = None;
-                    let rest = &fmt[sp..];
-                    if rest.len() > 3 && (b'1'..=b'9').contains(&rest[1]) {
-                        let v1 = (rest[1] - b'0') as usize;
-                        if rest[2] == b'$' {
-                            if v1 > nargs {
-                                return Err(cx.error(&format!("reference to non-existent argument {v1}")));
-                            }
-                            nstar = Some(v1 - 1);
-                            fmt.drain(sp + 1..sp + 3);
-                        } else if rest[2].is_ascii_digit() && rest[3] == b'$' {
-                            let v = 10 * v1 + (rest[2] - b'0') as usize;
-                            if v > nargs {
-                                return Err(cx.error(&format!("reference to non-existent argument {v}")));
-                            }
-                            nstar = Some(v - 1);
-                            fmt.drain(sp + 1..sp + 4);
-                        }
-                    }
+                if let Some(sp) = bufs.fmt.iter().position(|&c| c == b'*') {
+                    let nstar = match strip_arg_index(&mut bufs.fmt, sp, nargs) {
+                        Ok(v) => v,
+                        Err(d) => return Err(cx.raise(d)),
+                    };
                     let k = match nstar {
                         Some(k) => k,
                         None => {
@@ -189,17 +461,17 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                             cnt - 1
                         }
                     };
-                    if fmt[sp + 1..].contains(&b'*') {
+                    if bufs.fmt[sp + 1..].contains(&b'*') {
                         return Err(cx.error("at most one asterisk '*' is supported in each conversion specification"));
                     }
                     used[k] = true;
-                    if ns == 0 && a[k].bind(cx).sexptype() == REALSXP {
+                    if a[k].bind(cx).sexptype() == REALSXP {
                         let r = coerced(cx, s, a[k], INTSXP)?;
                         a[k] = r;
                     }
                     let t = a[k].bind(cx);
                     let v = match t.as_vector::<i32>() {
-                        Some(v) if t.sexptype() == INTSXP && !v.is_empty() => v.get(ns % v.len()),
+                        Some(v) if t.sexptype() == INTSXP && !v.is_empty() => v.get(0),
                         _ => i32::MIN,
                     };
                     if v == i32::MIN {
@@ -207,12 +479,12 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                     }
                     star = Some(v);
                 }
-                if fmt.last() == Some(&b'%') {
+                if bufs.fmt.last() == Some(&b'%') {
                     // "%5%" and the like: copied as written (or with `*`)
                     if star.is_some() {
                         return Err(not_yet(cx, Some(call), "sprintf() of a '%' conversion with a '*' width"));
                     }
-                    output.extend_from_slice(&fmt);
+                    output.extend_from_slice(&bufs.fmt);
                     continue;
                 }
                 let k = match nthis {
@@ -226,16 +498,17 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                     }
                 };
                 used[k] = true;
-                let mut fmtp = match star {
-                    Some(w) => expand_star(&fmt, w),
-                    None => fmt.clone(),
-                };
-                if fmtp.len() > MAXLINE {
+                bufs.fmtp.clear();
+                match star {
+                    Some(w) => expand_star_into(&bufs.fmt, w, &mut bufs.fmtp),
+                    None => bufs.fmtp.extend_from_slice(&bufs.fmt),
+                }
+                if bufs.fmtp.len() > MAXLINE {
                     return Err(cx.error(&format!("'fmt' length exceeds maximal format length {MAXLINE}")));
                 }
                 // minimal coercion, once, for the first row
-                if ns == 0 {
-                    let c = fmtp.get(findspec(&fmtp)).copied().unwrap_or(0);
+                {
+                    let c = bufs.fmtp.get(findspec(&bufs.fmtp)).copied().unwrap_or(0);
                     let t = a[k].bind(cx).sexptype();
                     match c {
                         b'd' | b'i' | b'o' | b'x' | b'X' if t == REALSXP => {
@@ -267,102 +540,76 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
                 if thislen == 0 {
                     return Err(cx.error("coercion has changed vector length to 0"));
                 }
-                let this = a[k].bind(cx);
-                match this.view() {
-                    View::Lgl(v) => {
-                        let x = v.get(ns % thislen).0;
-                        if checkfmt(&fmtp, b"di") {
-                            return Err(invalid_format(cx, &fmtp, "use format %d or %i for logical objects"));
-                        }
-                        if x == i32::MIN {
-                            *fmtp.last_mut().unwrap() = b's';
-                            conv(cx, &mut output, &fmtp, |sp, o| sp.string(o, b"NA"))?;
-                        } else {
-                            conv(cx, &mut output, &fmtp, |sp, o| sp.int(o, x))?;
-                        }
-                    }
-                    View::Int(v) => {
-                        let x = v.get(ns % thislen);
-                        if checkfmt(&fmtp, b"dioxX") {
-                            return Err(invalid_format(
-                                cx,
-                                &fmtp,
-                                "use format %d, %i, %o, %x or %X for integer objects",
-                            ));
-                        }
-                        if x == i32::MIN {
-                            *fmtp.last_mut().unwrap() = b's';
-                            conv(cx, &mut output, &fmtp, |sp, o| sp.string(o, b"NA"))?;
-                        } else {
-                            conv(cx, &mut output, &fmtp, |sp, o| sp.int(o, x))?;
-                        }
-                    }
-                    View::Real(v) => {
-                        let x = v.get(ns % thislen);
-                        if checkfmt(&fmtp, b"aAfeEgG") {
-                            return Err(invalid_format(cx, &fmtp, "use format %f, %e, %g or %a for numeric objects"));
-                        }
-                        let c = fmtp[findspec(&fmtp)];
-                        if x.is_finite() {
-                            if c == b'a' || c == b'A' {
-                                return Err(not_yet(cx, Some(call), "sprintf() with %a (hexadecimal floating point)"));
-                            }
-                            conv(cx, &mut output, &fmtp, |sp, o| sp.double(o, x))?;
-                        } else {
-                            match fmtp.iter().position(|&ch| ch == b'.') {
-                                Some(p) => {
-                                    fmtp.truncate(p);
-                                    fmtp.push(b's');
-                                }
-                                None => *fmtp.last_mut().unwrap() = b's',
-                            }
-                            let has = |ch: u8| fmtp.contains(&ch);
-                            let txt: &[u8] = if robigo_text::is_na(x) {
-                                if has(b' ') { b" NA" } else { b"NA" }
-                            } else if x.is_nan() {
-                                if has(b' ') { b" NaN" } else { b"NaN" }
-                            } else if x > 0.0 {
-                                if has(b'+') {
-                                    b"+Inf"
-                                } else if has(b' ') {
-                                    b" Inf"
-                                } else {
-                                    b"Inf"
-                                }
-                            } else {
-                                b"-Inf"
-                            };
-                            conv(cx, &mut output, &fmtp, |sp, o| sp.string(o, txt))?;
-                        }
-                    }
-                    View::Str(v) => {
-                        if checkfmt(&fmtp, b"s") {
-                            return Err(invalid_format(cx, &fmtp, "use format %s for character objects"));
-                        }
-                        let ss = tr(cx, v.get(ns % thislen), use_utf8);
-                        if fmtp.get(1) != Some(&b's') {
-                            if ss.len() > MAXLINE {
-                                cx.warning(&format!(
-                                    "likely truncation of character string to {} characters",
-                                    MAXLINE - 1
-                                ))?;
-                            }
-                            conv(cx, &mut output, &fmtp, |sp, o| sp.string(o, &ss))?;
-                        } else {
-                            output.extend_from_slice(&ss);
-                        }
-                    }
-                    _ => return Err(cx.error("unsupported type")),
+                let mut conv_warns = 0usize;
+                let res = {
+                    let this = a[k].bind(cx);
+                    format_value(
+                        cx,
+                        call,
+                        this,
+                        0,
+                        thislen,
+                        &mut bufs.fmtp,
+                        use_utf8,
+                        &mut output,
+                        &mut bufs.bit,
+                        &mut conv_warns,
+                    )
+                };
+                for _ in 0..conv_warns {
+                    cx.warning(&trunc_warn_msg())?;
+                }
+                if let Err(d) = res {
+                    return Err(cx.raise(d));
                 }
             }
-            rows.push((output, use_utf8));
-            ns += 1;
+            (output, use_utf8)
+        };
+
+        // Rows 0..maxlen into `out` via `Cx::fill_strings` so collections run
+        // between elements (E4).
+        let mut trunc_warns = 0usize;
+        cx.fill_strings(out, maxlen, |cx, fill| {
+            let mut ns = fill.start();
+            if ns == 0 {
+                let enc = if row0_utf8 { Encoding::Utf8 } else { Encoding::Native };
+                if fill.put(0, mk_char_checked(cx, &row0, enc))? {
+                    return Ok(Ok(()));
+                }
+                ns = 1;
+            }
+            while ns < maxlen {
+                match format_row_n(cx, call, fmt_arg, nfmt, &a, &lens, &mut used, ns, &mut bufs) {
+                    Ok((use_utf8, row_warns)) => {
+                        let enc = if use_utf8 { Encoding::Utf8 } else { Encoding::Native };
+                        let stop = fill.put(ns, mk_char_checked(cx, &bufs.output, enc))?;
+                        // Only count warnings after `fill.put` succeeds so a
+                        // GC refusal retry on `ns` never double-counts.
+                        trunc_warns += row_warns;
+                        if stop {
+                            return Ok(Ok(()));
+                        }
+                    }
+                    Err((d, row_warns)) => {
+                        let d = if row_warns > 0 { d.prepend_warnings(vec![trunc_warn_msg(); row_warns]) } else { d };
+                        let d =
+                            if trunc_warns > 0 { d.prepend_warnings(vec![trunc_warn_msg(); trunc_warns]) } else { d };
+                        return Ok(Err(d));
+                    }
+                }
+                ns += 1;
+            }
+            Ok(Ok(()))
+        })?;
+        for _ in 0..trunc_warns {
+            cx.warning(&trunc_warn_msg())?;
         }
+
         let nunused = used.iter().filter(|u| !**u).count();
         if nunused > 0 {
             let msg = if nfmt == 1 {
                 let f = {
-                    let fc = args.get(cx, 0).as_vector::<Char<'_>>().unwrap().get(0);
+                    let fc = fmt_arg.bind(cx).as_vector::<Char<'_>>().unwrap().get(0);
                     String::from_utf8_lossy(&tr(cx, fc, false)).into_owned()
                 };
                 if nunused == 1 {
@@ -375,47 +622,40 @@ pub fn do_sprintf(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, ou
             } else {
                 format!("{nunused} arguments not used by format")
             };
-            cx.build(out, |cx| strings(cx, &rows))?;
             return cx.warning(&msg);
         }
-        let _ = loc;
-        cx.build(out, |cx| strings(cx, &rows))
+        Ok(())
     })
 }
 
-/// The rows as a character vector (`mkCharCE(row, use_UTF8 ? CE_UTF8 :
-/// CE_NATIVE)`).
-fn strings<'g>(cx: &'g Cx, rows: &[(Vec<u8>, bool)]) -> Result<Ref<'g>, robigo_rtcore::NeedGc> {
-    let mut v = cx.alloc_vector::<Char<'g>>(rows.len())?;
-    for (i, (b, u)) in rows.iter().enumerate() {
-        v.set(i, cx.mk_char(b, if *u { Encoding::Utf8 } else { Encoding::Native })?);
-    }
-    Ok(v.finish().into())
-}
-
-/// `TRANSLATE_CHAR(x, i)`: UTF-8 or native bytes of a CHARSXP.
-fn tr(cx: &Cx, c: Char<'_>, utf8: bool) -> Vec<u8> {
+/// `TRANSLATE_CHAR(x, i)`: UTF-8 or native bytes of a CHARSXP, borrowing
+/// directly when no translation is needed.
+fn tr_cow<'a>(cx: &Cx, c: Char<'a>, utf8: bool) -> Cow<'a, [u8]> {
     let s = crate::coerce::text(c);
     let r = if utf8 { crate::text::to_utf8(s, cx.locale()) } else { crate::text::to_native(s, cx.locale()) };
-    r.map(|b| b.into_owned()).unwrap_or_else(|_| c.bytes().to_vec())
+    r.unwrap_or_else(|_| Cow::Borrowed(c.bytes()))
 }
 
-/// `fmt` with its `*` replaced by the width `w`.
-fn expand_star(fmt: &[u8], w: i32) -> Vec<u8> {
-    let mut f = Vec::with_capacity(fmt.len() + 8);
+/// `TRANSLATE_CHAR(x, i)`: owned bytes of a CHARSXP (for outside `&Cx`).
+fn tr(cx: &Cx, c: Char<'_>, utf8: bool) -> Vec<u8> {
+    tr_cow(cx, c, utf8).into_owned()
+}
+
+/// `fmt` with its `*` replaced by the width `w`, appended into `out`.
+fn expand_star_into(fmt: &[u8], w: i32, out: &mut Vec<u8>) {
+    out.reserve(fmt.len() + 8);
     for &c in fmt {
         if c == b'*' {
-            f.extend_from_slice(w.to_string().as_bytes());
+            out.extend_from_slice(w.to_string().as_bytes());
         } else {
-            f.push(c);
+            out.push(c);
         }
     }
-    f
 }
 
-/// GNU R's "invalid format '%s'; %s".
-fn invalid_format(cx: &mut Cx, fmt: &[u8], hint: &str) -> robigo_rtcore::RError {
-    cx.error(&format!("invalid format '{}'; {hint}", String::from_utf8_lossy(fmt)))
+/// GNU R's "invalid format '%s'; %s" as a [`Diag`].
+fn invalid_format_diag<'r>(fmt: &[u8], hint: &str) -> Diag<'r> {
+    Diag::error(format!("invalid format '{}'; {hint}", String::from_utf8_lossy(fmt)))
 }
 
 /// `coerceVector(x, ty)`, rooted in `s`.

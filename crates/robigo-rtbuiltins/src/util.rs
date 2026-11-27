@@ -5,7 +5,7 @@
 use crate::attrib;
 use crate::kernel::logic;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Char, Cx, RError, Rcomplex, Ref};
+use robigo_rtcore::{Char, Cx, Diag, Encoding, LARGE, NeedGc, RError, Rcomplex, Ref, Root};
 
 /// GNU R's `sexptype2char`: a type's C name ("REALSXP"), as memory.c's
 /// messages give it.
@@ -208,8 +208,26 @@ pub fn as_logical_n(cx: &Cx, x: Ref<'_>) -> (i32, usize) {
 /// The error for a builtin path robigo does not have yet (AGENTS rule 6),
 /// reported against `call`.
 #[cold]
-pub fn not_yet(cx: &mut Cx, call: Option<robigo_rtcore::Root<'_>>, what: &str) -> RError {
+pub fn not_yet(cx: &mut Cx, call: Option<Root<'_>>, what: &str) -> RError {
     cx.error_call(call, &format!("robigo: {what} is not implemented yet"))
+}
+
+/// The same "not implemented yet" diagnostic as [`not_yet`], as a [`Diag`]
+/// for `&Cx` build/fill loops.
+#[cold]
+pub fn not_yet_diag<'r>(call: Option<Root<'r>>, what: &str) -> Diag<'r> {
+    Diag::error_call(call, format!("robigo: {what} is not implemented yet"))
+}
+
+/// [`Cx::mk_char`] upholding H's Rule 1 for `fill_strings`: refuse a `LARGE`
+/// (`>= 1 MiB`) CHARSXP request while a collection is due so the fill serves
+/// the safepoint before allocating it.
+#[inline]
+pub fn mk_char_checked<'g>(cx: &'g Cx, bytes: &[u8], enc: Encoding) -> Result<Char<'g>, NeedGc> {
+    if bytes.len() >= LARGE && cx.gc_due() {
+        return Err(NeedGc::new(CHARSXP, bytes.len()));
+    }
+    cx.mk_char(bytes, enc)
 }
 
 /// GNU R's `asLogical2(x, checking = 1, call)`: [`as_logical`], and an

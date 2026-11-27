@@ -37,9 +37,15 @@ g <- gc()
 lim_n <- g["Ncells", "gc trigger"] + 2000
 cat("n_set_match:", mem.maxNSize(lim_n) == lim_n, "\n")
 cat("n_col_match:", abs(gc()["Ncells", "limit (Mb)"] - 0.1 * ceiling(10 * lim_n / 1048576 * 56)) < 1e-12, "\n")
+# Allocating ~350k cons cells through as.pairlist() (which collects between
+# elements, as GNU R's cons() does) would take ~350k collections under
+# gctorture; turn torture off for the limit-crossing allocation itself
+# (tests/rt/coerce/list-pairlist-collect.R covers as.pairlist under torture).
+old_torture <- gctorture(FALSE)
 n_over <- as.integer(lim_n - g["Ncells", "used"] + 50000)
 n_err <- tryCatch({ x <- as.pairlist(seq_len(n_over)); "ok" },
-                  error = function(e) conditionMessage(e))
+                  error = function(e) conditionMessage(e),
+                  finally = gctorture(old_torture))
 expected_n <- sprintf("cons memory limit of %.0f nodes reached, see mem.maxNSize()", lim_n)
 cat("n_err_match:", identical(n_err, expected_n), "\n")
 cat("n_inf:", mem.maxNSize(Inf), "\n")
