@@ -354,7 +354,7 @@ impl Core {
             "robigo: the freeze is switched before the boot boundary"
         );
         if on && !self.freeze_on {
-            (self.freeze_check, self.freeze_full) = freeze_check_from_env();
+            (self.freeze_check, self.freeze_full, self.freeze_grow) = freeze_check_from_env();
         }
         self.freeze_on = on;
     }
@@ -1610,7 +1610,8 @@ mod tests {
             // the entry lost (a store that bypassed the barrier)
             (*c.remembered.0.get()).retain(|&l| l != head);
             // the next collection is checked, and not a full check
-            (c.freeze_check, c.freeze_full, c.freeze_check_count, c.freeze_checks_frozen) = (16, 16, 15, 1);
+            (c.freeze_check, c.freeze_full, c.freeze_grow, c.freeze_check_count, c.freeze_checks_frozen) =
+                (16, 16, 0, 15, 1);
             c.collect(&mut roots);
         }
     }
@@ -1622,9 +1623,25 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn the_full_check_runs_at_the_first_check_and_every_mth_after() {
-        assert_eq!(crate::gc::parse_freeze_check("16"), Some((16, 1)));
-        assert_eq!(crate::gc::parse_freeze_check("16,16"), Some((16, 16)));
-        for bad in ["16,0", "16,", ",16", "x", "16,x", "-1"] {
+        assert_eq!(crate::gc::parse_freeze_check("0"), Some((0, 1, 0)));
+        assert_eq!(crate::gc::parse_freeze_check("16"), Some((16, 1, 0)));
+        assert_eq!(crate::gc::parse_freeze_check("16,16"), Some((16, 16, 0)));
+        assert_eq!(crate::gc::parse_freeze_check("16,16,524288"), Some((16, 16, 524_288)));
+        for bad in [
+            "0,1",
+            "0,16",
+            "0,1,524288",
+            "16,0",
+            "16,",
+            ",16",
+            "x",
+            "16,x",
+            "-1",
+            "16,16,0",
+            "16,16,",
+            "16,16,x",
+            "16,16,1,2",
+        ] {
             assert_eq!(crate::gc::parse_freeze_check(bad), None, "{bad}");
         }
         let mut c = Core::new();
@@ -1632,7 +1649,7 @@ mod tests {
         if !c.freeze_enabled() {
             return;
         }
-        (c.freeze_check, c.freeze_full) = (1, 3);
+        (c.freeze_check, c.freeze_full, c.freeze_grow) = (1, 3, 0);
         let nil = c.nil();
         // SAFETY: fresh objects of this heap, rooted by `roots`.
         unsafe {
@@ -1672,7 +1689,7 @@ mod tests {
         unsafe {
             let leaf = c.alloc_vector(INTSXP, 1).unwrap();
             let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
-            (c.freeze_check, c.freeze_full) = (16, 16);
+            (c.freeze_check, c.freeze_full, c.freeze_grow) = (16, 16, 0);
             let mut roots = WithFreeze { all: vec![head], freeze: head };
             c.collect(&mut roots);
             assert_eq!((c.freeze_checks, c.freeze_full_checks), (0, 0), "the first of 16 collections: unchecked");
@@ -1686,6 +1703,86 @@ mod tests {
             assert_eq!((c.freeze_checks, c.freeze_full_checks), (1, 1), "then every 16th collection");
             c.collect(&mut roots);
             assert_eq!((c.freeze_checks, c.freeze_full_checks), (2, 1), "a direct loop only");
+        }
+    }
+
+    /// `ROBIGO_GC_FREEZE_CHECK=N,M,K`: period `N` holds for the process's
+    /// first `K` collections (`stats.collections < K`), then widens to `4N`
+    /// while full checks stay at every `M`-th checked collection. Freezing
+    /// after `K` still forces a full check on the freezing collection.
+    #[test]
+    #[cfg(not(miri))]
+    fn the_period_widens_fourfold_after_k_collections() {
+        let mut c = Core::new();
+        c.set_freeze_enabled(true);
+        if !c.freeze_enabled() {
+            return;
+        }
+        let nil = c.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            let leaf = c.alloc_vector(INTSXP, 1).unwrap();
+            let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            (c.freeze_check, c.freeze_full, c.freeze_grow) = (2, 2, 6);
+            c.freeze_boundary(nil.addr(), &[]);
+            // Collections 1..=21 (1-indexed):
+            // 1 (stats=0 < 6, freezing): checked, full (checks=1, full=1)
+            // 2 (stats=1 < 6): count=1 < 2
+            // 3 (stats=2 < 6): count=2 >= 2 -> checked (checks=2, full=1)
+            // 4 (stats=3 < 6): count=1 < 2
+            // 5 (stats=4 < 6): count=2 >= 2 -> checked, full (checks=3, full=2)
+            // 6 (stats=5 < 6): count=1 < 2
+            // 7..=12 (stats=6..=11 >= 6): period=8, count=2..=7 < 8
+            // 13 (stats=12 >= 6): count=8 >= 8 -> checked (checks=4, full=2)
+            // 14..=20: count=1..=7 < 8
+            // 21 (stats=20 >= 6): count=8 >= 8 -> checked, full (checks=5, full=3)
+            let mut checked_at = Vec::new();
+            let mut full_at = Vec::new();
+            for i in 1..=21 {
+                let (prev_c, prev_f) = (c.freeze_checks, c.freeze_full_checks);
+                c.collect(&mut roots);
+                if c.freeze_checks > prev_c {
+                    checked_at.push(i);
+                }
+                if c.freeze_full_checks > prev_f {
+                    full_at.push(i);
+                }
+            }
+            assert_eq!(checked_at, [1, 3, 5, 13, 21]);
+            assert_eq!(full_at, [1, 5, 21]);
+            assert!(c.stats_report().contains(
+                "robigo gc: the freeze's check (ROBIGO_GC_FREEZE_CHECK=2,2,6): 5 checked collections, 5 with a frozen set (the direct loop), 3 full checks (I2, I3 and the comparison with the independent trace)"
+            ));
+        }
+
+        // Freezing after K collections still forces the freezing collection in full.
+        let mut c2 = Core::new();
+        c2.set_freeze_enabled(true);
+        if !c2.freeze_enabled() {
+            return;
+        }
+        let nil2 = c2.nil();
+        // SAFETY: fresh objects of this heap, rooted by `roots`.
+        unsafe {
+            let leaf = c2.alloc_vector(INTSXP, 1).unwrap();
+            let head = c2.alloc_node(LISTSXP, leaf, nil2, nil2).unwrap();
+            let mut roots = WithFreeze { all: vec![head], freeze: head };
+            (c2.freeze_check, c2.freeze_full, c2.freeze_grow) = (4, 2, 2);
+            for _ in 0..3 {
+                c2.collect(&mut roots);
+            }
+            assert_eq!((c2.freeze_checks, c2.freeze_full_checks), (0, 0));
+            c2.freeze_boundary(nil2.addr(), &[]);
+            c2.collect(&mut roots);
+            assert!(c2.is_frozen(head));
+            assert_eq!((c2.freeze_checks, c2.freeze_full_checks), (1, 1));
+            for _ in 0..15 {
+                c2.collect(&mut roots);
+            }
+            assert_eq!((c2.freeze_checks, c2.freeze_full_checks), (1, 1), "period is 16 after K");
+            c2.collect(&mut roots);
+            assert_eq!((c2.freeze_checks, c2.freeze_full_checks), (2, 1), "16th collection after freeze checked");
         }
     }
 
@@ -1705,7 +1802,7 @@ mod tests {
             let head = c.alloc_node(LISTSXP, leaf, nil, nil).unwrap();
             let mut roots = WithFreeze { all: vec![head], freeze: head };
             c.freeze(&mut roots, |_| false);
-            (c.freeze_check, c.freeze_full) = (16, 16);
+            (c.freeze_check, c.freeze_full, c.freeze_grow) = (16, 16, 0);
             while c.freeze_full_checks == 0 {
                 c.collect(&mut roots);
             }
@@ -1786,7 +1883,7 @@ mod tests {
             let mut roots = WithFreeze { all: vec![head, stray], freeze: head };
             c.freeze(&mut roots, |x| x == stray);
             stray.set_flag_raw(flags::FROZEN, true);
-            (c.freeze_check, c.freeze_check_count) = (16, 15);
+            (c.freeze_check, c.freeze_grow, c.freeze_check_count) = (16, 0, 15);
             c.collect(&mut roots);
         }
     }
