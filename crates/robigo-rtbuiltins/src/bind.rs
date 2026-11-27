@@ -7,14 +7,14 @@
 pub mod matrix;
 pub use matrix::{BindArg, bind_default};
 
-use crate::attrib::{self, Attr, Attrs};
+use crate::attrib;
 use crate::coerce::{dispatch_or_eval, vector::string_elt};
 use crate::util::{not_yet, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
-    Args, Built, Char, Cons, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Rcomplex,
-    Ref, Root, Sym, Vector, View,
+    Args, Built, Char, Cons, Cx, Diag, Dispatched, Encoding, Fill as StringFill, FillList, FreshVec, Generic, Lgl,
+    ListKind, NeedGc, Out, RResult, Rcomplex, Ref, Root, Scope, Sym, Vector, View,
 };
 
 const NA_INTEGER: i32 = i32::MIN;
@@ -157,6 +157,78 @@ fn mode(flags: u32) -> u8 {
     }
 }
 
+/// The top-level input to `c()` or `unlist()`, held as roots/`Args` so
+/// each pass of `fill_strings` / `fill_list` re-walks it under a fresh `&Cx`.
+#[derive(Clone, Copy)]
+enum BindInput<'a> {
+    /// `c(...)`'s arguments (`recursive` and `use.names` skipped).
+    C(Args<'a>),
+    /// `unlist(x, ...)`: `x` is `VECSXP`, `LISTSXP`, or `NILSXP`.
+    Unlist(Root<'a>),
+}
+
+/// Visit each top-level [`Item`] of `input` under `&Cx`.
+fn visit_top<'g, E>(cx: &'g Cx, input: BindInput<'_>, f: &mut impl FnMut(Item<'g>) -> Result<(), E>) -> Result<(), E> {
+    match input {
+        BindInput::C(args) => {
+            for i in 0..args.len() {
+                if !is_c_option(cx, args, i) {
+                    f(Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name(cx)) })?;
+                }
+            }
+            Ok(())
+        }
+        BindInput::Unlist(x) => {
+            for it in items(cx, x.bind(cx)).unwrap() {
+                f(it)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Compute `Bind { flags, len, nnames }` for `input` without allocating.
+// R: bind.c:do_c_dflt, do_unlist, AnswerType
+fn compute_bind(cx: &Cx, input: BindInput<'_>, recurse: bool, usenames: bool) -> Bind {
+    let mut d = Bind::default();
+    match input {
+        BindInput::C(args) => {
+            for i in 0..args.len() {
+                if !is_c_option(cx, args, i) {
+                    let value = args.get(cx, i);
+                    let named = args.name(cx, i).is_some();
+                    if usenames && !d.nnames {
+                        d.nnames = named || has_names(cx, value);
+                    }
+                    answer_type(cx, value, recurse, usenames, &mut d);
+                }
+            }
+        }
+        BindInput::Unlist(x) => {
+            let xv = x.bind(cx);
+            if xv.sexptype() == VECSXP {
+                if usenames && attrib::names(xv).is_some() {
+                    d.nnames = true;
+                }
+                for it in items(cx, xv).unwrap() {
+                    if usenames && !d.nnames {
+                        d.nnames = has_names(cx, it.value);
+                    }
+                    answer_type(cx, it.value, recurse, usenames, &mut d);
+                }
+            } else {
+                for it in items(cx, xv).unwrap() {
+                    if usenames && !d.nnames {
+                        d.nnames = it.name.is_some() || has_names(cx, it.value);
+                    }
+                    answer_type(cx, it.value, recurse, usenames, &mut d);
+                }
+            }
+        }
+    }
+    d
+}
+
 /// The atomic leaves of `x` (lists and pairlists walked), as the
 /// `*Answer` functions of an atomic result visit them.
 fn leaves<'g>(cx: &'g Cx, x: Ref<'g>, f: &mut impl FnMut(Ref<'g>) -> Result<(), Fill>) -> Result<(), Fill> {
@@ -185,18 +257,18 @@ impl From<NeedGc> for Fill {
     }
 }
 
-/// Fill the plain vector `out` from the atomic leaves of `args` with
+/// Fill the plain vector `out` from the atomic leaves of `input` with
 /// `conv`, which writes a leaf's elements at `k..` or names the
 /// `*Answer` function that refuses its type.
 fn fill_plain<'g, T: robigo_rtcore::Plain>(
     cx: &'g Cx,
-    args: &[Item<'g>],
+    input: BindInput<'_>,
     out: &mut [T],
     who: &'static str,
     conv: impl Fn(Ref<'g>, &mut [T]) -> bool,
 ) -> Result<(), Fill> {
     let mut k = 0;
-    for it in args {
+    visit_top(cx, input, &mut |it| {
         leaves(cx, it.value, &mut |leaf| {
             let n = leaf.len().unwrap_or(0);
             if !conv(leaf, &mut out[k..k + n]) {
@@ -204,21 +276,19 @@ fn fill_plain<'g, T: robigo_rtcore::Plain>(
             }
             k += n;
             Ok(())
-        })?;
-    }
-    Ok(())
+        })
+    })
 }
 
-/// The atomic answers: `LogicalAnswer`, `IntegerAnswer`, `RealAnswer`,
-/// `ComplexAnswer`, `RawAnswer`, `StringAnswer`.
-// R: bind.c:LogicalAnswer, IntegerAnswer, RealAnswer, ComplexAnswer,
-// RawAnswer, StringAnswer
-fn atomic_answer<'g>(cx: &'g Cx, args: &[Item<'g>], ty: u8, n: usize, a: &Attrs<'g>) -> Result<Ref<'g>, Fill> {
+/// The plain atomic answers: `LogicalAnswer`, `IntegerAnswer`, `RealAnswer`,
+/// `ComplexAnswer`, `RawAnswer` (single vector allocation, no per-element
+/// allocations).
+// R: bind.c:LogicalAnswer, IntegerAnswer, RealAnswer, ComplexAnswer, RawAnswer
+fn plain_answer<'g>(cx: &'g Cx, input: BindInput<'_>, ty: u8, n: usize) -> Result<Ref<'g>, Fill> {
     macro_rules! plain {
         ($t:ty, $who:literal, $conv:expr) => {{
             let mut r: FreshVec<'g, $t> = cx.alloc_vector(n)?;
-            fill_plain(cx, args, r.as_mut_slice(), $who, $conv)?;
-            a.apply(cx, &mut r)?;
+            fill_plain(cx, input, r.as_mut_slice(), $who, $conv)?;
             r.finish().into()
         }};
     }
@@ -327,30 +397,55 @@ fn atomic_answer<'g>(cx: &'g Cx, args: &[Item<'g>], ty: u8, n: usize, a: &Attrs<
             }
             _ => false,
         }),
-        _ => {
-            // StringAnswer: coerceVector(x, STRSXP) of each leaf
-            let mut r = cx.alloc_vector::<Char<'g>>(n)?;
-            let mut k = 0;
-            let mut buf = Vec::new();
-            for it in args {
-                leaves(cx, it.value, &mut |leaf| {
-                    if !crate::util::is_vector_atomic(leaf) {
-                        return Err(Fill::Type(type_to_char(leaf), "StringAnswer"));
+        _ => unreachable!("robigo: plain atomic answer type {ty}"),
+    })
+}
+
+/// `StringAnswer`: coerce every atomic leaf element to a CHARSXP through
+/// [`Cx::fill_strings`], skipping leaves before `fill.start()`.
+// R: bind.c:StringAnswer
+fn string_answer(cx: &mut Cx, call: Root<'_>, input: BindInput<'_>, n: usize, out: Out<'_>) -> RResult<()> {
+    cx.fill_strings(out, n, |cx, fill| {
+        let start = fill.start();
+        let mut k = 0usize;
+        let mut buf = Vec::new();
+        let mut stop = false;
+        let r = visit_top(cx, input, &mut |it| {
+            leaves(cx, it.value, &mut |leaf| {
+                if stop {
+                    return Ok(());
+                }
+                if !crate::util::is_vector_atomic(leaf) {
+                    return Err(Fill::Type(type_to_char(leaf), "StringAnswer"));
+                }
+                let len = leaf.len().unwrap_or(0);
+                if k + len <= start {
+                    k += len;
+                    return Ok(());
+                }
+                let from = start.saturating_sub(k);
+                k += from;
+                for i in from..len {
+                    if fill.put(k, string_elt(cx, leaf, i, &mut buf))? {
+                        stop = true;
+                        return Ok(());
                     }
-                    for i in 0..leaf.len().unwrap_or(0) {
-                        r.set(k, string_elt(cx, leaf, i, &mut buf)?);
-                        k += 1;
-                    }
-                    Ok(())
-                })?;
+                    k += 1;
+                }
+                Ok(())
+            })
+        });
+        match r {
+            Ok(()) => Ok(Ok(())),
+            Err(Fill::Gc(e)) => Err(e),
+            Err(Fill::Type(t, who)) => {
+                Ok(Err(Diag::error_call(Some(call), format!("type '{t}' is unimplemented in '{who}'"))))
             }
-            a.apply(cx, &mut r)?;
-            r.finish().into()
         }
     })
 }
 
-/// A scalar of element `i` of an atomic vector.
+/// A scalar of element `i` of an atomic vector (16–32 bytes, never `LARGE`).
 fn scalar<'g>(cx: &'g Cx, v: Ref<'g>, i: usize) -> Result<Ref<'g>, NeedGc> {
     Ok(match v.view() {
         View::Lgl(x) => cx.alloc_copy(&[x.get(i)])?.finish().into(),
@@ -367,28 +462,84 @@ fn scalar<'g>(cx: &'g Cx, v: Ref<'g>, i: usize) -> Result<Ref<'g>, NeedGc> {
     })
 }
 
-/// `ListAnswer(x, recurse, data, call)`: append `x`'s elements to `out`.
+/// `ListAnswer(x, recurse, data, call)` into `fill`, skipping elements
+/// before `start`. Each atomic element is made whole as a 1-element scalar
+/// (Rule 2) and stored through `fill.put`.
 // R: bind.c:ListAnswer
-fn list_answer<'g>(cx: &'g Cx, x: Ref<'g>, recurse: bool, out: &mut Vec<Ref<'g>>) -> Result<(), NeedGc> {
+fn walk_list<'g>(
+    cx: &'g Cx,
+    x: Ref<'g>,
+    recurse: bool,
+    start: usize,
+    k: &mut usize,
+    fill: &mut FillList<'g>,
+    stop: &mut bool,
+) -> Result<(), NeedGc> {
+    if *stop {
+        return Ok(());
+    }
     match x.sexptype() {
         NILSXP => {}
         LGLSXP | RAWSXP | INTSXP | REALSXP | CPLXSXP | STRSXP => {
-            for i in 0..x.len().unwrap_or(0) {
-                out.push(scalar(cx, x, i)?);
+            let len = x.len().unwrap_or(0);
+            if *k + len <= start {
+                *k += len;
+                return Ok(());
+            }
+            let from = start.saturating_sub(*k);
+            *k += from;
+            for i in from..len {
+                if fill.put(*k, scalar(cx, x, i))? {
+                    *stop = true;
+                    return Ok(());
+                }
+                *k += 1;
             }
         }
         VECSXP | EXPRSXP | LISTSXP => {
             for it in items(cx, x).unwrap() {
+                if *stop {
+                    return Ok(());
+                }
                 if recurse {
-                    list_answer(cx, it.value, recurse, out)?;
+                    walk_list(cx, it.value, true, start, k, fill, stop)?;
                 } else {
-                    out.push(it.value);
+                    if *k >= start && fill.put(*k, Ok(it.value))? {
+                        *stop = true;
+                        return Ok(());
+                    }
+                    *k += 1;
                 }
             }
         }
-        _ => out.push(x),
+        _ => {
+            if *k >= start && fill.put(*k, Ok(x))? {
+                *stop = true;
+                return Ok(());
+            }
+            *k += 1;
+        }
     }
     Ok(())
+}
+
+/// Fill a `VECSXP` or `EXPRSXP` answer through [`Cx::fill_list`].
+// R: bind.c:ListAnswer
+fn list_answer(
+    cx: &mut Cx,
+    input: BindInput<'_>,
+    kind: ListKind,
+    recurse: bool,
+    n: usize,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.fill_list(out, kind, n, |cx, fill| {
+        let start = fill.start();
+        let mut k = 0usize;
+        let mut stop = false;
+        visit_top(cx, input, &mut |it| walk_list(cx, it.value, recurse, start, &mut k, fill, &mut stop))?;
+        Ok(Ok(()))
+    })
 }
 
 /// `struct NameData`.
@@ -414,47 +565,71 @@ fn mk_utf8<'g>(cx: &'g Cx, s: &[u8]) -> Result<Char<'g>, NeedGc> {
     cx.mk_char(s, if s.is_ascii() { Encoding::Native } else { Encoding::Utf8 })
 }
 
-/// The names builder: `data->ans_names` and `data->ans_nnames`.
-struct Names<'g, 'v> {
+/// `NewBase`'s value held without allocating a fresh unrooted CHARSXP:
+/// either an existing `Char` from the rooted input (preserving its original
+/// encoding mark when returned verbatim for `count == 1`), or combined
+/// UTF-8 bytes owned in Rust (`b1.b2...`).
+enum Base<'g> {
+    Char(Char<'g>),
+    Utf8(Vec<u8>),
+}
+
+impl<'g> Base<'g> {
+    fn utf8<'a>(&'a self, cx: &'g Cx) -> std::borrow::Cow<'a, [u8]>
+    where
+        'g: 'a,
+    {
+        match self {
+            Base::Char(c) => utf8(cx, Some(*c)),
+            Base::Utf8(b) => std::borrow::Cow::Borrowed(b.as_slice()),
+        }
+    }
+}
+
+/// The names builder over one pass of [`Cx::fill_strings`], skipping
+/// elements before `start` without allocating.
+struct Names<'g, 'f> {
     cx: &'g Cx,
-    out: &'v mut FreshVec<'g, Char<'g>>,
+    fill: &'f mut StringFill<'g>,
+    start: usize,
     k: usize,
+    stop: bool,
 }
 
 impl<'g> Names<'g, '_> {
-    fn push(&mut self, c: Char<'g>) {
-        self.out.set(self.k, c);
-        self.k += 1;
-    }
-
-    /// `NewBase(base, tag)`.
+    /// `NewBase(base, tag)` without allocating any GC object.
     // R: bind.c:NewBase
-    fn new_base(&self, base: Option<Char<'g>>, tag: Option<Char<'g>>) -> Result<Option<Char<'g>>, NeedGc> {
-        let (b, t) = (utf8(self.cx, base), utf8(self.cx, tag));
-        Ok(if !b.is_empty() && !t.is_empty() {
+    fn new_base(&self, base: Option<&Base<'g>>, tag: Option<Char<'g>>) -> Option<Base<'g>> {
+        let b = base.map(|b| b.utf8(self.cx)).unwrap_or(std::borrow::Cow::Borrowed(b""));
+        let t = utf8(self.cx, tag);
+        if !b.is_empty() && !t.is_empty() {
             let mut s = b.into_owned();
             s.push(b'.');
             s.extend_from_slice(&t);
-            Some(mk_utf8(self.cx, &s)?)
+            Some(Base::Utf8(s))
         } else if !t.is_empty() {
-            tag
+            tag.map(Base::Char)
         } else if !b.is_empty() {
-            base
+            base.map(|orig| match orig {
+                Base::Char(c) => Base::Char(*c),
+                Base::Utf8(v) => Base::Utf8(v.clone()),
+            })
         } else {
             None
-        })
+        }
     }
 
     /// `NewName(base, tag, seqno, count)`.
     // R: bind.c:NewName
     fn new_name(
         &self,
-        base: Option<Char<'g>>,
+        base: Option<&Base<'g>>,
         tag: Option<Char<'g>>,
         seqno: usize,
         count: usize,
     ) -> Result<Char<'g>, NeedGc> {
-        let (b, t) = (utf8(self.cx, base), utf8(self.cx, tag));
+        let b = base.map(|b| b.utf8(self.cx)).unwrap_or(std::borrow::Cow::Borrowed(b""));
+        let t = utf8(self.cx, tag);
         if !b.is_empty() {
             if !t.is_empty() {
                 let mut s = b.into_owned();
@@ -462,7 +637,10 @@ impl<'g> Names<'g, '_> {
                 s.extend_from_slice(&t);
                 mk_utf8(self.cx, &s)
             } else if count == 1 {
-                Ok(base.unwrap())
+                match base.unwrap() {
+                    Base::Char(c) => Ok(*c),
+                    Base::Utf8(bytes) => mk_utf8(self.cx, bytes),
+                }
             } else {
                 let mut s = b.into_owned();
                 s.extend_from_slice(seqno.to_string().as_bytes());
@@ -480,50 +658,84 @@ impl<'g> Names<'g, '_> {
     fn extract(
         &mut self,
         v: Ref<'g>,
-        base: Option<Char<'g>>,
+        base: Option<&Base<'g>>,
         tag: Option<Char<'g>>,
         recurse: bool,
         nd: &mut NameData,
     ) -> Result<(), NeedGc> {
-        let mut base = base;
+        if self.stop {
+            return Ok(());
+        }
+        let owned_base;
+        let cur_base: Option<&Base<'g>>;
         let mut savecount = 0;
         let saveseqno;
         if tag.is_some() {
-            base = self.new_base(base, tag)?;
+            owned_base = self.new_base(base, tag);
+            cur_base = owned_base.as_ref();
             saveseqno = nd.seqno;
             savecount = nd.count;
             nd.count = 0;
             names_count(self.cx, v, recurse, nd);
             nd.seqno = 0;
         } else {
+            cur_base = base;
             saveseqno = 0;
         }
         match v.sexptype() {
             NILSXP => {}
             LISTSXP | VECSXP | EXPRSXP => {
                 for it in items(self.cx, v).unwrap() {
+                    if self.stop {
+                        return Ok(());
+                    }
                     if recurse {
-                        self.extract(it.value, base, it.name, recurse, nd)?;
+                        self.extract(it.value, cur_base, it.name, recurse, nd)?;
                     } else {
                         nd.seqno += 1;
-                        let n = self.new_name(base, it.name, nd.seqno, nd.count)?;
-                        self.push(n);
+                        if self.k >= self.start {
+                            let c = self.new_name(cur_base, it.name, nd.seqno, nd.count);
+                            if self.fill.put(self.k, c)? {
+                                self.stop = true;
+                                return Ok(());
+                            }
+                        }
+                        self.k += 1;
                     }
                 }
             }
             LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
-                let names = attrib::names(v).and_then(|n| n.as_vector::<Char<'g>>());
-                for i in 0..v.len().unwrap_or(0) {
-                    let namei = names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty());
-                    nd.seqno += 1;
-                    let n = self.new_name(base, namei, nd.seqno, nd.count)?;
-                    self.push(n);
+                let len = v.len().unwrap_or(0);
+                if self.k + len <= self.start {
+                    self.k += len;
+                    nd.seqno += len;
+                } else {
+                    let from = self.start.saturating_sub(self.k);
+                    self.k += from;
+                    nd.seqno += from;
+                    let names = attrib::names(v).and_then(|n| n.as_vector::<Char<'g>>());
+                    for i in from..len {
+                        let namei = names.map(|n| n.get(i)).filter(|c| !c.bytes().is_empty());
+                        nd.seqno += 1;
+                        let c = self.new_name(cur_base, namei, nd.seqno, nd.count);
+                        if self.fill.put(self.k, c)? {
+                            self.stop = true;
+                            return Ok(());
+                        }
+                        self.k += 1;
+                    }
                 }
             }
             _ => {
                 nd.seqno += 1;
-                let n = self.new_name(base, None, nd.seqno, nd.count)?;
-                self.push(n);
+                if self.k >= self.start {
+                    let c = self.new_name(cur_base, None, nd.seqno, nd.count);
+                    if self.fill.put(self.k, c)? {
+                        self.stop = true;
+                        return Ok(());
+                    }
+                }
+                self.k += 1;
             }
         }
         if tag.is_some() {
@@ -562,90 +774,77 @@ fn names_count<'g>(cx: &'g Cx, v: Ref<'g>, recurse: bool, nd: &mut NameData) {
     }
 }
 
-/// How the top-level names are walked: `c()` gives each argument a fresh
-/// `NameData`, `unlist()` without recursion shares one, with recursion
-/// walks the list itself.
-enum TopNames<'g> {
-    PerItem,
-    Shared,
-    Whole(Ref<'g>),
+/// Build the `names` vector into `nm_out` through [`Cx::fill_strings`].
+// R: bind.c:NewExtractNames
+fn fill_names(cx: &mut Cx, input: BindInput<'_>, recurse: bool, n: usize, nm_out: Out<'_>) -> RResult<()> {
+    cx.fill_strings(nm_out, n, |cx, fill| {
+        let start = fill.start();
+        let mut names = Names { cx, fill, start, k: 0, stop: false };
+        match input {
+            BindInput::C(_) => {
+                visit_top(cx, input, &mut |it| {
+                    let mut nd = NameData::default();
+                    names.extract(it.value, None, it.name, recurse, &mut nd)
+                })?;
+            }
+            BindInput::Unlist(x) if recurse => {
+                let mut nd = NameData::default();
+                names.extract(x.bind(cx), None, None, true, &mut nd)?;
+            }
+            BindInput::Unlist(_) => {
+                let mut nd = NameData::default();
+                visit_top(cx, input, &mut |it| names.extract(it.value, None, it.name, false, &mut nd))?;
+            }
+        }
+        Ok(Ok(()))
+    })
 }
 
 /// The result of `c()` or `unlist()` from the top-level items: GNU R's
 /// shared tail of `do_c_dflt` and `do_unlist`.
-fn bind_result<'g, 'r>(
-    cx: &'g Cx,
-    call: Root<'r>,
-    top: &[Item<'g>],
-    d: &Bind,
+///
+/// `StringAnswer` and `Names` run through [`Cx::fill_strings`] and
+/// `ListAnswer` through [`Cx::fill_list`], keeping the result in `out` and
+/// the names vector in a scope root so collections can run inside each loop
+/// with no unrooted fresh objects (`list`, `nm`, `base`).
+fn bind_result(
+    cx: &mut Cx,
+    s: Scope<'_>,
+    call: Root<'_>,
+    input: BindInput<'_>,
     recurse: bool,
-    names_by: TopNames<'g>,
-) -> Result<Built<'g, 'r, ()>, NeedGc> {
+    usenames: bool,
+    out: Out<'_>,
+) -> RResult<()> {
+    let d = compute_bind(cx, input, recurse, usenames);
     let ty = mode(d.flags);
     let n = d.len;
-    // the names first (the result's single attribute)
-    let mut a = Attrs::new();
-    let mut list: Vec<Ref<'g>> = Vec::new();
-    if matches!(ty, VECSXP | EXPRSXP) {
-        list.reserve(n);
-        if recurse {
-            for it in top {
-                list_answer(cx, it.value, true, &mut list)?;
-            }
-        } else {
-            for it in top {
-                list_answer(cx, it.value, false, &mut list)?;
-            }
+    let res = out.root();
+    match ty {
+        NILSXP => {
+            out.set(cx, cx.nil());
+            return Ok(());
         }
-    }
-    let len = if matches!(ty, VECSXP | EXPRSXP) { list.len() } else { n };
-    if d.nnames && len > 0 {
-        let mut nm = cx.alloc_vector::<Char<'g>>(len)?;
-        {
-            let mut names = Names { cx, out: &mut nm, k: 0 };
-            match names_by {
-                TopNames::PerItem => {
-                    for it in top {
-                        let mut nd = NameData::default();
-                        names.extract(it.value, None, it.name, recurse, &mut nd)?;
-                    }
-                }
-                TopNames::Shared => {
-                    let mut nd = NameData::default();
-                    for it in top {
-                        names.extract(it.value, None, it.name, recurse, &mut nd)?;
-                    }
-                }
-                TopNames::Whole(x) => {
-                    let mut nd = NameData::default();
-                    names.extract(x, None, None, recurse, &mut nd)?;
-                }
-            }
-        }
-        a.install(Attr { tag: cx.sym(RSym::Names), value: nm.finish().into() });
-    }
-    let r: Ref<'g> = match ty {
-        NILSXP => cx.nil(),
-        VECSXP | EXPRSXP => {
-            let mut r = if ty == EXPRSXP { cx.alloc_expression(len)? } else { cx.alloc_vector::<Ref<'g>>(len)? };
-            for (i, &e) in list.iter().enumerate() {
-                r.set(i, e);
-            }
-            a.apply(cx, &mut r)?;
-            r.finish().into()
-        }
-        _ => match atomic_answer(cx, top, ty, n, &a) {
-            Ok(r) => r,
-            Err(Fill::Gc(e)) => return Err(e),
+        STRSXP => string_answer(cx, call, input, n, out)?,
+        VECSXP => list_answer(cx, input, ListKind::List, recurse, n, out)?,
+        EXPRSXP => list_answer(cx, input, ListKind::Expr, recurse, n, out)?,
+        _ => cx.build_with(out, |cx| match plain_answer(cx, input, ty, n) {
+            Ok(r) => Ok(Built::done(r)),
+            Err(Fill::Gc(e)) => Err(e),
             Err(Fill::Type(t, who)) => {
-                return Ok(Built::fail(Diag::error_call(
-                    Some(call),
-                    format!("type '{t}' is unimplemented in '{who}'"),
-                )));
+                Ok(Built::fail(Diag::error_call(Some(call), format!("type '{t}' is unimplemented in '{who}'"))))
             }
-        },
-    };
-    Ok(Built::done(r))
+        })?,
+    }
+    if d.nnames && n > 0 {
+        let nm = s.out(cx);
+        let nm_root = nm.root();
+        fill_names(cx, input, recurse, n, nm)?;
+        let al =
+            s.capture(cx, |cx, o| cx.build(o, |cx| cx.cons_tagged(nm_root.bind(cx), cx.nil(), cx.sym(RSym::Names))))?;
+        cx.set_attrib_list(res, al);
+    }
+    Ok(())
 }
 
 const C: Generic = Generic::builtin("c");
@@ -715,21 +914,7 @@ pub fn do_c(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out: Out
                 }
             }
         }
-        cx.build_with(out, |cx| {
-            // the arguments but those two
-            let top: Vec<Item<'_>> = (0..args.len())
-                .filter(|&i| !is_c_option(cx, args, i))
-                .map(|i| Item { value: args.get(cx, i), name: args.name(cx, i).map(|s| s.name(cx)) })
-                .collect();
-            let mut d = Bind::default();
-            for it in &top {
-                if usenames && !d.nnames {
-                    d.nnames = it.name.is_some() || has_names(cx, it.value);
-                }
-                answer_type(cx, it.value, recurse, usenames, &mut d);
-            }
-            bind_result(cx, call, &top, &d, recurse, TopNames::PerItem)
-        })
+        bind_result(cx, s, call, BindInput::C(args), recurse, usenames, out)
     })
 }
 
@@ -754,29 +939,5 @@ pub fn do_unlist(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, out
     // the answers read the elements of `x` (and with `recursive`, of the
     // lists under it) through INTEGER, REAL, ...
     cx.materialize_nested(x, if recurse { None } else { Some(1) })?;
-    cx.build_with(out, |cx| {
-        let xv = x.bind(cx);
-        let top: Vec<Item<'_>> = items(cx, xv).unwrap().collect();
-        let mut d = Bind::default();
-        if xv.sexptype() == VECSXP {
-            if usenames && attrib::names(xv).is_some() {
-                d.nnames = true;
-            }
-            for it in &top {
-                if usenames && !d.nnames {
-                    d.nnames = has_names(cx, it.value);
-                }
-                answer_type(cx, it.value, recurse, usenames, &mut d);
-            }
-        } else {
-            for it in &top {
-                if usenames && !d.nnames {
-                    d.nnames = it.name.is_some() || has_names(cx, it.value);
-                }
-                answer_type(cx, it.value, recurse, usenames, &mut d);
-            }
-        }
-        let by = if recurse { TopNames::Whole(xv) } else { TopNames::Shared };
-        bind_result(cx, call, &top, &d, recurse, by)
-    })
+    cx.scope(|cx, s| bind_result(cx, s, call, BindInput::Unlist(x), recurse, usenames, out))
 }

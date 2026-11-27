@@ -107,26 +107,44 @@
 
 use crate::exit::RResult;
 use crate::fresh::FreshVec;
-use crate::handle::Char;
+use crate::handle::{Char, Ref};
 use crate::isolate::Cx;
 use crate::outcome::{Built, Diag};
 use crate::root::{Out, Root};
-use robigo_heap::types::STRSXP;
+use robigo_heap::types::{EXPRSXP, STRSXP, VECSXP};
 use robigo_heap::{NeedGc, Safepoint, Sexp};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// What a pass of the builtin's loop ends with: done or stopped by
-/// [`Fill::put`] (`Ok(Ok(()))`), an error to raise (the partial result is
-/// dropped), or an allocation the heap refused (`Err`; refused again, it is
-/// GNU R's error for the cause). Two refusals are the same to the loop,
-/// which returns either with `?`:
-/// - the one given to [`Fill::put`], for that element's CHARSXP: the fill
-///   collects and runs the loop again from that element;
+/// [`Fill::put`] / [`FillList::put`] (`Ok(Ok(()))`), an error to raise
+/// (the partial result is dropped), or an allocation the heap refused
+/// (`Err`; refused again, it is GNU R's error for the cause). Two refusals
+/// are the same to the loop, which returns either with `?`:
+/// - the one given to [`Fill::put`] or [`FillList::put`], for that
+///   element's allocation: the fill collects and runs the loop again from
+///   that element;
 /// - one the loop met in an allocation of its own, outside `put` (a
 ///   coercion in its setup, a buffer): the fill collects and runs the pass
 ///   again from its start, `fill.start()` (0 for the first pass). The
 ///   elements the pass had put are made again, with the same values.
-pub type FillPass = Result<Result<(), Diag<'static>>, NeedGc>;
+pub type FillPass<'r> = Result<Result<(), Diag<'r>>, NeedGc>;
+
+/// Whether [`Cx::fill_list`] builds a `VECSXP` (list) or an `EXPRSXP`
+/// (expression vector).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListKind {
+    List,
+    Expr,
+}
+
+impl ListKind {
+    const fn sexptype(self) -> u8 {
+        match self {
+            ListKind::List => VECSXP,
+            ListKind::Expr => EXPRSXP,
+        }
+    }
+}
 
 /// Where a pass of [`Cx::fill_strings`]'s loop stores its elements.
 pub struct Fill<'a> {
@@ -218,10 +236,123 @@ impl<'a> Fill<'a> {
     /// (debug builds) a pass that returned `Ok(Ok(()))` without a stop made
     /// every element.
     #[inline(always)]
-    fn check_done(&self, pass: &FillPass) {
+    fn check_done(&self, pass: &FillPass<'_>) {
         #[cfg(debug_assertions)]
         if matches!(pass, Ok(Ok(()))) && self.next >= self.n {
             assert_eq!(self.expect, self.n, "robigo: a fill pass returned with elements unmade");
+        }
+        let _ = pass;
+    }
+}
+
+/// Where a pass of [`Cx::fill_list`]'s loop stores its elements.
+///
+/// Follows H's rules for list/expression fills:
+/// - **Rule 1:** a `&Cx` request of `LARGE` (1 MiB) or more made while a
+///   collection is due is a defect (panics under `ROBIGO_GC_STATS=check`).
+///   An element that may need such a request checks [`Cx::gc_due`] first
+///   and, if due, ends the pass with `put(i, Err(NeedGc::Bytes))`.
+/// - **Rule 2:** make the whole element, then pass it to [`FillList::put`].
+///
+/// A view kept from one pass for the next does not compile:
+///
+/// ```compile_fail
+/// # use robigo_rtcore::{ListKind, OwnedIsolate, Ref};
+/// # let mut iso = OwnedIsolate::new();
+/// # let cx = iso.cx();
+/// cx.scope(|cx, s| {
+///     let out = s.out(cx);
+///     let mut kept: Option<Ref<'_>> = None;
+///     cx.fill_list(out, ListKind::List, 1, |cx, fill| {
+///         let v = kept.unwrap_or_else(|| cx.nil());
+///         kept = Some(v);
+///         fill.put(0, Ok(v)).map(|_| Ok(()))
+///     })
+/// })
+/// .unwrap();
+/// ```
+pub struct FillList<'a> {
+    into: IntoList<'a>,
+    start: usize,
+    next: usize,
+    n: usize,
+    poll: &'a AtomicU32,
+    cx: &'a Cx,
+    #[cfg(debug_assertions)]
+    expect: usize,
+    #[cfg(debug_assertions)]
+    stopped: bool,
+}
+
+enum IntoList<'a> {
+    /// The first pass: the fresh list/expression vector (no BARRIER/FROZEN
+    /// bit; every unfilled slot holds immortal `R_NilValue`).
+    Fresh(FreshVec<'a, Ref<'a>>),
+    /// A pass after a serve: the vector, read again from its root (may be
+    /// old under `young:16`, so stores go through `set_elt`).
+    Rooted(Sexp),
+}
+
+impl<'a> FillList<'a> {
+    /// The element this pass starts at: the loop makes elements
+    /// `start()..len`.
+    #[inline(always)]
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Element `i` (each in turn from `start()`) is `v`, the completed
+    /// element made for it (Rule 2): stored, then the poll word read.
+    /// `Ok(true)`: stop the pass now and return `Ok(Ok(()))`; the fill
+    /// serves the safepoint and runs the loop again from `i + 1`. `Err`:
+    /// the heap refused `v`'s allocation; return it (`?`), and the fill
+    /// collects and runs the loop again from `i`.
+    #[inline(always)]
+    pub fn put(&mut self, i: usize, v: Result<Ref<'a>, NeedGc>) -> Result<bool, NeedGc> {
+        #[cfg(debug_assertions)]
+        {
+            assert!(!self.stopped, "robigo: FillList::put after the stop: the pass did not end at the stop");
+            assert_eq!(i, self.expect, "robigo: FillList::put of element {i}, expected {}", self.expect);
+            self.expect += 1;
+        }
+        let v = match v {
+            Ok(v) => v,
+            Err(e) => return Err(self.refused(i, e)),
+        };
+        match &mut self.into {
+            IntoList::Fresh(vec) => vec.set(i, v),
+            IntoList::Rooted(x) => {
+                assert!(i < self.n, "robigo: element {i} of {}", self.n);
+                let s = v.sexp();
+                self.cx.iso().check_owns(s);
+                // (d) SAFETY: element `i < n` of the live VECSXP/EXPRSXP read
+                // from the result's root this pass, and a live object of this
+                // heap; `set_elt` maintains the barrier and reference counts.
+                unsafe { x.set_elt(i, s) };
+            }
+        }
+        if self.poll.load(Ordering::Relaxed) != 0 && i + 1 < self.n {
+            self.next = i + 1;
+            #[cfg(debug_assertions)]
+            {
+                self.stopped = true;
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    #[cold]
+    fn refused(&mut self, i: usize, e: NeedGc) -> NeedGc {
+        self.next = i;
+        e
+    }
+
+    #[inline(always)]
+    fn check_done(&self, pass: &FillPass<'_>) {
+        #[cfg(debug_assertions)]
+        if matches!(pass, Ok(Ok(()))) && self.next >= self.n {
+            assert_eq!(self.expect, self.n, "robigo: a fill_list pass returned with elements unmade");
         }
         let _ = pass;
     }
@@ -237,11 +368,11 @@ impl Cx {
     /// with GNU R's collections between elements (see the module's
     /// promises). The first pass is one `&Cx` interval, as
     /// [`Cx::build_with`]'s: when nothing is due, nothing else runs.
-    pub fn fill_strings(
+    pub fn fill_strings<'r>(
         &mut self,
         out: Out<'_>,
         n: usize,
-        mut f: impl for<'a> FnMut(&'a Cx, &mut Fill<'a>) -> FillPass,
+        mut f: impl for<'a> FnMut(&'a Cx, &mut Fill<'a>) -> FillPass<'r>,
     ) -> RResult<()> {
         // (a) the result's slot, read again after every serve
         let res = out.root();
@@ -285,11 +416,11 @@ impl Cx {
     /// run the loop on from where it stopped, through the result's root.
     #[cold]
     #[inline(never)]
-    fn fill_strings_resume(
+    fn fill_strings_resume<'r>(
         &mut self,
         res: Root<'_>,
         n: usize,
-        f: &mut impl for<'a> FnMut(&'a Cx, &mut Fill<'a>) -> FillPass,
+        f: &mut impl for<'a> FnMut(&'a Cx, &mut Fill<'a>) -> FillPass<'r>,
         mut stop: (usize, Option<NeedGc>),
     ) -> RResult<()> {
         // the refusal served last, while no element has been made since
@@ -325,6 +456,112 @@ impl Cx {
                 fill.check_done(&pass);
                 let next = match pass {
                     // (a refusal `put` did not see: the pass again)
+                    Err(_) if fill.next >= n => start,
+                    _ => fill.next,
+                };
+                (pass, next)
+            };
+            if next > start {
+                refused = None;
+            }
+            match pass {
+                Ok(Ok(())) if next >= n => return Ok(()),
+                Ok(Ok(())) => stop = (next, None),
+                Ok(Err(d)) => return Err(self.raise(d)),
+                Err(e) => stop = (next, Some(e)),
+            }
+        }
+    }
+
+    /// A list (`ListKind::List`) or expression vector (`ListKind::Expr`) of
+    /// `n` elements, made by the loop `f` (elements `fill.start()..n`, each
+    /// completed whole and stored with [`FillList::put`]), written to `out`,
+    /// with GNU R's collections between elements.
+    pub fn fill_list<'r>(
+        &mut self,
+        out: Out<'_>,
+        kind: ListKind,
+        n: usize,
+        mut f: impl for<'a> FnMut(&'a Cx, &mut FillList<'a>) -> FillPass<'r>,
+    ) -> RResult<()> {
+        let res = out.root();
+        let stop: Stop = self.build_with(out, |cx| {
+            // (c) R_NilValue (immortal) in every element until it is filled
+            let v = match kind {
+                ListKind::List => cx.alloc_vector::<Ref<'_>>(n)?,
+                ListKind::Expr => cx.alloc_expression(n)?,
+            };
+            let mut fill = FillList {
+                into: IntoList::Fresh(v),
+                start: 0,
+                next: n,
+                n,
+                poll: &cx.iso().poll,
+                cx,
+                #[cfg(debug_assertions)]
+                expect: 0,
+                #[cfg(debug_assertions)]
+                stopped: false,
+            };
+            let pass = f(cx, &mut fill);
+            fill.check_done(&pass);
+            let next = fill.next;
+            let IntoList::Fresh(v) = fill.into else { unreachable!() };
+            let v = v.finish().into();
+            Ok(match pass {
+                Ok(Ok(())) if next >= n => Built::Done(v, None),
+                Ok(Ok(())) => Built::Done(v, Some((next, None))),
+                Ok(Err(d)) => Built::fail(d),
+                Err(e) => Built::Done(v, Some((if next >= n { 0 } else { next }, Some(e)))),
+            })
+        })?;
+        match stop {
+            None => Ok(()),
+            Some(s) => self.fill_list_resume(res, kind, n, &mut f, s),
+        }
+    }
+
+    /// The passes after the first for [`Cx::fill_list`].
+    #[cold]
+    #[inline(never)]
+    fn fill_list_resume<'r>(
+        &mut self,
+        res: Root<'_>,
+        kind: ListKind,
+        n: usize,
+        f: &mut impl for<'a> FnMut(&'a Cx, &mut FillList<'a>) -> FillPass<'r>,
+        mut stop: (usize, Option<NeedGc>),
+    ) -> RResult<()> {
+        let mut refused: Option<NeedGc> = None;
+        loop {
+            let (start, e) = stop;
+            match e {
+                Some(e) if refused == Some(e) => return Err(self.refused_again(e)),
+                Some(e) => {
+                    self.need_gc(e)?;
+                    refused = Some(e);
+                }
+                None => self.safepoint(Safepoint::Loop)?,
+            }
+            let (pass, next) = {
+                let cx = &*self;
+                let x = res.bind(cx);
+                debug_assert!(x.sexptype() == kind.sexptype() && x.len() == Some(n));
+                let mut fill = FillList {
+                    into: IntoList::Rooted(x.sexp()),
+                    start,
+                    next: n,
+                    n,
+                    poll: &cx.iso().poll,
+                    cx,
+                    #[cfg(debug_assertions)]
+                    expect: start,
+                    #[cfg(debug_assertions)]
+                    stopped: false,
+                };
+                let pass = f(cx, &mut fill);
+                fill.check_done(&pass);
+                let next = match pass {
                     Err(_) if fill.next >= n => start,
                     _ => fill.next,
                 };

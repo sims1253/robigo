@@ -1,0 +1,12 @@
+s1: 2001 head 0.333333333333333 500 1 500 
+s2: 1504 u0 0.142857142857143 142.857142857143 TRUE NA 500 
+l1: list 1501 first 0.3333333 500 
+e1: expression 1501 x + 1 1 1500 
+l2: expression 3 a b  500 z 
+l3: list 1001 1 500 1000 sym 
+n1: 2002 a1 a1500 b c.d1 c.d500 c.e 
+n2: 1003 p.q1 p.q1000 p.r s.x s.y 
+n3: list 1001 a b1 b1000 
+n4: integer 1000 a1 a500 b1 b500 
+u1: café  UTF-8 unknown 
+u2: café1 café2 UTF-8 UTF-8 
