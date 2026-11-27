@@ -4,11 +4,14 @@
 //! `.Internal(is.vector(x, mode))`, `is.na`, `is.nan`, `is.finite`,
 //! `is.infinite`, `anyNA` and `storage.mode<-`.
 
-use super::vector::{Warns, atomic_to_strings, coerce, coerce_vector, to_strings_fills};
+use super::vector::{
+    Warns, atomic_to_list_fill, atomic_to_pairlist_fill, atomic_to_strings, coerce, coerce_vector,
+    list_or_pairlist_to_strings_fill, to_strings_fills, vector_to_pair_list_fill,
+};
 use crate::attrib::{self, Attrs};
 use crate::registry;
 use crate::util::check1arg;
-use crate::util::{is_numeric, not_yet, str2type, type_to_char, type2char};
+use crate::util::{is_numeric, is_vector_atomic, not_yet, str2type, type_to_char, type2char};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
     Args, Built, Char, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Ref, Root, View,
@@ -211,11 +214,16 @@ pub fn do_asatomic<const CODE: i32>(
     if x.bind(cx).is_package_altrep() {
         return Err(not_yet(cx, Some(call), "as.vector() of a package ALTREP vector"));
     }
-    // as.character of an atomic vector: ascommon's coerceVector, a CHARSXP
-    // per element with collections between them, and CLEAR_ATTRIB (no
-    // attributes copied)
-    if ty == STRSXP && to_strings_fills(x.bind(cx)) {
-        return atomic_to_strings(cx, x, false, out);
+    // as.character of an atomic vector or list/pairlist/call: per-element
+    // collections via Cx::fill_strings, and CLEAR_ATTRIB (no attributes copied)
+    if ty == STRSXP {
+        let xv = x.bind(cx);
+        if to_strings_fills(xv) {
+            return atomic_to_strings(cx, x, false, out);
+        }
+        if matches!(xv.sexptype(), VECSXP | EXPRSXP | LISTSXP | LANGSXP) {
+            return list_or_pairlist_to_strings_fill(cx, x, false, out);
+        }
     }
     let w = cx.build_with(out, |cx| {
         let xv = x.bind(cx);
@@ -265,10 +273,29 @@ pub fn do_asvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
         }
         return Err(cx.error("invalid 'mode' argument"));
     };
-    // as.vector(x, "character") of an atomic vector: ascommon's
-    // coerceVector as as.character's, and the attributes cleared after it
-    if ty == STRSXP && to_strings_fills(x.bind(cx)) {
-        return atomic_to_strings(cx, x, false, out);
+    // Per-element collecting coercions (fill_strings, fill_list, fill_pairlist)
+    {
+        let xv = x.bind(cx);
+        let xt = xv.sexptype();
+        if ty == STRSXP {
+            if to_strings_fills(xv) {
+                return atomic_to_strings(cx, x, false, out);
+            }
+            if matches!(xt, VECSXP | EXPRSXP | LISTSXP | LANGSXP) {
+                return list_or_pairlist_to_strings_fill(cx, x, false, out);
+            }
+        } else if matches!(ty, VECSXP | EXPRSXP) && is_vector_atomic(xv) {
+            return atomic_to_list_fill(cx, x, ty, out);
+        } else if ty == LISTSXP && is_vector_atomic(xv) {
+            return atomic_to_pairlist_fill(cx, x, out);
+        } else if ty == LISTSXP && matches!(xt, VECSXP | EXPRSXP) {
+            if attrib::attrs(xv).any(|a| a.tag.name_bytes() != b"names") {
+                return Err(
+                    cx.error("robigo: as.pairlist() of a list with attributes besides names is not implemented yet")
+                );
+            }
+            return vector_to_pair_list_fill(cx, x, out);
+        }
     }
     if ty == CLOSXP && x.bind(cx).sexptype() != CLOSXP {
         let f = x.bind(cx).sexptype();

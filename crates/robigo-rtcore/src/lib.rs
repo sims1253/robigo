@@ -285,7 +285,7 @@ pub use env::{
     SetVarTarget, SlotInit, bytecode_expr,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
-pub use fill::{Fill, FillList, FillPass, ListKind};
+pub use fill::{Fill, FillList, FillPairlist, FillPass, ListKind};
 pub use frames::{Frame, WalkError};
 pub use fresh::{DDVAL, EMBEDDED_NUL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{
