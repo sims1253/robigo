@@ -3,13 +3,12 @@
 //!
 //! Not here yet, each an error that says so: ordering strings under a
 //! collation other than C (GNU R collates with ICU, the root collator in the
-//! oracle's `C.UTF-8`), comparing a call (GNU R deparses it), comparing a
-//! list (coerceVectorList), and `_R_COMPARE_LANG_OBJECTS` other than its
-//! default.
+//! oracle's `C.UTF-8`), comparing a call (GNU R deparses it), and
+//! `_R_COMPARE_LANG_OBJECTS` other than its default.
 
 use crate::arith::{MISMATCH, Shape, Side, binary_shape, set_ts, ts_late_error};
 use crate::attrib::{self, Attrs};
-use crate::coerce::Strings;
+use crate::coerce::{Strings, coerce_vector};
 use crate::kernel::relop::{self as k, NA_LOGICAL, RelOp};
 use crate::kernel::{mismatch, result_len, zip2};
 use crate::text;
@@ -76,11 +75,7 @@ pub fn relop_dflt(cx: &mut Cx, op: RelOp, call: Root<'_>, x: Root<'_>, y: Root<'
         let msg = format!("comparison ({}) is possible only for atomic and list types", op.name());
         return Err(cx.error_call(Some(call), &msg));
     }
-    let list = |r: Ref<'_>| matches!(r.sexptype(), VECSXP | EXPRSXP);
-    if list(x.bind(cx)) || list(y.bind(cx)) {
-        return Err(not_yet(cx, Some(call), "comparing a list (coerceVectorList)"));
-    }
-    let (nx, ny, shape, ts, ty) = {
+    let (nx, ny, shape, ts, ty, list_target) = {
         let (xv, yv) = (x.bind(cx), y.bind(cx));
         let len = |r: Ref<'_>| if r.sexptype() == SYMSXP { 1 } else { r.len().unwrap_or(0) };
         let (nx, ny) = (len(xv), len(yv));
@@ -112,26 +107,84 @@ pub fn relop_dflt(cx: &mut Cx, op: RelOp, call: Root<'_>, x: Root<'_>, y: Root<'
         } else {
             None
         };
-        let t = |r: Ref<'_>| r.sexptype();
-        let ty = match (t(xv), t(yv)) {
-            (STRSXP | SYMSXP, _) | (_, STRSXP | SYMSXP) => Ty::Str,
-            (CPLXSXP, _) | (_, CPLXSXP) => Ty::Cplx,
-            (RAWSXP, RAWSXP) => Ty::Raw,
-            _ => Ty::Num,
+        let (tx, ty_code) = (xv.sexptype(), yv.sexptype());
+        let has_list = matches!(tx, VECSXP | EXPRSXP) || matches!(ty_code, VECSXP | EXPRSXP);
+        let (ty, list_target) = if has_list {
+            // R: relop.c:do_relop_dflt's coerceVector ladder when an operand is VECSXP/EXPRSXP
+            match (tx, ty_code) {
+                (STRSXP | SYMSXP, _) | (_, STRSXP | SYMSXP) => (Ty::Str, Some(STRSXP)),
+                (CPLXSXP, _) | (_, CPLXSXP) => (Ty::Cplx, Some(CPLXSXP)),
+                (REALSXP, _) | (_, REALSXP) => (Ty::Num, Some(REALSXP)),
+                (INTSXP, _) | (_, INTSXP) => (Ty::Num, Some(INTSXP)),
+                (LGLSXP, _) | (_, LGLSXP) => (Ty::Num, Some(LGLSXP)),
+                (RAWSXP, _) | (_, RAWSXP) => (Ty::Raw, Some(RAWSXP)),
+                _ => (Ty::Num, None),
+            }
+        } else {
+            let ty = match (tx, ty_code) {
+                (STRSXP | SYMSXP, _) | (_, STRSXP | SYMSXP) => Ty::Str,
+                (CPLXSXP, _) | (_, CPLXSXP) => Ty::Cplx,
+                (RAWSXP, RAWSXP) => Ty::Raw,
+                _ => Ty::Num,
+            };
+            (ty, None)
         };
-        (nx, ny, shape, ts, ty)
+        (nx, ny, shape, ts, ty, (has_list, list_target))
     };
     let n = result_len(nx, ny);
+    let (has_list, list_target) = list_target;
+    if has_list && n > 0 {
+        return cx.scope(|cx, s| {
+            if mismatch(nx, ny) {
+                cx.warning_call(Some(call), MISMATCH)?;
+            }
+            let Some(target) = list_target else {
+                return Err(cx.error_call(Some(call), "comparison of these types is not implemented"));
+            };
+            let cx_x = if matches!(x.bind(cx).sexptype(), VECSXP | EXPRSXP) {
+                s.capture(cx, |cx, o| coerce_vector(cx, x, target, o))?
+            } else {
+                x
+            };
+            let cx_y = if matches!(y.bind(cx).sexptype(), VECSXP | EXPRSXP) {
+                s.capture(cx, |cx, o| coerce_vector(cx, y, target, o))?
+            } else {
+                y
+            };
+            finish_relop(cx, op, call, x, y, cx_x, cx_y, n, shape, ts, ty, out)
+        });
+    }
+    if n > 0 && mismatch(nx, ny) {
+        cx.warning_call(Some(call), MISMATCH)?;
+    }
+    finish_relop(cx, op, call, x, y, x, y, n, shape, ts, ty, out)
+}
+
+/// Complete `do_relop_dflt` after length-mismatch warning and any list
+/// operand coercion: compare `cx_x`/`cx_y` while preserving attributes
+/// (`dim`, `dimnames`, `names`, `tsp`, `class`) from the original `x`/`y`.
+#[allow(clippy::too_many_arguments)]
+fn finish_relop(
+    cx: &mut Cx,
+    op: RelOp,
+    call: Root<'_>,
+    x: Root<'_>,
+    y: Root<'_>,
+    cx_x: Root<'_>,
+    cx_y: Root<'_>,
+    n: usize,
+    shape: Shape,
+    ts: Option<Side>,
+    ty: Ty,
+    out: Out<'_>,
+) -> RResult<()> {
     let mut vals: Option<Vec<i32>> = None;
     if n > 0 {
-        if mismatch(nx, ny) {
-            cx.warning_call(Some(call), MISMATCH)?;
-        }
         match ty {
             Ty::Cplx if !matches!(op, RelOp::Eq | RelOp::Ne) => {
                 return Err(cx.error_call(Some(call), "invalid comparison with complex values"));
             }
-            Ty::Str => match string_relop(cx, op, x.bind(cx), y.bind(cx)) {
+            Ty::Str => match string_relop(cx, op, cx_x.bind(cx), cx_y.bind(cx)) {
                 Ok(v) => vals = Some(v),
                 Err(e) => return Err(e.raise(cx, call)),
             },
@@ -142,16 +195,17 @@ pub fn relop_dflt(cx: &mut Cx, op: RelOp, call: Root<'_>, x: Root<'_>, y: Root<'
     let late = ts_late_error(shape, None, ts, x.bind(cx), y.bind(cx), n, false);
     cx.build(out, |cx| {
         let (xv, yv) = (x.bind(cx), y.bind(cx));
+        let (cxv, cyv) = (cx_x.bind(cx), cx_y.bind(cx));
         let mut v = cx.alloc_vector::<Lgl>(n)?;
         if n > 0 {
             match (ty, &vals) {
                 (Ty::Str, Some(vals)) => v.as_mut_slice().iter_mut().zip(vals).for_each(|(o, &r)| *o = Lgl(r)),
-                (Ty::Cplx, _) => cplx_relop(op, xv, yv, v.as_mut_slice()),
+                (Ty::Cplx, _) => cplx_relop(op, cxv, cyv, v.as_mut_slice()),
                 (Ty::Raw, _) => {
-                    let (a, b) = (raw(xv), raw(yv));
+                    let (a, b) = (raw(cxv), raw(cyv));
                     zip2(a, b, v.as_mut_slice(), |p, q| Lgl(k::raw(op, p, q)));
                 }
-                _ => numeric_relop(op, xv, yv, v.as_mut_slice()),
+                _ => numeric_relop(op, cxv, cyv, v.as_mut_slice()),
             }
         }
         if xattr || yattr {
