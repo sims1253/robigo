@@ -579,7 +579,7 @@ fn eval_statement(
     savestack: i32,
 ) -> bool {
     // under PROTECT(thisExpr), then PROTECT(value) for the print
-    crate::base::repl_eval_toplevel(cx, expr, Some(src), warnings, |cx| cx.global_env(), savestack, (1, 2)).is_ok()
+    crate::base::repl_eval_toplevel(cx, expr, Some(src), warnings, |cx| cx.global_env(), savestack, (1, 2))
 }
 
 /// `R_dot_Last()`, which `R_CleanUp` runs when a session ends normally
