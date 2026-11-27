@@ -580,10 +580,85 @@ pub fn as_character_factor<'g>(cx: &'g Cx, x: Ref<'g>) -> Result<Result<Ref<'g>,
     Ok(Ok(ans.finish().into()))
 }
 
-/// `coerceVector(v, type)` written to `out`, its warnings given after.
+/// `coerceVector(v, type)` written to `out`, its warnings given after. An
+/// atomic vector's strings ([`to_strings_fills`]) are made with collections
+/// between elements ([`atomic_to_strings`]).
 pub fn coerce_vector(cx: &mut Cx, v: Root<'_>, ty: u8, out: Out<'_>) -> RResult<()> {
-    let w = cx.build_with(out, |cx| coerce(cx, v.bind(cx), ty, true))?;
+    coerce_vector_with(cx, v, ty, true, out)
+}
+
+/// [`coerce_vector`] with `coerce`'s `keep_attrs` (false: the result of an
+/// atomic coercion has no attributes copied).
+pub fn coerce_vector_with(cx: &mut Cx, v: Root<'_>, ty: u8, keep_attrs: bool, out: Out<'_>) -> RResult<()> {
+    let r = v.bind(cx);
+    // the same type: `v` itself, no warnings (as `coerce` returns it)
+    if r.sexptype() == ty {
+        out.set(cx, r);
+        return Ok(());
+    }
+    if ty == STRSXP && to_strings_fills(r) {
+        return atomic_to_strings(cx, v, keep_attrs, out);
+    }
+    let w = cx.build_with(out, |cx| coerce(cx, v.bind(cx), ty, keep_attrs))?;
     w.signal(cx)
+}
+
+/// Whether `coerceVector(v, STRSXP)` of `v` is what [`atomic_to_strings`]
+/// makes: a logical, integer, double, complex or raw vector (one of
+/// robigo's compact sequences among them: their coercion to strings is the
+/// element loop's too), not a package ALTREP, whose coercion is its class's.
+pub fn to_strings_fills(v: Ref<'_>) -> bool {
+    matches!(v.sexptype(), LGLSXP | INTSXP | REALSXP | CPLXSXP | RAWSXP) && !v.is_package_altrep()
+}
+
+/// `coerceToString(v)` of a vector [`to_strings_fills`] takes: a CHARSXP
+/// per element (`StringFromLogical`, `StringFromInteger`, ...) made with
+/// GNU R's collections between elements ([`Cx::fill_strings`]; the loop
+/// only makes CHARSXPs from the elements' text, so it rides on
+/// tests/rt/strings/paste-collect.R by fill.rs's rule), then, with
+/// `keep_attrs`, `SHALLOW_DUPLICATE_ATTRIB(ans, v)` (as [`coerce`]'s own
+/// path, which [`Attrs::apply`] does). No element raises or warns.
+// R: coerce.c:coerceToString
+pub fn atomic_to_strings(cx: &mut Cx, v: Root<'_>, keep_attrs: bool, out: Out<'_>) -> RResult<()> {
+    let n = v.bind(cx).len().unwrap_or(0);
+    let res = out.root();
+    cx.fill_strings(out, n, |cx, fill| {
+        let v = v.bind(cx);
+        let mut buf = Vec::new();
+        for i in fill.start()..n {
+            if fill.put(i, string_elt(cx, v, i, &mut buf))? {
+                return Ok(Ok(()));
+            }
+        }
+        Ok(Ok(()))
+    })?;
+    if keep_attrs && attrib::has_attrib(v.bind(cx)) {
+        cx.scope(|cx, s| {
+            let (object, s4) = {
+                let mut a = Attrs::new();
+                a.copy_all(v.bind(cx));
+                (a.object(), a.s4())
+            };
+            let al = s.capture(cx, |cx, o| {
+                cx.build(o, |cx| {
+                    let mut a = Attrs::new();
+                    a.copy_all(v.bind(cx));
+                    a.pairlist(cx)
+                })
+            })?;
+            if al.bind(cx).sexptype() != NILSXP {
+                cx.set_attrib_list(res, al);
+            }
+            if object {
+                cx.set_object_bit(res, true);
+            }
+            if let Some(b) = s4 {
+                cx.set_s4_bit(res, b);
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// A string of length one's element, else `deparse1line_ex(e, FALSE,

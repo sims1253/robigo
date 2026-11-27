@@ -10,7 +10,7 @@
 //! callee's body runs: here the `force_and_call` hook, robigo-rt's port.
 
 use crate::attrib::{self, Attr, Attrs};
-use crate::coerce::{self, vector::coerce};
+use crate::coerce;
 use crate::util::{not_yet, type_to_char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
@@ -446,8 +446,7 @@ pub fn do_vapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
                     }
                     let w = t.out(cx);
                     let wr = w.root();
-                    let warns = cx.build_with(w, |cx| coerce(cx, val.bind(cx), common_type, true))?;
-                    warns.signal(cx)?;
+                    coerce::vector::coerce_vector(cx, val, common_type, w)?;
                     wr
                 } else {
                     val
