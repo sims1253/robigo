@@ -425,8 +425,8 @@ START_COMPILER = 'stopifnot("compiler" %in% loadedNamespaces()); '
 
 def start_torture_step(boot):
     """The step that runs START_SCRIPT under `boot` (ROBIGO_RT_BOOT's value,
-    "" for M1's loader) with the start tortured."""
-    name = {"": "M1's loader", "rdb": "the rdb boot"}[boot]
+    "m1" for M1's loader, INTERIM(L5)) with the start tortured."""
+    name = {"m1": "M1's loader", "rdb": "the rdb boot"}[boot]
     return (f"the start tortured: {name} under ROBIGO_GC_MOVE=1 and gctorture from the heap's creation",
             # (set outright: an inherited hold or R_GCTORTURE=0 would take
             # the start's torture away)
@@ -497,8 +497,14 @@ def full_move_steps():
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         release_build(),
         db_tree(rt_binary()),
-        ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START, **SLOW,
+        # Under M1's loader, INTERIM(L5), as the young:16 step: under rdb
+        # every collection moves a live heap that holds base and the
+        # compiler, and 18 ratcheted cases timed out (docs/verification.md,
+        # "Steps under M1's loader"); an rdb step over the cases that fit is
+        # A1's (runner PR 3)
+        ("conformance under ROBIGO_GC_MOVE=1 with gctorture (every collection moves everything), "
+         "M1's loader (ROBIGO_RT_BOOT=m1)",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START, **SLOW,
           "ROBIGO_CONF_TIMEOUTS": full_slow},
          conformance_command()),
     ])
@@ -532,8 +538,11 @@ def freeze_check_steps():
         ("the R_HOME tree, tools.so built (scripts/rt-home.sh)", {}, ["scripts/rt-home.sh"]),
         release_build(),
         db_tree(rt_binary()),
-        ("conformance under gctorture, the freeze checked at every collection",
-         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+        # (under M1's loader, INTERIM(L5), as the nightly ran before the
+        # flip: the check at every collection over rdb's 42k frozen objects
+        # is A1's to measure and add, runner PR 3)
+        ("conformance under gctorture, the freeze checked at every collection, M1's loader (ROBIGO_RT_BOOT=m1)",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **AFTER_START, **SLOW, "ROBIGO_CONF_TIMEOUTS": case_timeouts(FREEZE_CHECK_SLOW)},
          conformance_command()),
     ])
@@ -569,30 +578,30 @@ def steps(crates):
         # database tree, boot_db, the scripts): built as the conformance step
         # builds it (its features), since the crates' tests build quick
         release_build(),
-        # L5's boot beside M1's loader (ROBIGO_RT_BOOT=rdb): base's database,
-        # written by this robigo-rt booted from base's source, then base
-        # booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
+        # robigo-rt's default boot (L5, GNU R's: base from base's database):
+        # the database, written by this robigo-rt booted from base's source,
+        # then base booted from it (crates/robigo-rtapi/tests/boot_db.rs). Before every
         # step whose tests read it (robigo-rtapi's boot_db tests, in each run
         # of the crates' tests), so a stale tree is rebuilt first (its stamp
         # names the source tree, the script and the binary) and those tests
         # run instead of skipping on a fresh checkout (TREE_RUNS)
         db_tree(rt_binary()),
-        start_torture_step(""),
+        start_torture_step("m1"),
         start_torture_step("rdb"),
         ("the crates' tests (quick profile)", TREE_RUNS, [*crate, *pkgs, *skip]),
         ("boot from base's database (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_HOME_DB": "1"},
          [*test, "-p", "robigo-rtapi", "--test", "boot_db", *skip]),
-        # the boot that replaces M1's (L5, ROBIGO_RT_BOOT=rdb: base from the
-        # tree's base.rdb, as GNU R boots): the ratcheted conformance under it,
-        # plain and with the byte-code crosscheck, each failing as its M1
-        # step does (a ratcheted case that fails; an unexpected or
-        # untranslated closure). Not yet the default anywhere (L's list)
+        # the default boot (L5: base from the tree's base.rdb, as GNU R
+        # boots): the ratcheted conformance under it, plain and with the
+        # byte-code crosscheck, each failing on a ratcheted case that fails
+        # or an unexpected or untranslated closure; M1's loader keeps one
+        # step (ROBIGO_RT_BOOT=m1, INTERIM(L5) until the PR that deletes it).
         # The tree has its translation cache (C1, crates/robigo-rt/src/tcache.rs,
         # beside it: rt-home-db.sh), so these steps run with it; the crosscheck
         # step compares every cached translation with a fresh one too. The
         # same cases with the cache off must pass as well: the cache changes
         # nothing a case sees
-        ("conformance under the rdb boot (ROBIGO_RT_BOOT=rdb)", {"ROBIGO_RT_BOOT": "rdb"}, conformance),
+        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2; the default boot, rdb)", {}, conformance),
         ("conformance under the rdb boot without the translation cache (ROBIGO_TRANSLATION_CACHE=0)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_TRANSLATION_CACHE": "0"}, conformance),
         # the cache as damaged input: a corrupted file's entries are misses,
@@ -618,12 +627,12 @@ def steps(crates):
          "from-source compiler's)",
          {"ROBIGO_RT_BOOT": "rdb", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT_RDB},
          conformance),
-        ("conformance (tests/rt, ratcheted tests/r; GNU R 4.6.2)", {}, conformance),
+        ("conformance under M1's loader (ROBIGO_RT_BOOT=m1, INTERIM(L5))", {"ROBIGO_RT_BOOT": "m1"}, conformance),
         # the boot heap's freeze is on by default (the steps above run with
         # it, its check off); the heap without it, under each boot
         ("conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)", FREEZE_OFF, conformance),
-        ("conformance under the rdb boot with the boot heap's freeze off (ROBIGO_RT_BOOT=rdb, ROBIGO_GC_FREEZE=0)",
-         {"ROBIGO_RT_BOOT": "rdb", **FREEZE_OFF}, conformance),
+        ("conformance under M1's loader with the boot heap's freeze off (ROBIGO_RT_BOOT=m1, ROBIGO_GC_FREEZE=0)",
+         {"ROBIGO_RT_BOOT": "m1", **FREEZE_OFF}, conformance),
         # docs/g3.md §15.3 E5: the same cases and recordings under each
         # observation mode, but those whose `.requires` names the identity
         # the mode gives up (robigo-conformance's KNOWN_FEATURES)
@@ -640,24 +649,34 @@ def steps(crates):
         # request goes through cx.alloc_rooted (docs/g3.md §3 item 3)
         # the boot heap's freeze (robigo-heap's freeze.rs): its invariant
         # checked at every collection here, where every allocation collects
-        # (the move modes below leave the freeze off)
+        # (the move modes below leave the freeze off). The robigo-rt these
+        # tests spawn tortures each case, not its start (AFTER_START, as the
+        # torture conformance steps; the start's own torture is the two
+        # start-torture steps'): a tortured rdb start costs ~8 s, and cli.rs
+        # and alloc.rs spawn dozens. The in-process tests torture from the
+        # heap's creation (only robigo-rtapi's front end reads the variable)
         ("gctorture (collect at every allocation) and the GC stats check",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1"}},
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_STATS": "check", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "1",
+                          **AFTER_START}},
          [*crate, *pkgs, *skip]),
         # docs/g3.md §15.3 E3: the rt slice under the collector modes. The
-        # freeze's check at every 16th collection: at every one it traces
-        # the heap twice per allocation (tests/rt/bytecode/jit.R: 536 s
-        # against 97 s without it, past the case timeout). Its comparison
-        # with the independent trace, whose cost grows with the stack
-        # (c-stack-overflow.R 1.37x at every check), and I2 and I3: the
-        # persistent-state parts, a full check at each process's freezing
-        # collection (checked whatever the period: a marking defect is
-        # caught where it first runs) and every 16th check after, so every
-        # case gets one; the direct loop, whose
-        # defect is transient, at every check (the 2026-11-21 check ledger's
-        # note of 2026-11-24); the step fails if no full check ran (run_steps)
+        # freeze's check at every 16th collection for the first 524,288
+        # collections and every 64th after: at every one it traces the heap
+        # twice per allocation (tests/rt/bytecode/jit.R: 536 s against 97 s
+        # without it, past the case timeout). Under rdb's 42k frozen objects,
+        # only the three >1M-collection outliers (finalizers-self-ref-envs,
+        # cycle_reclamation, tailcall-frames; 64% of the slice's collections)
+        # cross 524,288, leaving the other 973/976 cases at their full 16,16
+        # rate. Its comparison with the independent trace, whose cost grows
+        # with the stack (c-stack-overflow.R 1.37x at every check), and I2
+        # and I3: the persistent-state parts, a full check at each process's
+        # freezing collection (checked whatever the period: a marking defect
+        # is caught where it first runs) and every 16th check after, so every
+        # case gets one; the direct loop, whose defect is transient, at every
+        # check (the 2026-11-21 check ledger's notes of 2026-11-24 and
+        # 2026-11-27); the step fails if no full check ran (run_steps)
         ("conformance under gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16,16", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
+         {"ROBIGO_GCTORTURE": "1", **FREEZE_ON, "ROBIGO_GC_FREEZE_CHECK": "16,16,524288", "ROBIGO_GC_FREEZE_CHECK_REPORT": FREEZE_REPORT,
           **AFTER_START, **slow, "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **GCTORTURE_SLOW})}, conformance),
         # every argument a PROMSXP at call entry (GNU R's representation,
         # through the same binding-kind transitions): docs/g3.md §16's
@@ -668,13 +687,22 @@ def steps(crates):
         ("ROBIGO_MATERIALIZE=1 (every argument slot materialized)",
          {**TREE_RUNS, **{"ROBIGO_MATERIALIZE": "1"}}, [*crate, *pkgs, *skip]),
         # docs/g3.md §16 (H3): the debug moving collector, at every
-        # collection gctorture makes due
+        # collection gctorture makes due; the spawned robigo-rt's from the end
+        # of its start (AFTER_START, as above): with the freeze off its heap
+        # moves whole, base and the compiler too (one rdb spawn: 374
+        # collections after the start, 15,967,295 objects moved)
         ("ROBIGO_GC_MOVE (move every movable object at every collection), with gctorture",
-         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF}}, [*crate, *pkgs, *skip]),
+         {**TREE_RUNS, **{"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": "1", **FREEZE_OFF, **AFTER_START}},
+         [*crate, *pkgs, *skip]),
         # H8: the young objects at each collection, everything at every N-th;
-        # the nightly runs it with every collection moving everything
-        (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture (E3)",
-         {"ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **AFTER_START, **slow,
+        # the nightly runs it with every collection moving everything. Under
+        # M1's loader, INTERIM(L5): with the freeze off the rdb boot's heap
+        # (base and the compiler, 42k objects) is marked at every collection,
+        # and five cases passed their limits (H's ruling on the flip,
+        # docs/verification.md's E3 paragraph); the freeze on would leave the
+        # boot objects unmoved, which is what the step is for
+        (f"conformance under ROBIGO_GC_MOVE={GC_MOVE_YOUNG} with gctorture, M1's loader (ROBIGO_RT_BOOT=m1, E3)",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_GCTORTURE": "1", "ROBIGO_GC_MOVE": GC_MOVE_YOUNG, **FREEZE_OFF, **AFTER_START, **slow,
           "ROBIGO_CONF_TIMEOUTS": case_timeouts({**GCTORTURE_FIRST, **YOUNG_MOVE_FIRST, **YOUNG_MOVE_SLOW})}, conformance),
         # D5's frame recycling (docs/g3.md §16): every frame that would be recycled
         # is poisoned and held back instead, so a frame that escaped without
@@ -700,8 +728,9 @@ def steps(crates):
         # compared with the from-source compiler's code of its source;
         # `main` fails the job on an unexpected difference (the expected
         # ones are the from-source port's known gaps, counted)
-        ("conformance under ROBIGO_BC_CROSSCHECK=1 (translated byte code against the from-source compiler's)",
-         {"ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
+        ("conformance under M1's loader with ROBIGO_BC_CROSSCHECK=1 (translated byte code against the from-source "
+         "compiler's; ROBIGO_RT_BOOT=m1, INTERIM(L5))",
+         {"ROBIGO_RT_BOOT": "m1", "ROBIGO_BC_CROSSCHECK": "1", "ROBIGO_BC_CROSSCHECK_REPORT": BC_REPORT}, conformance),
         ("injected allocation failures (E9, scripts/rt-fail-alloc.py)", {},
          ["python3", "scripts/rt-fail-alloc.py", "--points", "400"]),
         # A4 (docs/g3.md §16, ROBIGO_BUILTIN_DIFF): every row of
@@ -890,9 +919,9 @@ def shard_of(title):
         return "gctorture"
     # the boot heap's freeze off under M1's loader: with E3's freeze check,
     # in the freeze's shard (modes was at its budget: the foreman,
-    # 2026-11-22). Its rdb twin stays in modes, where base's database tree
-    # is built
-    if title == "conformance with the boot heap's freeze off (ROBIGO_GC_FREEZE=0)":
+    # 2026-11-22). Its twin under the default boot stays in modes, where
+    # base's database tree is built
+    if title.startswith("conformance under M1's loader with the boot heap's freeze off"):
         return "gctorture"
     if title.startswith("builtin differential"):
         return "builtin-diff"

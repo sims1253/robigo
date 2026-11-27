@@ -219,7 +219,7 @@ fn check(b: &Built) -> Result<(), Malformed> {
             Op::Arith1 | Op::Not => reg(i.a) && reg(i.b) && k(i.e) && k(i.f),
             Op::AndOr1 => reg(i.a) && reg(i.b) && k(i.e) && tgt(i.target()),
             Op::AndOr2 => reg(i.a) && reg(i.b) && k(i.e),
-            Op::MkClosure => reg(i.a) && k(i.e) && k(i.f) && (i.c == 0 || k(i.c)),
+            Op::MkClosure => reg(i.a) && k(i.e) && k(i.f) && (i.c == 0 || k(i.c)) && (i.b == 0 || k(i.b)),
             Op::Missing => reg(i.a) && k(i.e) && k(i.f),
             Op::Return | Op::Ret => reg(i.b),
             Op::PpCheck => reg(i.b) && k(i.e),
@@ -364,7 +364,8 @@ pub unsafe fn build(cx: &Cx, v: &Verified, source: Sexp, formals: Option<Sexp>) 
         profile: b.profile,
         inline: 0,
         inline_formals: 0,
-        single_read: is_single_read(b) as u8,
+        marks: if is_single_read(b) { crate::ir::MARK_SINGLE_READ } else { 0 }
+            | if is_early_pure(b) { crate::ir::MARK_EARLY_PURE } else { 0 },
         nregs: b.nregs as u32,
         nins: b.ins.len() as u32,
         max_depth: b.max_depth as u32,
@@ -551,7 +552,43 @@ pub unsafe fn single_read(code: Sexp) -> Option<Ins> {
         let p = blob.inline_data();
         let hdr = &*(p as *const Header);
         debug_assert_eq!(hdr.magic, MAGIC);
-        (hdr.single_read == 1).then(|| *(p.add(INS_OFFSET) as *const Ins))
+        (hdr.marks & crate::ir::MARK_SINGLE_READ != 0).then(|| *(p.add(INS_OFFSET) as *const Ins))
+    }
+}
+
+/// Whether verified code is all `crate::early`'s evaluator runs: the `Bc`
+/// profile, at most its registers, every instruction a constant load, a
+/// variable read of no `..N`, arithmetic, a clear, or a visible `Ret`, none
+/// with a tick or depth step (`early::run`'s checks, made once here).
+fn is_early_pure(b: &Built) -> bool {
+    use crate::ir::{F_DEPTH, F_TICK, Op};
+    b.profile == Profile::Bc
+        && usize::from(b.nregs) <= crate::early::MAX_REGS
+        && b.ins.iter().all(|i| {
+            i.fl & (F_TICK | F_DEPTH) == 0
+                && match i.op {
+                    Op::LdConst | Op::LdScalar | Op::GetVar | Op::Arith | Op::Arith1 => true,
+                    Op::Clear | Op::ClearRange | Op::Nop => true,
+                    Op::Ret => i.g != 2,
+                    _ => false,
+                }
+        })
+}
+
+/// Whether a live code object is marked [`crate::ir::MARK_EARLY_PURE`].
+/// Read from the header directly, as [`single_read`].
+///
+/// # Safety
+/// `code` is a live code object ([`build`]).
+#[inline]
+pub unsafe fn early_pure(code: Sexp) -> bool {
+    // SAFETY: the caller's contract: element 0 is the blob, its header
+    // written by `build`.
+    unsafe {
+        let blob = *(code.inline_data() as *const Sexp);
+        let hdr = &*(blob.inline_data() as *const Header);
+        debug_assert_eq!(hdr.magic, MAGIC);
+        hdr.marks & crate::ir::MARK_EARLY_PURE != 0
     }
 }
 

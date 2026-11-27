@@ -20,7 +20,8 @@
 #   - the boot (`robigo-rt -e 1`, five times);
 #   - tests/rt and its ratcheted tests/r cases (the rt conformance runner,
 #     ROBIGO_RT_BIN pointed at the instrumented binary; scripts/rt-home.sh's
-#     R_HOME tree first).
+#     R_HOME tree first, then scripts/rt-home-db.sh's, written by it: the
+#     default boot's).
 # docs/g3.md §13 compares wall time on this shipped build.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -53,8 +54,10 @@ ran_cases() {
 # robigo-rt's training runs, with the instrumented binary $1
 train_rt() {
   local bin=$1 work=$2
-  # robigo-rt's R_HOME tree first: every run below boots from it
+  # robigo-rt's R_HOME trees first: every run below boots from the
+  # database tree (the default boot), which this binary writes
   scripts/rt-home.sh > /dev/null
+  scripts/rt-home-db.sh --robigo-rt "$bin" > /dev/null
   mkdir -p "$work/rows"
   python3 - "$work/rows" <<'PY'
 import os, sys, tomllib

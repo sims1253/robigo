@@ -238,6 +238,7 @@ mod console;
 mod context;
 mod env;
 mod exit;
+mod fill;
 mod frames;
 mod fresh;
 mod handle;
@@ -273,7 +274,7 @@ mod freeze_tests;
 pub use capi::{
     CGlobals, CParseState, PARSE_CONTEXT_SIZE, PARSE_ERROR_SIZE, PP_REDZONE, PPSTACK_SIZE, R_MB_CUR_MAX, mbcslocale,
 };
-pub use console::{Console, SharedBuf};
+pub use console::{Console, SharedBuf, SinkHook};
 pub use context::{
     Context, ContextId, CtxRef, FunctionContext, Left, OnExitEval, Promargs, PromargsFill, RawFunctionContext,
     c_layout, check_layout, ctxt,
@@ -284,6 +285,7 @@ pub use env::{
     SetVarTarget, SlotInit, bytecode_expr,
 };
 pub use exit::{Exit, ExitInfo, ExitKind, RError, RResult};
+pub use fill::{Fill, FillPass};
 pub use frames::{Frame, WalkError};
 pub use fresh::{DDVAL, EMBEDDED_NUL, FreshVec, Unique, dd_val, is_dd_name};
 pub use handle::{

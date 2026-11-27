@@ -45,9 +45,12 @@ print(twice(side()))
 print(cnt)
 
 # the evaluation depth: a deep chain of single reads reaches the limit as
-# GNU R's does
+# GNU R's does (under a lower limit: the same error path at a tenth of the
+# depth, which keeps the case short under gctorture)
 deep <- function(n, x) if (n == 0) id(x) else deep(n - 1, x)
 for (i in 1:3) deep(5, 1)
 print(deep(100, 7))
-r <- tryCatch(deep(10000, 1), error = function(e) "too deep")
+old <- options(expressions = 500)
+r <- tryCatch(deep(1000, 1), error = function(e) "too deep")
+options(old)
 print(r)

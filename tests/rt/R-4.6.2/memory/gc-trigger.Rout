@@ -1,0 +1,9 @@
+g0_ge_used: TRUE 
+g1_ge_used: TRUE 
+g1_grew: TRUE 
+g2_ge_used: TRUE 
+g2_grew: TRUE 
+g3_ge_used: TRUE 
+g3_shrank: TRUE 
+shrink_monotone: TRUE 
+shrink_below_peak: TRUE 

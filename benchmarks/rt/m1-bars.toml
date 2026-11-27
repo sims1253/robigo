@@ -129,6 +129,13 @@ max = 1.0
 # rival (about 1.095x, F2 revised, docs/ledger/g3/2026-11-17-a0b-stock-rival.md)
 # and owed by P3, M3's bar-closing package. Until then the gate holds it to
 # the 0.5% rule against main, as fib.
+# rt-bars' NOTE that it meets 1.0x (0.928x under m1, 0.932x under rdb) stands
+# unacted on: the ratio holds GNU R's minor collection inside the row's
+# window and none of robigo-rt's. With neither side collecting it is 1.061x,
+# amortised over many collections 1.111x (X's three-ratio table on main
+# a0440322a; docs/ledger/g3/2026-11-23-row-collections.md). Whether a bar
+# may be met on today's ratio is the open decision on how the bars count
+# collections; the bar stays unmet until it is made.
 row = "s3"
 against = "gnur"
 max = 1.0

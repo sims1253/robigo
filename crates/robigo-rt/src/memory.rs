@@ -5,9 +5,10 @@
 //! `gc()`'s numbers, `gcinfo`'s reports and `memory.profile()`'s counts are
 //! the robigo heap's, in GNU R's units and shape: nodes counted as
 //! `sizeof(SEXPREC)` = 56 bytes, the vector heap in 8-byte VECRECs, every
-//! collection a full one (GNU R's level 2). docs/g3.md's L7 asks for GNU
-//! R's own numbers, which need a logical account of GNU R's allocations
-//! that does not exist yet (docs/ledger/g3/2026-11-18-h-memory-internals.md).
+//! collection a full one (GNU R's level 2). By docs/g3.md's L7 (amended
+//! 2026-11-24), the shape, limits, `reset` and max-used semantics, trigger
+//! rules, report format and retained-data deltas are exact, while absolute
+//! totals, triggers and collection counts/levels are robigo's own.
 
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Encoding, Out, RResult, Ref, Root};

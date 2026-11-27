@@ -1631,19 +1631,33 @@ impl<'g> Comp<'g> {
             }
             MAKECLOSURE => {
                 let fb = k(i.a[0]);
-                // SAFETY: MAKECLOSURE's constant: list(formals, body, srcref?)
-                let (formals, body) = unsafe {
-                    if fb.typ() != VECSXP || fb.std_len() < 2 {
-                        return Err(Need::Fail);
-                    }
+                let nil = self.nil();
+                // check.rs's K::Closure refused anything else before this
+                // reads the operand: kept, so the two cannot disagree
+                // SAFETY: a live constant; its type is tested first.
+                let short = unsafe { fb.typ() != VECSXP || fb.std_len() < 2 };
+                debug_assert!(!short, "MAKECLOSURE's constant passed check.rs's K::Closure");
+                if short {
+                    return self
+                        .malformed(format!("MAKECLOSURE's constant {} is not a closure's formals and body", i.a[0]));
+                }
+                // SAFETY: MAKECLOSURE's constant: list(formals, body, srcref?),
+                // a list of at least two, tested above
+                let (formals, body, srcref) = unsafe {
                     let p = fb.std_data() as *const Sexp;
-                    (*p, *p.add(1))
+                    // R: eval.c:bcEval MAKECLOSURE: "if (LENGTH(fb) > 2)", any
+                    // non-NULL third element becomes the closure's "srcref"
+                    // attribute, the object itself (setAttrib does not check it)
+                    (*p, *p.add(1), if fb.std_len() > 2 { *p.add(2) } else { nil })
                 };
                 let r = self.push(t);
                 let mut m = Ins::new(Op::MkClosure);
                 m.a = r;
                 m.e = self.k(formals);
                 m.f = self.k(body);
+                if srcref != nil {
+                    m.b = self.k(srcref);
+                }
                 if tail {
                     m.fl |= F_VIS;
                 }

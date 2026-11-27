@@ -1,0 +1,9 @@
+reset0_eq: TRUE 
+alloc_ge_used: TRUE 
+alloc_gt_prev: TRUE 
+drop_ge_used: TRUE 
+drop_no_decrease: TRUE 
+drop_used_fell: TRUE 
+drop_max_gt_used: TRUE 
+reset3_eq: TRUE 
+reset3_fell: TRUE 

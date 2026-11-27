@@ -1282,7 +1282,7 @@ fn load_profile(cx: &mut Cx, bytes: &[u8]) -> bool {
             }
         };
         let ws = between(start, p.consumed_end());
-        if repl_eval_toplevel(cx, &e, &ws, |cx| cx.global_env(), savestack, (1, 0)).is_err() {
+        if repl_eval_toplevel(cx, &e, None, &ws, |cx| cx.global_env(), savestack, (1, 0)).is_err() {
             return crate::repl::check_session_exit(cx);
         }
     }
@@ -1328,7 +1328,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
     for e in &exprs {
         st.exprs += 1;
         // under PROTECT(R_CurrentExpr), unprotected before the print
-        let r = repl_eval_toplevel(cx, e, &[], rho, savestack, (1, 0));
+        let r = repl_eval_toplevel(cx, e, None, &[], rho, savestack, (1, 0));
         if let Err(m) = r {
             let line = robigo_syntax::line_col(&text, e.span().start as usize).0;
             let m = m.unwrap_or_else(|| "lowering failed".into());
@@ -1351,6 +1351,7 @@ pub fn repl_file(cx: &mut Cx, path: &Path, st: &mut Stage0) -> Result<(), String
 pub(crate) fn repl_eval_toplevel(
     cx: &mut Cx,
     expr: &robigo_syntax::Expr<'_>,
+    src: Option<&[u8]>,
     warnings: &[String],
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
     savestack: i32,
@@ -1381,7 +1382,11 @@ pub(crate) fn repl_eval_toplevel(
                     msg = Some(crate::repl::error_text(cx, &err));
                     return Err(err);
                 }
-                if let Err(err) = crate::reader::lower_one(cx, expr, e) {
+                let low = match src {
+                    Some(b) => crate::reader::lower_console(cx, b, expr, e),
+                    None => crate::reader::lower_one(cx, expr, e),
+                };
+                if let Err(err) = low {
                     lowered = false;
                     return Err(err);
                 }

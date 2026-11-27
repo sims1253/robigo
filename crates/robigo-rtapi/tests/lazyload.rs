@@ -34,7 +34,8 @@
 //! variable the test says so and passes; with it set and a file missing, it
 //! fails.
 
-use std::process::Command;
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// The packages and how many variables their oracle databases hold.
 // GNU R 4.6.2's (the oracle image's) counts, on purpose: a tripwire that
@@ -87,21 +88,18 @@ fn oracle_databases_lazy_load() {
     let mut failures = Vec::new();
     for (pkg, count) in PACKAGES {
         let file = lib.join(pkg).join("R").join(pkg);
-        let o = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+        // (the default boot, from the binary's database tree; rt-ci runs the
+        // tests under its observation modes, which scripts/rt-ci.py inherits:
+        // this oracle run is not their subject)
+        let o = db_tree::without_modes(&mut db_tree::rt_command())
             .args(["--vanilla", "-e", SCRIPT])
             .env("RT_LAZYLOAD_FILE", &file)
             .env("RT_LAZYLOAD_PKG", pkg)
             .env("LC_ALL", "C")
             .env("R_DEFAULT_PACKAGES", "NULL")
             .env_remove("R_HOME")
-            // rt-ci runs the tests under its observation modes (scripts/rt-ci.py
-            // inherits the environment): this oracle run is not their subject
-            .env_remove("ROBIGO_GCTORTURE")
-            .env_remove("ROBIGO_GC_STATS")
-            .env_remove("ROBIGO_GC_MOVE")
-            .env_remove("ROBIGO_GC_PIN_REPORT")
-            .env_remove("ROBIGO_FRAME_QUARANTINE")
-            .env_remove("ROBIGO_FAIL_ALLOC_AT")
+            // (the default boot, whatever the caller exports: its tree is
+            // the one rt_command made)
             .env_remove("ROBIGO_RT_BOOT")
             .output()
             .unwrap_or_else(|e| panic!("running robigo-rt: {e}"));

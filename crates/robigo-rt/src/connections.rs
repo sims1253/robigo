@@ -48,6 +48,17 @@ const Z_BUFSIZE: usize = 16384;
 const OS_CODE: u8 = 0x03;
 const NA_INTEGER: i32 = i32::MIN;
 
+/// GNU R's `NSINKS` (`connections.c`).
+const NSINKS: usize = 21;
+
+struct SinkEntry {
+    icon: i32,
+    /// `SinkConsClose`: 0 = leave open, 1 = close on pop, 2 = destroy on pop.
+    close: u8,
+    split: bool,
+    pin: Option<Global>,
+}
+
 /// The isolate's connection table.
 pub struct Connections {
     slots: RefCell<Vec<Option<Box<Conn>>>>,
@@ -56,6 +67,12 @@ pub struct Connections {
     /// The C API's methods (robigo-rtapi's entries), once installed: every
     /// connection's `struct Rconn` points at them.
     c_methods: Cell<Option<CMethods>>,
+    /// Active output sinks (`SinkCons[1..=R_SinkNumber]`, `R_SinkSplit`, `SinkConsClose`).
+    sinks: RefCell<Vec<SinkEntry>>,
+    /// `R_ErrorCon`: connection index receiving `REprintf` (default `2` = stderr).
+    error_con: Cell<i32>,
+    /// Preserved `ex_ptr` for `error_con` when `error_con > 2`.
+    error_con_pin: RefCell<Option<Global>>,
 }
 
 impl Connections {
@@ -71,7 +88,14 @@ impl Connections {
             attach_c(&mut b, None);
             slots[i] = Some(b);
         }
-        Connections { slots: RefCell::new(slots), current_id: Cell::new(3), c_methods: Cell::new(None) }
+        Connections {
+            slots: RefCell::new(slots),
+            current_id: Cell::new(3),
+            c_methods: Cell::new(None),
+            sinks: RefCell::new(Vec::new()),
+            error_con: Cell::new(2),
+            error_con_pin: RefCell::new(None),
+        }
     }
 }
 
@@ -1975,9 +1999,197 @@ pub fn do_getconnection(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<
     })
 }
 
-/// `sink.number(type)`: `R_SinkNumber` (output) or `R_ErrorCon`
-/// (messages). robigo-rt has no `sink()` yet, so these keep their starting
-/// values, 0 and 2 (`InitConnections`).
+/// Write `b` to connection `con_num` and flush it, as `Rvprintf`/`REvprintf`
+/// do for an active sink.
+fn write_to_sink_con(cx: &Cx, con_num: i32, b: &[u8]) -> bool {
+    if con_num == 1 {
+        cx.write_console_out(b);
+        cx.flush_console();
+        return true;
+    }
+    if con_num == 2 {
+        cx.write_console_err(b);
+        return true;
+    }
+    let Ok(mut slots) = table(cx).slots.try_borrow_mut() else {
+        return false;
+    };
+    let Some(slot) = slots.get_mut(con_num as usize).and_then(|s| s.as_deref_mut()) else {
+        return false;
+    };
+    let _ = rconn_printf(slot, &[b]);
+    let _ = conn_fflush(slot);
+    true
+}
+
+/// Output-sink hook installed on `Cx` while `Connections::sinks` is non-empty.
+// R: printutils.c:Rvprintf, connections.c:getActiveSink
+fn write_out_sink(cx: &Cx, b: &[u8]) -> bool {
+    let t = table(cx);
+    let mut targets = [0i32; NSINKS];
+    let mut len = 0usize;
+    {
+        let sinks = t.sinks.borrow();
+        if sinks.is_empty() {
+            return false;
+        }
+        let mut idx = sinks.len();
+        while idx > 0 {
+            idx -= 1;
+            targets[len] = sinks[idx].icon;
+            len += 1;
+            if !sinks[idx].split {
+                break;
+            }
+            if idx == 0 {
+                targets[len] = 1;
+                len += 1;
+            }
+        }
+    }
+    for &con_num in &targets[..len] {
+        write_to_sink_con(cx, con_num, b);
+    }
+    true
+}
+
+/// Message-sink hook installed on `Cx` while `R_ErrorCon != 2`.
+// R: printutils.c:REvprintf_internal
+fn write_err_sink(cx: &Cx, b: &[u8]) -> bool {
+    let t = table(cx);
+    let con_num = t.error_con.get();
+    if con_num == 2 {
+        return false;
+    }
+    if !write_to_sink_con(cx, con_num, b) {
+        t.error_con.set(2);
+        cx.set_err_sink(None);
+        return false;
+    }
+    true
+}
+
+/// Clone a `Global` handle to connection `icon`'s `ex_ptr` (`R_PreserveObject`).
+fn preserve_conn_ex_ptr(cx: &Cx, icon: i32) -> Option<Global> {
+    let slots = table(cx).slots.borrow();
+    let slot = slots.get(icon as usize).and_then(|s| s.as_deref())?;
+    slot.ex_ptr.as_ref().map(|g| cx.global(g.bind(cx)))
+}
+
+/// `switch_or_tee_stdout(icon, closeOnExit, tee)`.
+// R: connections.c:switch_or_tee_stdout
+fn switch_or_tee_stdout(cx: &mut Cx, icon: i32, close_on_exit: bool, tee: bool) -> RResult<bool> {
+    let cur_out = table(cx).sinks.borrow().last().map_or(1, |s| s.icon);
+    if icon == cur_out {
+        return Ok(false);
+    }
+    if icon >= 0 && table(cx).sinks.borrow().len() >= NSINKS - 1 {
+        return Err(cx.error("sink stack is full"));
+    }
+    if icon == 0 {
+        return Err(cx.error("cannot switch output to stdin"));
+    } else if icon == 1 || icon == 2 {
+        table(cx).sinks.borrow_mut().push(SinkEntry { icon, close: 0, split: tee, pin: None });
+        cx.set_out_sink(Some(write_out_sink));
+    } else if icon >= 3 {
+        let (isopen, canwrite) = with_conn(cx, icon, |c| (c.isopen(), c.canwrite()))?;
+        let mut toclose = if close_on_exit { 2u8 } else { 0u8 };
+        if !isopen {
+            let (open_res, canwrite_after) = with_conn(cx, icon, |c| {
+                let saved_mode = c.mode();
+                c.set_mode("wt");
+                let r = open_conn(c);
+                c.set_mode(&saved_mode);
+                let cw = c.canwrite();
+                if r.is_ok() && !cw {
+                    let _ = close_conn(c);
+                }
+                (r, cw)
+            })?;
+            if let Err(w) = open_res {
+                cx.warning(&w)?;
+                return Err(cx.error("cannot open the connection"));
+            }
+            if !canwrite_after {
+                return Err(cx.error("cannot write to this connection"));
+            }
+            toclose = 1;
+        } else if !canwrite {
+            return Err(cx.error("cannot write to this connection"));
+        }
+        let pin = preserve_conn_ex_ptr(cx, icon);
+        table(cx).sinks.borrow_mut().push(SinkEntry { icon, close: toclose, split: tee, pin });
+        cx.set_out_sink(Some(write_out_sink));
+    } else {
+        let popped = table(cx).sinks.borrow_mut().pop();
+        let Some(entry) = popped else {
+            cx.warning("no sink to remove")?;
+            return Ok(false);
+        };
+        if table(cx).sinks.borrow().is_empty() {
+            cx.set_out_sink(None);
+        }
+        if let Some(pin) = entry.pin {
+            cx.release_global(pin);
+        }
+        if entry.icon >= 3 {
+            if entry.close == 1 {
+                let err = with_conn(cx, entry.icon, |c| if c.isopen() { close_conn(c) } else { None })?;
+                if let Some(w) = err {
+                    cx.warning(&w)?;
+                }
+            } else if entry.close == 2 {
+                con_destroy(cx, entry.icon as usize)?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// `.Internal(sink(icon, closeOnExit, errcon, split))`.
+// R: connections.c:do_sink
+pub fn do_sink(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
+    crate::prims::check_arity(cx, call, args.len(), "sink", 4, true)?;
+    let icon = robigo_rtbuiltins::coerce::vector::as_integer_warn(cx, args.root(0))?;
+    let close_on_exit = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 1));
+    if close_on_exit == NA_INTEGER {
+        return Err(cx.error("invalid 'closeOnExit' argument"));
+    }
+    let errcon = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 2));
+    if errcon == NA_INTEGER {
+        return Err(cx.error("invalid 'type' argument"));
+    }
+    let tee = robigo_rtbuiltins::util::as_logical(cx, args.get(cx, 3));
+    if tee == NA_INTEGER {
+        return Err(cx.error("invalid 'split' argument"));
+    }
+    if errcon == 0 {
+        if icon >= 0 && table(cx).sinks.borrow().len() >= NSINKS - 2 {
+            return Err(cx.error("sink stack is full"));
+        }
+        switch_or_tee_stdout(cx, icon, close_on_exit != 0, tee != 0)?;
+    } else if icon < 0 || icon == 2 {
+        let old_pin = table(cx).error_con_pin.borrow_mut().take();
+        if let Some(pin) = old_pin {
+            cx.release_global(pin);
+        }
+        table(cx).error_con.set(2);
+        cx.set_err_sink(None);
+    } else {
+        with_conn(cx, icon, |_| ())?;
+        let new_pin = if icon > 2 { preserve_conn_ex_ptr(cx, icon) } else { None };
+        let old_pin = std::mem::replace(&mut *table(cx).error_con_pin.borrow_mut(), new_pin);
+        if let Some(pin) = old_pin {
+            cx.release_global(pin);
+        }
+        table(cx).error_con.set(icon);
+        cx.set_err_sink(Some(write_err_sink));
+    }
+    out.set(cx, cx.nil());
+    Ok(())
+}
+
+/// `sink.number(type)`: `R_SinkNumber` (output) or `R_ErrorCon` (messages).
 // R: connections.c:do_sinknumber
 pub fn do_sinknumber(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
     crate::prims::check_arity(cx, call, args.len(), "sink.number", 1, true)?;
@@ -1985,7 +2197,8 @@ pub fn do_sinknumber(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
     if errcon == i32::MIN {
         return Err(cx.error("invalid 'type' argument"));
     }
-    let v = if errcon != 0 { 0 } else { 2 };
+    let t = table(cx);
+    let v = if errcon != 0 { t.sinks.borrow().len() as i32 } else { t.error_con.get() };
     cx.build(out, |cx| Ok(cx.alloc_copy(&[v])?.finish().into()))
 }
 
@@ -2201,7 +2414,12 @@ pub fn do_close(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     if (0..3).contains(&i) {
         return Err(cx.error("cannot close standard connections"));
     }
-    // (no sinks yet: GNU R's checks against SinkCons and R_ErrorCon find none)
+    if table(cx).sinks.borrow().iter().any(|s| s.icon == i) {
+        return Err(cx.error("cannot close 'output' sink connection"));
+    }
+    if table(cx).error_con.get() == i {
+        return Err(cx.error("cannot close 'message' sink connection"));
+    }
     with_conn(cx, i, |_| ())?;
     let status = con_destroy(cx, i as usize)?;
     if status != NA_INTEGER {

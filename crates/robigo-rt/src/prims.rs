@@ -258,6 +258,7 @@ static RT_PRIMS: &[PrimDef] = &[
     builtin("flush", crate::connections::do_flush, Inline::None, 111, 1),
     builtin("getAllConnections", crate::connections::do_getallconnections, Inline::None, 11, 0),
     builtin("getConnection", crate::connections::do_getconnection, Inline::None, 11, 1),
+    builtin("sink", crate::connections::do_sink, Inline::None, 111, 4),
     builtin("sink.number", crate::connections::do_sinknumber, Inline::None, 11, 1),
     builtin("file", crate::connections::do_file, Inline::None, 11, 6),
     builtin("gzfile", crate::connections::do_gzfile::<0>, Inline::None, 11, 4),
@@ -576,6 +577,10 @@ pub struct RtState {
     pub inline: std::cell::Cell<bool>,
     /// The calls run inline so far (for tests).
     pub inline_runs: std::cell::Cell<u64>,
+    /// A translated call's promise code (a BCODESXP) is computed early
+    /// (`crate::early::value`): off only in tests, which compare the counts
+    /// a force makes with and without its early value.
+    pub early_bytecode: std::cell::Cell<bool>,
     /// The `<<-` writes of the inline run under way (`crate::inline`).
     pub(crate) inline_writes: crate::inline::WriteLog,
     /// print.c's `tagbuf`: the `$a[[1]]` prefix of what is being printed.
