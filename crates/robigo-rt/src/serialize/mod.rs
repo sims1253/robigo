@@ -780,7 +780,9 @@ pub fn do_get_vars_from_frame(
                 let v = o.root();
                 cx.find_var_in_frame3(env, sym, true, o)?;
                 if v.bind(cx).sexp() == cx.unbound().sexp() {
-                    let shown = String::from_utf8_lossy(&name).into_owned();
+                    // R: error(_("object '%s' not found"), EncodeChar(STRING_ELT(vars, i)))
+                    let c = vars.bind(cx).as_vector::<Char<'_>>().unwrap().get(i);
+                    let shown = cx.encode_char(c.bytes(), c.enc());
                     return Err(cx.error(&format!("object '{shown}' not found")));
                 }
                 if force != 0 && v.bind(cx).sexptype() == PROMSXP {

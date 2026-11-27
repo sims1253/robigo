@@ -899,14 +899,14 @@ fn finish_value(
     if v == cx.unbound().sexp() {
         // R: errorcall_cpy(getLexicalCall(rho), _("object '%s' not found"), EncodeChar(PRINTNAME(e)))
         // SAFETY: `finish_value`'s callers (this module) pass a live symbol.
-        let name = unsafe { sym_name(cx, sym) };
+        let name = unsafe { sym_name_encoded(cx, sym) };
         let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
         let msg = format!("object '{name}' not found");
         return Err(cx.error_call(Some(call), &msg));
     }
     if v == cx.missing_arg().sexp() {
         // R: R_MissingArgError(e, getLexicalCall(rho), "evalError"), or
-        // getvar's "getvarError"
+        // getvar's "getvarError": CHAR(PRINTNAME(e)), not encoded
         // SAFETY: `finish_value`'s callers (this module) pass a live symbol.
         let name = unsafe { sym_name(cx, sym) };
         let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
@@ -921,8 +921,8 @@ fn finish_value(
     Ok(())
 }
 
-/// A symbol's name (`CHAR(PRINTNAME(sym))`; GNU R's `EncodeChar`
-/// escaping is the text layer's).
+/// A symbol's name where GNU R's C has `CHAR(PRINTNAME(sym))`: its
+/// bytes as they are ([`sym_name_encoded`] where it has `EncodeChar`).
 ///
 /// # Safety
 /// `sym` is a live symbol of `cx`'s isolate: its PRINTNAME is read.
@@ -930,6 +930,17 @@ pub unsafe fn sym_name(cx: &Cx, sym: Sexp) -> String {
     // SAFETY: a live symbol.
     let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().unwrap();
     String::from_utf8_lossy(s.name_bytes()).into_owned()
+}
+
+/// `EncodeChar(PRINTNAME(sym))` ([`Cx::encode_sym_name`]): a symbol's name
+/// where GNU R's message encodes it.
+///
+/// # Safety
+/// `sym` is a live symbol of `cx`'s isolate: its PRINTNAME is read.
+pub unsafe fn sym_name_encoded(cx: &Cx, sym: Sexp) -> String {
+    // SAFETY: a live symbol.
+    let s = unsafe { Ref::from_sexp(sym, cx) }.as_sym().unwrap();
+    cx.encode_sym_name(s)
 }
 
 /// `ddfindVar(sym, rho)` and the rest of `eval`'s SYMSXP case.

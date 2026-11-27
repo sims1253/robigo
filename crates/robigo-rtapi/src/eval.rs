@@ -23,6 +23,23 @@ fn name_bytes(cx: &Cx, x: Root<'_>) -> Option<Vec<u8>> {
     (!v.is_empty()).then(|| v.get(0).bytes().to_vec())
 }
 
+/// `EncodeChar(PRINTNAME(sym))` of [`name_bytes`]'s name: a symbol's
+/// PRINTNAME, a string's first element.
+// R: printutils.c:EncodeChar
+fn encoded_name(cx: &Cx, x: Root<'_>) -> String {
+    let r = x.bind(cx);
+    if let Some(s) = r.as_sym() {
+        return cx.encode_sym_name(s);
+    }
+    match r.as_vector::<robigo_rtcore::Char<'_>>() {
+        Some(v) if !v.is_empty() => {
+            let c = v.get(0);
+            cx.encode_char(c.bytes(), c.enc())
+        }
+        _ => String::new(),
+    }
+}
+
 /// `eval(e, rho)` into a root of `s`.
 fn eval<'s>(cx: &mut Cx, s: Scope<'s>, e: Root<'_>, rho: Root<'_>) -> RResult<Root<'s>> {
     let o = s.out(cx);
@@ -60,7 +77,7 @@ fn get_var_ex(
     let v = val.bind(cx).sexp();
     if v == cx.missing_arg().sexp() {
         // R_MissingArgError_c(EncodeChar(PRINTNAME(sym)), getLexicalCall(rho), "getVarExError")
-        let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
+        let name = encoded_name(cx, sym);
         let call = s.root(cx, cx.lexical_context(rho.bind(cx)).call());
         return Err(cx.missing_arg_error(&name, Some(call), "getVarExError"));
     }
@@ -345,7 +362,8 @@ entry! {
         let unbound = s.root(cx, cx.unbound());
         let v = get_var_ex(cx, s, sym, rho, inherits != 0, Some(unbound))?;
         if v == cx.unbound().sexp() {
-            let name = String::from_utf8_lossy(&name_bytes(cx, sym).unwrap_or_default()).into_owned();
+            // R: error(_("object '%s' not found"), EncodeChar(PRINTNAME(sym)))
+            let name = encoded_name(cx, sym);
             return Err(cx.error(&format!("object '{name}' not found")));
         }
         Ok(v)
