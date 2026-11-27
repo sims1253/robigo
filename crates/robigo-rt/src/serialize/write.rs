@@ -76,6 +76,7 @@ pub(super) fn pack_flags(t: i32, mut levs: u16, isobj: bool, hasattr: bool, hast
 pub(super) struct Writer<'h> {
     pub out: OutStream,
     /// The reference table: an object's address and its index (1-based).
+    // address-key: cleared at the top of every WErr::Restart pass after any collection
     refs: HashMap<usize, i32>,
     count: i32,
     hook: Option<Root<'h>>,
@@ -89,6 +90,7 @@ pub(super) struct Writer<'h> {
     /// because [`Writer::cmpfun1`] is exactly one [`Writer::effect`], whose
     /// result `effects` keeps at the walk's position (`seq`) for the whole
     /// call, across restarts (a debug assertion checks the one).
+    // address-key: cleared at the top of every WErr::Restart pass after any collection
     jit: HashMap<usize, usize>,
     seq: usize,
     depth: usize,
@@ -145,6 +147,7 @@ impl Writer<'_> {
     /// has collected since it was read.
     // R: serialize.c:WriteBC
     unsafe fn bc(&mut self, cx: &mut Cx, s: Sexp) -> W<()> {
+        // address-key: dropped and rebuilt on every WErr::Restart pass after any collection
         // SAFETY: the caller's contract.
         let mut reps = unsafe { scan_for_circles(cx, s) };
         self.out.integer(reps.len() as i32 + 1);
@@ -161,7 +164,14 @@ impl Writer<'_> {
     /// # Safety
     /// As for [`Writer::bc`].
     // R: serialize.c:WriteBC1, eval.c:R_bcDecode
-    unsafe fn bc1(&mut self, cx: &mut Cx, s: Sexp, reps: &mut HashMap<usize, Option<i32>>, next: &mut i32) -> W<()> {
+    unsafe fn bc1(
+        &mut self,
+        cx: &mut Cx,
+        s: Sexp,
+        // address-key: scoped to one pass; dropped and rebuilt on WErr::Restart
+        reps: &mut HashMap<usize, Option<i32>>,
+        next: &mut i32,
+    ) -> W<()> {
         // SAFETY: the caller's contract: a live BCODESXP, its CAR the code
         // (an INTSXP, or R_NilValue for empty code) and CDR the constants.
         unsafe {
@@ -207,6 +217,7 @@ impl Writer<'_> {
         &mut self,
         cx: &mut Cx,
         s: Sexp,
+        // address-key: scoped to one pass; dropped and rebuilt on WErr::Restart
         reps: &mut HashMap<usize, Option<i32>>,
         next: &mut i32,
     ) -> W<()> {
@@ -755,22 +766,25 @@ fn name_text(cx: &Cx, name: Sexp) -> Vec<u8> {
 /// `s` is live, and nothing collects while the walk runs (it allocates
 /// nothing on the heap).
 // R: serialize.c:ScanForCircles, ScanForCircles1, AddCircleHash
+// address-key: returned map is scoped to one pass and rebuilt on WErr::Restart
 unsafe fn scan_for_circles(cx: &Cx, s: Sexp) -> HashMap<usize, Option<i32>> {
-    let _ = cx;
-    let mut seen: HashMap<usize, bool> = HashMap::new();
+    let mut seen: HashMap<Ref<'_>, bool> = HashMap::new();
     let mut stack = vec![s];
     while let Some(x) = stack.pop() {
         // SAFETY: the caller's contract: everything reached is live.
         unsafe {
             match x.typ() {
-                LANGSXP | LISTSXP => match seen.get_mut(&x.addr()) {
-                    Some(twice) => *twice = true,
-                    None => {
-                        seen.insert(x.addr(), false);
-                        stack.push(x.cdr());
-                        stack.push(x.car());
+                LANGSXP | LISTSXP => {
+                    let key = Ref::from_sexp(x, cx);
+                    match seen.get_mut(&key) {
+                        Some(twice) => *twice = true,
+                        None => {
+                            seen.insert(key, false);
+                            stack.push(x.cdr());
+                            stack.push(x.car());
+                        }
                     }
-                },
+                }
                 BCODESXP => {
                     let consts = x.cdr();
                     if consts.typ() == VECSXP {
@@ -783,5 +797,5 @@ unsafe fn scan_for_circles(cx: &Cx, s: Sexp) -> HashMap<usize, Option<i32>> {
             }
         }
     }
-    seen.into_iter().filter(|&(_, twice)| twice).map(|(a, _)| (a, None)).collect()
+    seen.into_iter().filter(|&(_, twice)| twice).map(|(r, _)| (r.sexp().addr(), None)).collect()
 }

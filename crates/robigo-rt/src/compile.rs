@@ -102,7 +102,7 @@ impl std::hash::Hasher for PosHasher {
     }
 }
 
-/// A map of the translator's ([`PosHasher`]): fixed-width integer keys only.
+/// A map of the translator's ([`PosHasher`]): fixed-width integer or [`Ref`] keys only.
 pub(crate) type PosMap<K, V> = HashMap<K, V, BuildHasherDefault<PosHasher>>;
 
 /// A compiled-in name (names.c's table, a builtin's `PrimDef::name`): a
@@ -1223,7 +1223,9 @@ fn fold_vis_into_ret(ins: &mut [Ins], moves: bool) {
 pub(crate) struct Bufs {
     ins: Vec<Ins>,
     consts: Vec<Sexp>,
-    pool: PosMap<usize, u16>,
+    /// Empty between compiles so its capacity is reused without keeping any
+    /// object across a collection ([`Scratch::give_pool`]).
+    pool: PosMap<Ref<'static>, u16>,
     loops: Vec<LoopLabels>,
     locals: Vec<Sexp>,
     ppk: Vec<i32>,
@@ -1276,6 +1278,22 @@ impl Scratch {
         b
     }
 
+    /// Reclaim a compile's pool map for [`Bufs`], cleared so its bucket
+    /// allocation is reused without carrying any `'g`-branded [`Ref`] past
+    /// the compile's `&Cx` interval.
+    fn give_pool(mut pool: PosMap<Ref<'_>, u16>) -> PosMap<Ref<'static>, u16> {
+        pool.clear();
+        if pool.capacity() > SCRATCH_CAP {
+            return PosMap::default();
+        }
+        assert!(pool.is_empty(), "robigo: a non-empty pool map cannot outlive its &Cx interval");
+        // SAFETY: `Ref<'g>` and `Ref<'static>` differ only in an erased
+        // lifetime parameter, so the two `HashMap` instantiations have
+        // identical layout, and the map is empty (asserted above) so no
+        // `Ref<'g>` value exists inside it.
+        unsafe { std::mem::transmute::<PosMap<Ref<'_>, u16>, PosMap<Ref<'static>, u16>>(pool) }
+    }
+
     fn give(&self, mut b: Bufs) {
         fn keep<T>(v: &mut Vec<T>) {
             v.clear();
@@ -1289,10 +1307,7 @@ impl Scratch {
         keep(&mut b.locals);
         keep(&mut b.ppk);
         keep(&mut b.arg_codes);
-        b.pool.clear();
-        if b.pool.capacity() > SCRATCH_CAP {
-            b.pool = PosMap::default();
-        }
+        b.pool = Self::give_pool(b.pool);
         let mut sets = self.sets().borrow_mut();
         if sets.len() < SCRATCH_SETS {
             sets.push(b);
@@ -1306,7 +1321,7 @@ struct Comp<'g> {
     profile: Profile,
     ins: Vec<Ins>,
     consts: Vec<Sexp>,
-    pool: PosMap<usize, u16>,
+    pool: PosMap<Ref<'g>, u16>,
     next: Reg,
     max: Reg,
     max_depth: u16,
@@ -1387,7 +1402,7 @@ impl Drop for Comp<'_> {
         let b = Bufs {
             ins: std::mem::take(&mut self.ins),
             consts: std::mem::take(&mut self.consts),
-            pool: std::mem::take(&mut self.pool),
+            pool: Scratch::give_pool(std::mem::take(&mut self.pool)),
             loops: std::mem::take(&mut self.loops),
             locals: std::mem::take(&mut self.locals),
             ppk: std::mem::take(&mut self.ppk),
@@ -1639,7 +1654,10 @@ impl<'g> Comp<'g> {
 
     /// The pool index of `x` (one entry per object).
     fn k(&mut self, x: Sexp) -> u16 {
-        if let Some(&i) = self.pool.get(&(x.as_ptr() as usize)) {
+        // SAFETY: `Comp` runs under `&'g Cx` (no collection), and every `x`
+        // put into the pool is a live object of `self.cx`'s isolate.
+        let key = unsafe { Ref::from_sexp(x, self.cx) };
+        if let Some(&i) = self.pool.get(&key) {
             return i;
         }
         let Ok(i) = u16::try_from(FIRST_CONST + self.consts.len()) else {
@@ -1649,7 +1667,7 @@ impl<'g> Comp<'g> {
             return FIRST_CONST as u16;
         };
         self.consts.push(x);
-        self.pool.insert(x.as_ptr() as usize, i);
+        self.pool.insert(key, i);
         i
     }
 
@@ -4305,13 +4323,18 @@ mod tests {
         let mut b = s.take();
         b.ins.resize(10, Ins::new(Op::Ret));
         b.ppk.resize(SCRATCH_CAP + 1, 0);
-        b.pool.insert(1, 2);
+        let mut iso = robigo_rtcore::OwnedIsolate::new();
+        let cx = iso.cx();
+        let mut pool: super::PosMap<robigo_rtcore::Ref<'_>, u16> = b.pool;
+        pool.insert(cx.nil(), 2);
+        let pool_cap = pool.capacity();
+        b.pool = Scratch::give_pool(pool);
         let kept = b.ins.capacity();
         s.give(b);
         // (take's debug assertion: the set is empty)
         let b = s.take();
         assert!(b.ins.is_empty() && b.ins.capacity() >= kept, "a small buffer is kept, empty");
-        assert!(b.pool.is_empty());
+        assert!(b.pool.is_empty() && b.pool.capacity() >= pool_cap);
         assert_eq!(b.ppk.capacity(), 0, "a buffer past the cap is not kept");
         for _ in 0..SCRATCH_SETS + 2 {
             s.give(Bufs::default());
