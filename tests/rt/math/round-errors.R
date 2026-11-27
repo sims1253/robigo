@@ -1,0 +1,16 @@
+# do_Math2's errors: MathMissingError, the length-0 digits, non-numeric
+# arguments, and matchArgs_NR's
+cl <- function(expr) tryCatch(expr, error = function(e) print(class(e)))
+msg <- function(expr) tryCatch(expr, error = function(e) print(conditionMessage(e)))
+cll <- function(expr) tryCatch(expr, error = function(e) print(conditionCall(e)))
+cl(round(digits = 2)); msg(round(digits = 2)); cll(round(digits = 2))
+cl(signif(digits = 2)); msg(signif(digits = 2))
+cl(round()); cl(signif())
+f <- function(a) round(a); cl(f())
+cll(round(, 2))
+msg(round("a")); msg(round(1, "a")); msg(round(1, 2+0i)); msg(round(factor(1), 1:2))
+msg(round(1, NULL)); cll(round(1, numeric(0)))
+cll(round(1, structure(list(), class = "foo")))
+msg(signif(1, 2, 3)); msg(round(1, foo = 2)); msg(round(1, 2, 3))
+msg(round(x = 1, x = 2))
+round(factor(1))

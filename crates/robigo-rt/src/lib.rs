@@ -82,6 +82,7 @@ pub mod search;
 pub mod serialize;
 pub mod source;
 mod specials;
+pub(crate) mod srcref;
 mod tailcall;
 mod tcache;
 /// The translation cache's writer: its files, written at the end of the
@@ -187,6 +188,7 @@ pub fn install_with(cx: &mut Cx, forced: Option<Profile>) {
         materialize: std::cell::Cell::new(materialize),
         inline: std::cell::Cell::new(!no_inline),
         inline_runs: std::cell::Cell::new(0),
+        early_bytecode: std::cell::Cell::new(true),
         inline_writes: Default::default(),
         tagbuf: Default::default(),
         cond: std::rc::Rc::new(cond),
@@ -282,6 +284,12 @@ pub fn set_inline(cx: &mut Cx, on: bool) {
     prims::state(cx).inline.set(on);
 }
 
+/// Turn early evaluation of a translated call's promise code on or off (for
+/// tests: the counts a force makes must not differ).
+pub fn set_early_bytecode(cx: &mut Cx, on: bool) {
+    prims::state(cx).early_bytecode.set(on);
+}
+
 /// The calls run inline so far (for tests).
 pub fn inline_runs(cx: &Cx) -> u64 {
     prims::state(cx).inline_runs.get()
@@ -341,6 +349,7 @@ fn take_state(cx: &mut Cx, more: usize) -> prims::RtState {
         retry_held: std::cell::Cell::new(st.retry_held.get()),
         materialize: std::cell::Cell::new(st.materialize.get()),
         inline: std::cell::Cell::new(st.inline.get()),
+        early_bytecode: std::cell::Cell::new(st.early_bytecode.get()),
         inline_runs: std::cell::Cell::new(st.inline_runs.get()),
         inline_writes: Default::default(),
         tagbuf: std::cell::RefCell::new(st.tagbuf.borrow().clone()),

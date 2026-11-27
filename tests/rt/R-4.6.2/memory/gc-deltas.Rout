@@ -1,0 +1,6 @@
+numeric_1e5 gc: 1 1e+05 
+numeric_1e5 mp: double=1 
+list_1000 gc: 1001 2000 
+list_1000 mp: integer=1000 list=1 
+integer_1e4 gc: 1 5000 
+integer_1e4 mp: integer=1 

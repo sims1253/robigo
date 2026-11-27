@@ -424,6 +424,32 @@ class TierTests(unittest.TestCase):
         self.assertEqual((captured["ROBIGO_COMPILE"], captured["ROBIGO_JIT"]), ("0", "0"))
 
 
+    def test_rt_gets_the_default_packages_its_tree_has(self):
+        # robigo-rt's start reads its tree's etc/Renviron, which names the
+        # default packages the tree has when R_DEFAULT_PACKAGES is unset: the
+        # rt run leaves it unset (an inherited value too), where GNU R and
+        # robigo get the corpus's list (INTERIM(L5))
+        captured = {}
+
+        def fake(cmd, cwd, env, capture_output, timeout):
+            captured.clear()
+            captured.update(env, cmd=cmd)
+            return argparse.Namespace(stdout=b"", stderr=b"", returncode=0)
+
+        conf = {"default_packages": "datasets,utils,grDevices,graphics,stats,methods"}
+        with patch.object(corpus.subprocess, "run", side_effect=fake), \
+             patch.dict(os.environ, {"R_DEFAULT_PACKAGES": "utils"}):
+            corpus.run_case("fixture", conf, "case", b"1", "rt", "/bin/robigo-rt")
+            self.assertNotIn("R_DEFAULT_PACKAGES", captured)
+            self.assertEqual(captured["cmd"][:2], ["/bin/robigo-rt", "--vanilla"])
+            for runtime in ("robigo", "gnur"):
+                corpus.run_case("fixture", conf, "case", b"1", runtime, "/bin/robigo")
+                self.assertEqual(captured["R_DEFAULT_PACKAGES"], conf["default_packages"], runtime)
+        # the run and show pass "rt" for --runtime rt
+        src = Path(corpus.__file__).read_text()
+        self.assertEqual(src.count('"rt" if rt else "robigo"'), 2)
+
+
 class GcNormalization(unittest.TestCase):
     def test_allocator_counts_and_na_compare_equal(self):
         oracle = (b'[1] "finalizer: 456"\n'

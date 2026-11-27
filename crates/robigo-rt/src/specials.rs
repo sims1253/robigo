@@ -361,6 +361,32 @@ pub fn do_log(
     })
 }
 
+/// `round` and `signif` (`do_Math2`, a special with internal argument
+/// matching): `evalListKeepMissing` of the arguments, then the matching,
+/// dispatch and arithmetic of `math::do_math2_special`.
+// R: arithmetic.c:do_Math2
+pub fn do_math2<const IS_SIGNIF: bool>(
+    cx: &mut Cx,
+    call: Root<'_>,
+    _op: Root<'_>,
+    args: Option<Root<'_>>,
+    rho: Root<'_>,
+    out: Out<'_>,
+) -> RResult<()> {
+    cx.scope(|cx, s| {
+        let ac = match arg_call(cx, s, call, args)? {
+            Some(a) => a,
+            None => call,
+        };
+        let cap = count_args(cx, ac, 0, rho)?;
+        let mut ev = Evaluated::new(cx, s, cap);
+        eval_list_keep_missing(cx, s, ac, 0, rho, &mut ev, 0)?;
+        let args = ev.args(cx);
+        cx.materialize_args(args)?;
+        robigo_rtbuiltins::math::do_math2_special::<IS_SIGNIF>(cx, call, args, rho, out)
+    })
+}
+
 /// The isolate's `eval_args` hook: `DispatchOrEval(call, op, generic,
 /// args, rho, &ans, 0, 0)`'s evaluation of a special's arguments for its
 /// default method (a builtin special such as `rep`). The object is the

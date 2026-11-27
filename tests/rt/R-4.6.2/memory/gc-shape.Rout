@@ -1,0 +1,34 @@
+full class: matrix array typeof: double dim: 2 6 
+[[1]]
+[1] "Ncells" "Vcells"
+
+[[2]]
+[1] "used"       "(Mb)"       "gc trigger" "(Mb)"       "max used"  
+[6] "(Mb)"      
+
+full finite_nonneg: TRUE 
+full ncells_mb: TRUE 
+full vcells_mb: TRUE 
+lite class: matrix array typeof: double dim: 2 6 
+[[1]]
+[1] "Ncells" "Vcells"
+
+[[2]]
+[1] "used"       "(Mb)"       "gc trigger" "(Mb)"       "max used"  
+[6] "(Mb)"      
+
+lite finite_nonneg: TRUE 
+lite ncells_mb: TRUE 
+lite vcells_mb: TRUE 
+vlimit dim: 2 7 typeof: double 
+[[1]]
+[1] "Ncells" "Vcells"
+
+[[2]]
+[1] "used"       "(Mb)"       "gc trigger" "(Mb)"       "limit (Mb)"
+[6] "max used"   "(Mb)"      
+
+vlimit na_n: TRUE val_v: TRUE 
+both dim: 2 7 val_n: TRUE val_v: TRUE 
+nlimit dim: 2 7 na_v: TRUE val_n: TRUE 
+unlifted dim: 2 6 

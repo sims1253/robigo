@@ -19,6 +19,9 @@
 
 use std::process::Command;
 
+#[path = "common/db_tree.rs"]
+mod db_tree;
+
 /// A per-test directory under the temporary one, removed when the guard
 /// drops, so a failed assertion does not leave it behind.
 struct TempDir(std::path::PathBuf);
@@ -77,7 +80,17 @@ fn a_write_after_a_failed_flush_succeeds_and_the_dropped_bytes_are_gone() {
     std::fs::write(&script, LIMIT_SCRIPT).unwrap();
     // the limit is the shell's, inherited by robigo-rt; robigo-rt's own
     // writes stay below it (the script's tempfile is the one that grows)
-    let out = Command::new("bash")
+    // (bash execs robigo-rt: the environment rt_command gives it, its test
+    // tree, HOME and the user's variables)
+    let rt = db_tree::rt_command();
+    let mut bash = Command::new("bash");
+    for (k, v) in rt.get_envs() {
+        match v {
+            Some(v) => bash.env(k, v),
+            None => bash.env_remove(k),
+        };
+    }
+    let out = bash
         .args(["-c", "trap '' XFSZ; ulimit -f 8; exec \"$0\" \"$1\""])
         .arg(env!("CARGO_BIN_EXE_robigo-rt"))
         .arg(&script)
@@ -105,7 +118,7 @@ fn a_connection_left_open_is_written_at_exit() {
             out.display()
         );
         std::fs::write(&script, src).unwrap();
-        let r = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+        let r = db_tree::rt_command()
             .arg(&script)
             .env("LANGUAGE", "en")
             .env("LC_ALL", "C.UTF-8")
@@ -124,7 +137,7 @@ fn a_connection_left_open_is_written_at_exit() {
 fn run_script(dir: &std::path::Path, name: &str, src: &str) -> (String, Option<i32>) {
     let script = dir.join(format!("{name}.R"));
     std::fs::write(&script, src).unwrap();
-    let r = Command::new(env!("CARGO_BIN_EXE_robigo-rt"))
+    let r = db_tree::rt_command()
         .arg(&script)
         .env("LANGUAGE", "en")
         .env("LC_ALL", "C.UTF-8")

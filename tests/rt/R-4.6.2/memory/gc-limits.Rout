@@ -1,0 +1,14 @@
+initial: Inf Inf 
+v_bad: Inf Inf Inf Inf 
+n_bad: Inf Inf Inf Inf 
+v_low: Inf 
+n_low: Inf 
+v_set: 128 
+v_col: 128 
+v_err: vector memory limit of 128.0 Mb reached, see mem.maxVSize() 
+v_inf: Inf 
+v_near_match: TRUE 
+n_set_match: TRUE 
+n_col_match: TRUE 
+n_err_match: TRUE 
+n_inf: Inf 

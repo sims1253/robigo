@@ -9,7 +9,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+#[path = "common/db_tree.rs"]
+mod db_tree;
 
 /// The input files, by name.
 fn inputs() -> Vec<(&'static str, Vec<u8>)> {
@@ -271,13 +274,12 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> (Vec<u8>, Vec<u8>, i32
 
 /// [`run`] with `env` set on top of its environment.
 fn run_env(dir: &Path, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.args(args).current_dir(dir).env("LANGUAGE", "en").env("LC_ALL", "C.UTF-8").env("TZ", "UTC");
     // (an inherited R_HOME, GNU R's, robigo-rt ignores with a warning on
     // stdout)
     cmd.env("R_DEFAULT_PACKAGES", "NULL")
         .env_remove("R_HOME")
-        .env_remove("ROBIGO_RT_CHECKOUT")
         .env_remove("ROBIGO_FAIL_ALLOC_AT")
         .env_remove("ROBIGO_BOOT_VERBOSE");
     // the pin report to stderr (`1`); to a file it stays, as rt-ci's check
@@ -378,7 +380,7 @@ fn a_c_locale_refuses_non_ascii_outside_strings_whatever_n() {
 /// the input to end (a pipe left open).
 #[test]
 fn the_save_check_does_not_wait_for_stdin() {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+    let mut cmd = db_tree::rt_command();
     cmd.arg("--quiet").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("run robigo-rt");
     // (stdin stays open until the child has exited)
@@ -424,7 +426,7 @@ fn interactive_r_without_a_save_action_is_refused() {
 fn the_console_answers_before_stdin_ends() {
     use std::io::{Read, Write};
     for args in [&["--vanilla", "--quiet"][..], &["--no-readline", "--interactive", "--vanilla", "--quiet"][..]] {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_robigo-rt"));
+        let mut cmd = db_tree::rt_command();
         cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().expect("run robigo-rt");
         let mut stdin = child.stdin.take().unwrap();
@@ -459,19 +461,19 @@ fn the_console_answers_before_stdin_ends() {
     }
 }
 
-/// `options(keep.source = TRUE)` would have the console keep source
-/// references (gram.c's R_Parse1Buffer), which robigo-rt cannot yet: it is
-/// refused, where GNU R accepts it (so no oracle case). `R_KEEP_PKG_SOURCE=yes`
-/// starts `keep.source.pkgs` TRUE, as options.c's InitOptions does
-/// (`keep.source` is Common.R's `interactive()`).
+/// `options(keep.source = TRUE)` is accepted (options.c: a logical of
+/// length one, else "invalid value for 'keep.source'"), and the console
+/// keeps source references from the next statement on (R_Parse1Buffer).
+/// `R_KEEP_PKG_SOURCE=yes` starts `keep.source.pkgs` TRUE, as options.c's
+/// InitOptions does (`keep.source` is Common.R's `interactive()`), and
+/// sys.source then keeps them (loadNamespace's path).
 #[test]
-fn keep_source_true_is_refused_and_keep_pkg_source_read() {
-    let expr = "cat(tryCatch(options(keep.source = TRUE), error = conditionMessage), getOption('keep.source'), '\\n')";
+fn keep_source_true_is_accepted_and_keep_pkg_source_read() {
+    let expr = "options(keep.source = TRUE); f <- function(x)  x # k\nf; cat(getOption('keep.source'), '\n')";
     let (out, err, status) = run(&std::env::temp_dir(), &["--vanilla", "-e", expr], None);
-    assert_eq!(
-        String::from_utf8_lossy(&out),
-        "robigo: options(keep.source = TRUE) (source references) is not implemented yet FALSE \n"
-    );
+    // (the srcref ends at the body: the comment after it is not the
+    // function's; GNU R 4.6.2's output)
+    assert_eq!(String::from_utf8_lossy(&out), "function(x)  x\nTRUE \n");
     assert_eq!((String::from_utf8_lossy(&err).as_ref(), status), ("", 0));
     let expr = "cat(getOption('keep.source'), getOption('keep.source.pkgs'), '\\n')";
     for (v, want) in [("yes", "FALSE TRUE \n"), ("no", "FALSE FALSE \n"), ("YES", "FALSE FALSE \n")] {
@@ -479,19 +481,20 @@ fn keep_source_true_is_refused_and_keep_pkg_source_read() {
             run_env(&std::env::temp_dir(), &["--vanilla", "-e", expr], None, &[("R_KEEP_PKG_SOURCE", v)]);
         assert_eq!((String::from_utf8_lossy(&out).as_ref(), status), (want, 0), "R_KEEP_PKG_SOURCE={v}");
     }
-    // so sys.source (loadNamespace's) refuses where it sets the option, by
-    // design: the refusal at the point of use
+    // sys.source(keep.source = getOption("keep.source.pkgs")): the
+    // function it defines keeps its source
     let dir = std::env::temp_dir();
     let f = dir.join(format!("robigo-rt-cli-keep-pkg-source-{}.R", std::process::id()));
-    std::fs::write(&f, "x <- 1\n").unwrap();
-    let expr =
-        format!("cat(tryCatch(sys.source('{}', envir = new.env()), error = conditionMessage), '\\n')", f.display());
+    std::fs::write(&f, "g <- function(y)   y  # kept\n").unwrap();
+    let expr = format!(
+        "e <- new.env(); sys.source('{}', envir = e, keep.source = getOption('keep.source.pkgs')); e$g",
+        f.display()
+    );
     let (out, _, status) = run_env(&dir, &["--vanilla", "-e", &expr], None, &[("R_KEEP_PKG_SOURCE", "yes")]);
     let _ = std::fs::remove_file(&f);
-    assert_eq!(
-        (String::from_utf8_lossy(&out).as_ref(), status),
-        ("robigo: options(keep.source = TRUE) (source references) is not implemented yet \n", 0)
-    );
+    // (then its environment's line, an address)
+    let out = String::from_utf8_lossy(&out);
+    assert!(out.starts_with("function(y)   y\n<environment: 0x") && status == 0, "{out:?} {status}");
 }
 
 /// An empty `R_TRANSLATIONS` is GNU R 4.6.2's fatal start-up error

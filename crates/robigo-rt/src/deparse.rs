@@ -82,6 +82,9 @@ enum Stop {
     Msg(Fail),
     /// (a handle the forcing caller releases)
     Unforced(robigo_rtcore::Global),
+    /// A srcref whose text the deparse needs (`as.character(srcref)`, R
+    /// code): the forcing caller evaluates it and deparses again.
+    Source(robigo_rtcore::Global),
 }
 
 impl From<String> for Stop {
@@ -106,7 +109,9 @@ impl Stop {
     fn message(self) -> Fail {
         match self {
             Stop::Msg(m) => m,
-            Stop::Unforced(_) => unreachable!("robigo: an Unforced stop of a deparse that does not force"),
+            Stop::Unforced(_) | Stop::Source(_) => {
+                unreachable!("robigo: an Unforced or Source stop of a deparse that does not force")
+            }
         }
     }
 }
@@ -126,7 +131,7 @@ pub fn deparse1_with_cutoff(
     opts: i32,
     nlines: i32,
 ) -> Result<Deparsed, Fail> {
-    deparse_run(cx, call, abbrev, cutoff, backtick, opts, nlines, false).map_err(Stop::message)
+    deparse_run(cx, call, abbrev, cutoff, backtick, opts, nlines, false, &[]).map_err(Stop::message)
 }
 
 /// [`deparse1_with_cutoff`] forcing the promises it meets, as GNU R's
@@ -147,11 +152,63 @@ pub fn deparse1_with_cutoff_forcing(
     opts: i32,
     nlines: i32,
 ) -> robigo_rtcore::RResult<Result<Deparsed, Fail>> {
-    loop {
-        let r = deparse_run(cx, call.bind(cx), abbrev, cutoff, backtick, opts, nlines, true);
+    // the srcrefs' texts evaluated so far: (the srcref's address, its
+    // lines), each srcref held by the Global of the same index in `held`
+    let mut sources: Vec<(usize, Vec<Vec<u8>>)> = Vec::new();
+    let mut held: Vec<robigo_rtcore::Global> = Vec::new();
+    let r = loop {
+        // the addresses now: a collection since the text was evaluated may
+        // have moved its srcref (and put another object where it was); a
+        // run reads with &Cx, so they hold through it
+        for ((k, _), g) in sources.iter_mut().zip(&held) {
+            *k = g.bind(cx).sexp().as_ptr() as usize;
+        }
+        let r = deparse_run(cx, call.bind(cx), abbrev, cutoff, backtick, opts, nlines, true, &sources);
         match r {
-            Ok(d) => return Ok(Ok(d)),
-            Err(Stop::Msg(m)) => return Ok(Err(m)),
+            Ok(d) => break Ok(Ok(d)),
+            Err(Stop::Msg(m)) => break Ok(Err(m)),
+            Err(Stop::Source(g)) => {
+                // src2buff1: as.character(srcref) evaluated in base, each
+                // line written out (the srcref held until the deparse is
+                // done, so its address, read afresh each run, names it)
+                // R: deparse.c:src2buff1
+                let lines = cx.scope(|cx, s| {
+                    let sr = s.root(cx, g.bind(cx));
+                    let f = s.capture(cx, |cx, o| cx.build(o, |cx| Ok(cx.install(b"as.character")?.into())))?;
+                    let call = s.capture(cx, |cx, o| {
+                        cx.build(o, |cx| {
+                            let nil = cx.nil();
+                            let args = cx.cons(sr.bind(cx), nil)?;
+                            cx.lcons(f.bind(cx), args)
+                        })
+                    })?;
+                    let base = s.root(cx, cx.base_env());
+                    let v = s.capture(cx, |cx, o| crate::eval(cx, call, base, o))?;
+                    let v = v.bind(cx);
+                    let mut lines = Vec::new();
+                    if let Some(c) = v.as_vector::<robigo_rtcore::Char<'_>>() {
+                        for i in 0..c.len() {
+                            // translateChar: the line in the native encoding
+                            let st = robigo_rtbuiltins::coerce::text(c.get(i));
+                            match robigo_rtbuiltins::text::to_native(st, cx.locale()) {
+                                Ok(b) => lines.push(b.to_vec()),
+                                Err(_) => lines.push(c.get(i).bytes().to_vec()),
+                            }
+                        }
+                    }
+                    Ok::<_, robigo_rtcore::RError>(lines)
+                });
+                match lines {
+                    Ok(l) => {
+                        sources.push((g.bind(cx).sexp().as_ptr() as usize, l));
+                        held.push(g);
+                    }
+                    Err(e) => {
+                        cx.release_global(g);
+                        break Err(e);
+                    }
+                }
+            }
             Err(Stop::Unforced(g)) => {
                 let forced = cx.scope(|cx, s| {
                     let p = s.root(cx, g.bind(cx));
@@ -161,10 +218,16 @@ pub fn deparse1_with_cutoff_forcing(
                     crate::eval(cx, p, e, o)
                 });
                 cx.release_global(g);
-                forced?;
+                if let Err(e) = forced {
+                    break Err(e);
+                }
             }
         }
+    };
+    for g in held {
+        cx.release_global(g);
     }
+    r
 }
 
 /// The deparse itself ([`deparse1_with_cutoff`]).
@@ -177,6 +240,7 @@ fn deparse_run(
     opts: i32,
     nlines: i32,
     forcing: bool,
+    sources: &[(usize, Vec<Vec<u8>>)],
 ) -> Result<Deparsed, Stop> {
     let maxlines = if nlines > 0 { nlines as usize } else { usize::MAX };
     let mut d = State {
@@ -198,6 +262,7 @@ fn deparse_run(
         active: true,
         fnarg: false,
         forcing,
+        sources,
         // PrintDefaults(), then R_print.digits = DBL_DIG
         pp: PrintParams { digits: 15, locale: robigo_rtbuiltins::text::ctype(cx.locale()), ..PrintParams::DEFAULT },
     };
@@ -265,6 +330,8 @@ struct State<'g> {
     /// Whether an unforced promise stops the deparse for the caller to
     /// force it ([`deparse1_with_cutoff_forcing`]), or is an error.
     forcing: bool,
+    /// The srcrefs' texts the forcing caller has evaluated (by address).
+    sources: &'g [(usize, Vec<Vec<u8>>)],
     lines: Vec<Vec<u8>>,
     linenumber: usize,
     len: usize,
@@ -765,8 +832,18 @@ impl<'g> State<'g> {
                     _ => unreachable!(),
                 };
                 let attr = if d_opts_in & SHOW_ATTR_OR_NMS != 0 { self.attr1(s) } else { AttrType::Simple };
-                if self.opts & USESOURCE != 0 && robigo_rtbuiltins::attrib::get_value(s, b"srcref").is_some() {
-                    return Err("robigo: deparse of a function from its srcref is not implemented yet".into());
+                // with useSource, a function with a srcref is its source text
+                // (src2buff1: as.character(srcref) evaluated in base)
+                // R: deparse.c:deparse2buff (case CLOSXP), src2buff1
+                if self.opts & USESOURCE != 0
+                    && let Some(sr) = robigo_rtbuiltins::attrib::get_value(s, b"srcref")
+                    && sr.sexptype() != NILSXP
+                {
+                    self.src2buff1(sr)?;
+                    if attr >= AttrType::StrucAttr {
+                        self.attr2(s, attr == AttrType::StrucAttr)?;
+                    }
+                    return Ok(());
                 }
                 // We have established that we don't want to use the source
                 // for this function
@@ -1523,6 +1600,45 @@ impl<'g> State<'g> {
         out.push(b')');
     }
 
+    /// `src2buff1(srcref, d)`: the srcref's text, `as.character(srcref)`
+    /// evaluated in base, line by line. That is R code: the deparse stops
+    /// for it ([`Stop::Source`]) and the forcing caller evaluates it and
+    /// deparses again with the text.
+    // R: deparse.c:src2buff1
+    fn src2buff1(&mut self, sr: Ref<'g>) -> DResult {
+        let key = sr.sexp().as_ptr() as usize;
+        let Some((_, lines)) = self.sources.iter().find(|(k, _)| *k == key) else {
+            if !self.forcing {
+                return Err("robigo: deparse from a srcref outside print and deparse is not implemented yet".into());
+            }
+            return Err(Stop::Source(self.cx.global(sr)));
+        };
+        let n = lines.len();
+        for (i, l) in lines.iter().enumerate() {
+            self.print(l);
+            if i + 1 < n {
+                self.writeline();
+            }
+        }
+        Ok(())
+    }
+
+    /// `src2buff(sv, k, d)`: source element `k` of the srcref list `sv`, if
+    /// it has one (true), else nothing (false).
+    // R: deparse.c:src2buff
+    fn src2buff(&mut self, sv: Option<Ref<'g>>, k: usize) -> Result<bool, Stop> {
+        let Some(sv) = sv else { return Ok(false) };
+        let t = match sv.view() {
+            robigo_rtcore::View::List(l) if l.len() > k => l.get(k),
+            _ => return Ok(false),
+        };
+        if t.sexptype() == NILSXP {
+            return Ok(false);
+        }
+        self.src2buff1(t)?;
+        Ok(true)
+    }
+
     /// `vec2buff(v, d, do_names)`: the elements of a list or expression
     /// vector.
     // R: deparse.c:vec2buff
@@ -1531,11 +1647,12 @@ impl<'g> State<'g> {
         let mut lbreak = false;
         let n = v.len().unwrap();
         let nv = if do_names { Names::get(cx, v) } else { None };
-        if self.opts & USESOURCE != 0
-            && robigo_rtbuiltins::attrib::get_value(v, b"srcref").is_some_and(|s| s.sexptype() == VECSXP)
-        {
-            return Err("robigo: deparse from srcrefs is not implemented yet".into());
-        }
+        // with useSource, an element with a srcref is its source text
+        let sv = if self.opts & USESOURCE != 0 {
+            robigo_rtbuiltins::attrib::get_value(v, b"srcref").filter(|s| s.sexptype() == VECSXP)
+        } else {
+            None
+        };
         let elts = match v.view() {
             robigo_rtcore::View::List(l) | robigo_rtcore::View::Expr(l) => l,
             _ => unreachable!(),
@@ -1548,7 +1665,9 @@ impl<'g> State<'g> {
             if nv.is_some() {
                 self.name_eq(&nv, i)?;
             }
-            self.deparse2buff(elts.get(i))?;
+            if !self.src2buff(sv, i)? {
+                self.deparse2buff(elts.get(i))?;
+            }
         }
         if lbreak {
             self.indent -= 1;

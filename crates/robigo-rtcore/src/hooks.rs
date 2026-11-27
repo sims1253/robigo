@@ -79,11 +79,12 @@ pub type ForceArgFn = for<'a, 'b> fn(&mut Cx, Root<'a>, usize, Out<'b>) -> RResu
 /// (`eval`'s `R_Visible`, depth and evaluation count, or `bcEval`'s entry
 /// poll count for byte code), made in place by a force that takes the value
 /// the caller computed early (docs/g3.md §6.2) instead of evaluating:
-/// `bytecode` when the slot's expression is byte code's, `call` when it is a
-/// call (else a symbol). False, with nothing counted, when the evaluation
-/// would poll (run finalizers, take an interrupt) or raise the depth error:
-/// the force then evaluates the expression as usual.
-pub type EarlyForceFn = fn(&mut Cx, bool, bool) -> bool;
+/// `bytecode` when the slot's expression is byte code's, and the
+/// expression's SEXPTYPE (a symbol, a call, or a byte-code object: a
+/// translated call's promise code). False, with nothing counted, when the
+/// evaluation would poll (run finalizers, take an interrupt) or raise the
+/// depth error: the force then evaluates the expression as usual.
+pub type EarlyForceFn = fn(&mut Cx, bool, u8) -> bool;
 
 /// `DispatchOrEval(call, op, generic, args, rho, &ans, dropmissing = 0,
 /// argsevald = 0)`'s evaluation of a special's arguments (the call's) for
@@ -352,6 +353,27 @@ impl Default for Warnings {
 }
 
 impl Cx {
+    /// GNU R's `EncodeChar(c)`, `EncodeString(c, 0, 0, Rprt_adj_left)`, of
+    /// a string's bytes in encoding `enc`, through the text layer's hook:
+    /// how a message shows a name. Control characters are escaped (`\n`,
+    /// `\001`), and so, where the locale is not UTF-8, are non-ASCII bytes
+    /// (`\303\251`).
+    // R: printutils.c:EncodeChar
+    pub fn encode_char(&self, bytes: &[u8], enc: crate::Encoding) -> String {
+        let b = (self.iso().hooks.get().encode_string)(self, bytes, enc);
+        String::from_utf8_lossy(&b).into_owned()
+    }
+
+    /// `EncodeChar(PRINTNAME(sym))`: a symbol's name as GNU R's messages
+    /// show it where its C encodes it. (Where the C has
+    /// `CHAR(PRINTNAME(sym))`, a message takes the name's bytes as they
+    /// are.)
+    // R: printutils.c:EncodeChar
+    pub fn encode_sym_name(&self, sym: crate::Sym<'_>) -> String {
+        let c = sym.name(self);
+        self.encode_char(c.bytes(), c.enc())
+    }
+
     /// Install `rt`'s hooks (replacing the whole table).
     pub fn install_hooks(&mut self, hooks: Hooks) {
         self.iso().hooks.set(hooks);

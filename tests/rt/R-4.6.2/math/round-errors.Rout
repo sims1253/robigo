@@ -1,0 +1,20 @@
+[1] "MathMissingError" "missingArgError"  "error"            "condition"       
+[1] "argument \"x\" is missing, with no default"
+round(digits = 2)
+[1] "MathMissingError" "missingArgError"  "error"            "condition"       
+[1] "argument \"x\" is missing, with no default"
+[1] "MathMissingError" "missingArgError"  "error"            "condition"       
+[1] "MathMissingError" "missingArgError"  "error"            "condition"       
+[1] "MathMissingError" "missingArgError"  "error"            "condition"       
+round(, 2)
+[1] "non-numeric argument to mathematical function"
+[1] "non-numeric argument to mathematical function"
+[1] "non-numeric argument to mathematical function"
+[1] "‘round’ not meaningful for factors"
+[1] "invalid second argument of length 0"
+round(1, numeric(0))
+round(1, structure(list(), class = "foo"))
+[1] "unused argument (3)"
+[1] "unused argument (foo = 2)"
+[1] "unused argument (3)"
+[1] "formal argument \"x\" matched by multiple actual arguments"

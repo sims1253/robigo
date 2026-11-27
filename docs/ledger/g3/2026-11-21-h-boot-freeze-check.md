@@ -198,3 +198,31 @@ The every-collection runs see all three at the collection where they happen: the
 **The forced first check moves the period's phase.** The first collection with a frozen set is checked whatever the count, and it restarts the count. The later checks therefore fall every N collections after the freeze, not on multiples of N from the start, even with N alone.
 
 **So E3 does not name every marking defect.** It fails on this one under m1 (37 of 40 random rt cases, none named by the check). Detection is the step's job; naming the defect takes a rerun at period 1. **An E3 failure with an unexplained error under the freeze is rerun with `ROBIGO_GC_FREEZE_CHECK=1` before anything else** (docs/verification.md). There is no "first K checks" rule. Under rdb, the default after L's flip, the freezing collection's full check names it.
+
+### Note of 2026-11-27: growing check period (`ROBIGO_GC_FREEZE_CHECK=N,M,K`) for E3's >1M-collection outliers (g3/h-freeze-check-grow)
+
+**Why the check changed:** after the flip to rdb as default (#1028), the frozen set grew from ~5k to 42,422 objects, so each direct-loop check costs ~2.44M instructions. On main's tip (`67d486946`, run 45315471485 on image `.376`), `rt-gctorture` took 28.43 of its 26-minute budget (warning), with `tests/r/env/cycle_reclamation.R` at 412.6 s and `tests/r/memory/finalizers-self-ref-envs.R` at ~351 s of their 600 s case limit.
+
+**Slice-wide collection counts** (all 976 E3 cases under `ROBIGO_GCTORTURE=1 ROBIGO_GC_FREEZE=1 ROBIGO_TORTURE_AFTER_START=1`, rdb default, main `d844c6ef2`): 8,592,461 collections total. Only three cases exceed 524,288 collections, and all three exceed 1.1M (accounting for 5,514,539 / 8,592,461 = **64.2%** of all collections in the slice):
+
+| case | collections | > 524,288? |
+|---|---:|---|
+| `tests/r/memory/finalizers-self-ref-envs.R` | 2,409,437 | yes |
+| `tests/r/env/cycle_reclamation.R` | 2,000,345 | yes |
+| `tests/r/lang/tailcall-frames.R` | 1,104,757 | yes |
+| `tests/r/lang/exec-tail-frames.R` (4th) | 340,962 | no |
+| `tests/r/jit/loop-closed-form-super.R` (5th) | 305,893 | no |
+| remaining 971 cases | ≤ 220,231 | no |
+
+**Mechanism:** `ROBIGO_GC_FREEZE_CHECK=N[,M[,K]]` (`M >= 1`, `K >= 1`). Once a process has completed `K` collections (`stats.collections >= K`), the direct-loop period widens from `N` to `4N` (saturating); full checks remain every `M`-th checked collection, so they thin proportionally. Freezing after `K` still forces a full check on the freezing collection. E3 sets `16,16,524288`: **973 of 976 cases (99.7%)** keep the exact `16,16` rate throughout.
+
+**Measured** (`perf stat -e instructions:u`, E3 env under rdb, `d844c6ef2` vs this branch):
+
+| case | none | `16,16` | `16,16,524288` | check (direct / full) | delta vs `16,16` |
+|---|---:|---:|---:|---|---:|
+| `tests/r/memory/finalizers-self-ref-envs.R` | 717.03 G | 1,351.13 G | 1,015.05 G | 62,223 / 3,889 | −336.08 G (−24.9%) |
+| `tests/r/env/cycle_reclamation.R` | 588.27 G | 1,117.24 G | 855.18 G | 55,831 / 3,490 | −262.06 G (−23.5%) |
+| `tests/r/lang/tailcall-frames.R` | 259.91 G | 550.56 G | 453.72 G | 41,838 / 2,615 | −96.84 G (−17.6%) |
+
+Total saved across the three cases: **−695.0 G instructions (−23.0%)**.
+

@@ -1303,7 +1303,7 @@ fn repl_file(cx: &mut Cx, bytes: &[u8], rho: for<'g> fn(&'g Cx) -> Ref<'g>, expr
         };
         let ws = between(start, p.consumed_end());
         *exprs += 1;
-        if repl_eval_toplevel(cx, &e, &ws, rho, savestack, (1, 0)).is_err() {
+        if repl_eval_toplevel(cx, &e, None, &ws, rho, savestack, (1, 0)).is_err() {
             return crate::repl::check_session_exit(cx);
         }
     }
@@ -1328,6 +1328,7 @@ pub fn lock_base(cx: &mut Cx) -> RResult<()> {
     })
 }
 
+
 /// The PARSE_OK body `R_ReplFile` and `Rf_ReplIteration` share, for one
 /// parsed top-level expression: `R_PPStackTop = savestack`, then at the top
 /// level `R_Visible = FALSE`, `eval(expr, rho)`, `.Last.value`, the value
@@ -1341,6 +1342,7 @@ pub fn lock_base(cx: &mut Cx) -> RResult<()> {
 pub(crate) fn repl_eval_toplevel(
     cx: &mut Cx,
     expr: &robigo_syntax::Expr<'_>,
+    src: Option<&[u8]>,
     warnings: &[String],
     rho: for<'g> fn(&'g Cx) -> Ref<'g>,
     savestack: i32,
@@ -1371,7 +1373,11 @@ pub(crate) fn repl_eval_toplevel(
                     msg = Some(crate::repl::error_text(cx, &err));
                     return Err(err);
                 }
-                if let Err(err) = crate::reader::lower_one(cx, expr, e) {
+                let low = match src {
+                    Some(b) => crate::reader::lower_console(cx, b, expr, e),
+                    None => crate::reader::lower_one(cx, expr, e),
+                };
+                if let Err(err) = low {
                     lowered = false;
                     return Err(err);
                 }

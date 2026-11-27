@@ -51,9 +51,12 @@ fn assign_fcn_symbol(cx: &mut Cx, fun: Sexp) -> RResult<Sexp> {
     }
     // (the name copied only for a symbol not yet in the table)
     // SAFETY: as above.
-    let name = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap().name_bytes().to_vec();
+    let sym = unsafe { Ref::from_sexp(fun, cx) }.as_sym().unwrap();
+    let name = sym.name_bytes().to_vec();
     if name.len() + 3 > ASSIGNBUFSIZ {
-        let msg = format!("overlong name in '{}'", String::from_utf8_lossy(&name));
+        // R: error(_("overlong name in '%s'"), EncodeChar(PRINTNAME(fun)))
+        let shown = cx.encode_sym_name(sym);
+        let msg = format!("overlong name in '{shown}'");
         return Err(cx.error(&msg));
     }
     let mut buf = name;
@@ -212,8 +215,8 @@ pub(crate) fn ensure_local<'s>(
         let en = enclos(cx, s, rho);
         eval(cx, sym, en, vl)?;
         if vr.bind(cx) == cx.unbound() {
-            // SAFETY: a rooted symbol.
-            let msg = format!("object '{}' not found", unsafe { crate::eval::sym_name(cx, sym.bind(cx).sexp()) });
+            // R: error(_("object '%s' not found"), EncodeChar(PRINTNAME(symbol)))
+            let msg = format!("object '{}' not found", cx.encode_sym_name(sym.bind(cx).as_sym().unwrap()));
             return Err(cx.error(&msg));
         }
         dup(cx, s, vr)?;
