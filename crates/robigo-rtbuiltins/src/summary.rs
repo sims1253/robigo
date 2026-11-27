@@ -6,7 +6,7 @@
 //! The "Summary" group dispatches for an object argument (GNU R's
 //! `DispatchGroup`), through the isolate's dispatch hook.
 
-use crate::coerce::vector::coerce;
+use crate::coerce::vector::{coerce, coerce_vector_with};
 use crate::util::{not_yet, type_to_char};
 use robigo_numerics::ldouble::LDouble as LD;
 use robigo_rtcore::types::*;
@@ -789,73 +789,81 @@ pub fn do_pmin<const CODE: i32>(
     if (1..args.len()).any(|i| !len.is_multiple_of(crate::coerce::xlength(args.get(cx, i)))) {
         cx.warning("an argument will be fractionally recycled")?;
     }
-    cx.build_with(out, |cx| {
-        let mut parts: Vec<Ref<'_>> = Vec::new();
+    cx.scope(|cx, s| {
+        let mut parts: Vec<Root<'_>> = Vec::with_capacity(args.len() - 1);
         for i in 1..args.len() {
-            match coerce(cx, args.get(cx, i), anstype, false)? {
-                Built::Done(v, _) => parts.push(v),
-                Built::Fail(d) => return Ok(Built::fail(d.into_error())),
+            let arg = args.root(i);
+            if arg.bind(cx).sexptype() == anstype {
+                parts.push(arg);
+            } else {
+                let c = s.capture(cx, |cx, o| coerce_vector_with(cx, arg, anstype, false, o))?;
+                parts.push(c);
             }
         }
-        if anstype == STRSXP {
-            let loc = cx.locale();
-            let na = cx.na_string();
-            let first = parts[0].as_vector::<Char<'_>>().unwrap();
-            let mut ra: Vec<Char<'_>> = (0..len).map(|i| first.get(i % first.len())).collect();
-            for p in &parts[1..] {
-                let r = p.as_vector::<Char<'_>>().unwrap();
-                for (i, slot) in ra.iter_mut().enumerate() {
-                    let (tmp, t2) = (r.get(i % r.len()), *slot);
-                    let better = t2 != na && tmp != na && tmp != t2 && {
-                        match crate::text::scollate(crate::coerce::text(tmp), crate::coerce::text(t2), loc) {
-                            Ok(o) => o == if is_max { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less },
-                            Err(e) => return Ok(Built::fail(e.diag(Some(call)))),
+        cx.build_with(out, |cx| {
+            let parts: Vec<Ref<'_>> = parts.iter().map(|r| r.bind(cx)).collect();
+            if anstype == STRSXP {
+                let loc = cx.locale();
+                let na = cx.na_string();
+                let first = parts[0].as_vector::<Char<'_>>().unwrap();
+                let mut ra: Vec<Char<'_>> = (0..len).map(|i| first.get(i % first.len())).collect();
+                for p in &parts[1..] {
+                    let r = p.as_vector::<Char<'_>>().unwrap();
+                    for (i, slot) in ra.iter_mut().enumerate() {
+                        let (tmp, t2) = (r.get(i % r.len()), *slot);
+                        let better = t2 != na && tmp != na && tmp != t2 && {
+                            match crate::text::scollate(crate::coerce::text(tmp), crate::coerce::text(t2), loc) {
+                                Ok(o) => {
+                                    o == if is_max { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less }
+                                }
+                                Err(e) => return Ok(Built::fail(e.diag(Some(call)))),
+                            }
+                        };
+                        if (narm && t2 == na) || better || (!narm && tmp == na) {
+                            *slot = tmp;
                         }
-                    };
-                    if (narm && t2 == na) || better || (!narm && tmp == na) {
-                        *slot = tmp;
                     }
                 }
-            }
-            let mut v = cx.alloc_vector::<Char<'_>>(len)?;
-            for (i, &c) in ra.iter().enumerate() {
-                v.set(i, c);
-            }
-            Ok(Built::done(v.finish()))
-        } else if anstype == INTSXP {
-            let first = parts[0].as_ints().unwrap();
-            let mut ra: Vec<i32> = (0..len).map(|i| first[i % first.len()]).collect();
-            for p in &parts[1..] {
-                let r = p.as_ints().unwrap();
-                for (i, slot) in ra.iter_mut().enumerate() {
-                    let tmp = r[i % r.len()];
-                    let a = *slot;
-                    let better = if is_max { tmp > a } else { tmp < a };
-                    if (narm && a == NA_INTEGER)
-                        || (a != NA_INTEGER && tmp != NA_INTEGER && better)
-                        || (!narm && tmp == NA_INTEGER)
-                    {
-                        *slot = tmp;
+                let mut v = cx.alloc_vector::<Char<'_>>(len)?;
+                for (i, &c) in ra.iter().enumerate() {
+                    v.set(i, c);
+                }
+                Ok(Built::done(v.finish()))
+            } else if anstype == INTSXP {
+                let first = parts[0].as_ints().unwrap();
+                let mut ra: Vec<i32> = (0..len).map(|i| first[i % first.len()]).collect();
+                for p in &parts[1..] {
+                    let r = p.as_ints().unwrap();
+                    for (i, slot) in ra.iter_mut().enumerate() {
+                        let tmp = r[i % r.len()];
+                        let a = *slot;
+                        let better = if is_max { tmp > a } else { tmp < a };
+                        if (narm && a == NA_INTEGER)
+                            || (a != NA_INTEGER && tmp != NA_INTEGER && better)
+                            || (!narm && tmp == NA_INTEGER)
+                        {
+                            *slot = tmp;
+                        }
                     }
                 }
-            }
-            Ok(Built::done(cx.alloc_copy(&ra)?.finish()))
-        } else {
-            let first = parts[0].as_vector::<f64>().unwrap().as_slice().unwrap();
-            let mut ra: Vec<f64> = (0..len).map(|i| first[i % first.len()]).collect();
-            for p in &parts[1..] {
-                let r = p.as_vector::<f64>().unwrap().as_slice().unwrap();
-                for (i, slot) in ra.iter_mut().enumerate() {
-                    let tmp = r[i % r.len()];
-                    let a = *slot;
-                    let better = if is_max { tmp > a } else { tmp < a };
-                    if (narm && a.is_nan()) || (!a.is_nan() && !tmp.is_nan() && better) || (!narm && tmp.is_nan()) {
-                        *slot = tmp;
+                Ok(Built::done(cx.alloc_copy(&ra)?.finish()))
+            } else {
+                let first = parts[0].as_vector::<f64>().unwrap().as_slice().unwrap();
+                let mut ra: Vec<f64> = (0..len).map(|i| first[i % first.len()]).collect();
+                for p in &parts[1..] {
+                    let r = p.as_vector::<f64>().unwrap().as_slice().unwrap();
+                    for (i, slot) in ra.iter_mut().enumerate() {
+                        let tmp = r[i % r.len()];
+                        let a = *slot;
+                        let better = if is_max { tmp > a } else { tmp < a };
+                        if (narm && a.is_nan()) || (!a.is_nan() && !tmp.is_nan() && better) || (!narm && tmp.is_nan()) {
+                            *slot = tmp;
+                        }
                     }
                 }
+                Ok(Built::done(cx.alloc_copy(&ra)?.finish()))
             }
-            Ok(Built::done(cx.alloc_copy(&ra)?.finish()))
-        }
+        })
     })
 }
 

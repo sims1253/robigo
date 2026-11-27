@@ -4,17 +4,14 @@
 //! `.Internal(is.vector(x, mode))`, `is.na`, `is.nan`, `is.finite`,
 //! `is.infinite`, `anyNA` and `storage.mode<-`.
 
-use super::vector::{
-    Warns, atomic_to_list_fill, atomic_to_pairlist_fill, atomic_to_strings, coerce, coerce_vector,
-    list_or_pairlist_to_strings_fill, to_strings_fills, vector_to_pair_list_fill,
-};
+use super::vector::{coerce_vector, coerce_vector_with};
 use crate::attrib::{self, Attrs};
 use crate::registry;
 use crate::util::check1arg;
-use crate::util::{is_numeric, is_vector_atomic, not_yet, str2type, type_to_char, type2char};
+use crate::util::{is_numeric, not_yet, str2type, type_to_char, type2char};
 use robigo_rtcore::types::*;
 use robigo_rtcore::{
-    Args, Built, Char, Cx, Diag, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Ref, Root, View,
+    Args, Char, Cx, Dispatched, Encoding, FreshVec, Generic, Lgl, NeedGc, Out, RResult, Ref, Root, View,
 };
 
 /// `.Internal(as.function.default(x, envir))`: the closure whose formals
@@ -129,49 +126,52 @@ pub fn copy_with<'g>(cx: &'g Cx, x: Ref<'g>, a: &Attrs<'g>) -> Result<Ref<'g>, N
     })
 }
 
-/// `ascommon(call, u, type)` then (`clear`) `CLEAR_ATTRIB`, under `&Cx`.
-/// `CLOSXP` (`asFunction`) is not ported.
+/// `ascommon(call, u, type)` then (`clear`) `CLEAR_ATTRIB`, using
+/// [`coerce_vector_with`] so character/list/pairlist coercions collect
+/// between elements. `CLOSXP` (`asFunction`) is not ported.
 // R: coerce.c:ascommon
-pub(crate) fn ascommon<'g, 'r>(
-    cx: &'g Cx,
-    call: Root<'r>,
-    u: Ref<'g>,
-    ty: u8,
-    clear: bool,
-) -> Result<Built<'g, 'r, Warns>, NeedGc> {
-    let t = u.sexptype();
-    let is_vector = attrib::is_vector(u);
+pub(crate) fn ascommon(cx: &mut Cx, call: Root<'_>, u: Root<'_>, ty: u8, clear: bool, out: Out<'_>) -> RResult<()> {
+    let uv = u.bind(cx);
+    let t = uv.sexptype();
+    let is_vector = attrib::is_vector(uv);
     let is_list = matches!(t, LISTSXP | NILSXP);
     let is_language = matches!(t, LANGSXP | NILSXP);
     if is_vector || is_list || is_language || (t == SYMSXP && ty == EXPRSXP) {
-        let (v, w) = if ty != ANYSXP && t != ty {
-            match coerce(cx, u, ty, !clear)? {
-                Built::Done(v, w) => (v, w),
-                Built::Fail(d) => return Ok(Built::fail(d.into_error())),
-            }
+        let res = out.root();
+        if ty != ANYSXP && t != ty {
+            coerce_vector_with(cx, u, ty, !clear, out)?;
         } else {
-            (u, Warns::new())
-        };
+            out.set(cx, uv);
+        }
         // as.pairlist of an atomic vector drops its attributes (the tags
         // stay: they are the pairlist's names)
-        let v = if clear && !matches!(v.sexptype(), NILSXP | LISTSXP | LANGSXP) { without_attrib(cx, v)? } else { v };
-        return Ok(Built::done(v).with(w));
+        let rv = res.bind(cx);
+        if clear && !matches!(rv.sexptype(), NILSXP | LISTSXP | LANGSXP) && attrib::has_attrib(rv) {
+            let o = res.reset(cx);
+            cx.build(o, |cx| without_attrib(cx, res.bind(cx)))?;
+        }
+        return Ok(());
     }
     if t == SYMSXP && ty == STRSXP {
-        let mut s = cx.alloc_vector::<Char<'g>>(1)?;
-        s.set(0, u.as_sym().unwrap().name(cx));
-        return Ok(Built::done(s.finish()).with(Warns::new()));
+        return cx.build(out, |cx| {
+            let mut s = cx.alloc_vector::<Char<'_>>(1)?;
+            s.set(0, u.bind(cx).as_sym().unwrap().name(cx));
+            Ok(s.finish().into())
+        });
     }
     if t == SYMSXP && ty == SYMSXP {
-        return Ok(Built::done(u).with(Warns::new()));
+        out.set(cx, uv);
+        return Ok(());
     }
     if t == SYMSXP && ty == VECSXP {
-        let mut l = cx.alloc_vector::<Ref<'g>>(1)?;
-        l.set(0, u);
-        return Ok(Built::done(l.finish()).with(Warns::new()));
+        return cx.build(out, |cx| {
+            let mut l = cx.alloc_vector::<Ref<'_>>(1)?;
+            l.set(0, u.bind(cx));
+            Ok(l.finish().into())
+        });
     }
-    let msg = format!("cannot coerce type '{}' to vector of type '{}'", type_to_char(u), type2char(ty));
-    Ok(Built::fail(Diag::error_call(Some(call), msg)))
+    let msg = format!("cannot coerce type '{}' to vector of type '{}'", type_to_char(uv), type2char(ty));
+    Err(cx.error_call(Some(call), &msg))
 }
 
 const AS_CHARACTER: Generic = Generic::builtin("as.character");
@@ -208,31 +208,19 @@ pub fn do_asatomic<const CODE: i32>(
     }
     if args.is_empty() {
         // CAR(R_NilValue) is NULL
-        return cx.build_with(out, |cx| ascommon(cx, call, cx.nil(), ty, true))?.signal(cx);
+        return cx.scope(|cx, s| {
+            let nil = s.root(cx, cx.nil());
+            ascommon(cx, call, nil, ty, true, out)
+        });
     }
     let x = args.root(0);
     if x.bind(cx).is_package_altrep() {
         return Err(not_yet(cx, Some(call), "as.vector() of a package ALTREP vector"));
     }
-    // as.character of an atomic vector or list/pairlist/call: per-element
-    // collections via Cx::fill_strings, and CLEAR_ATTRIB (no attributes copied)
-    if ty == STRSXP {
-        let xv = x.bind(cx);
-        if to_strings_fills(xv) {
-            return atomic_to_strings(cx, x, false, out);
-        }
-        if matches!(xv.sexptype(), VECSXP | EXPRSXP | LISTSXP | LANGSXP) {
-            return list_or_pairlist_to_strings_fill(cx, x, false, out);
-        }
+    if x.bind(cx).sexptype() == ty {
+        return cx.build(out, |cx| without_attrib(cx, x.bind(cx)));
     }
-    let w = cx.build_with(out, |cx| {
-        let xv = x.bind(cx);
-        if xv.sexptype() == ty {
-            return Ok(Built::done(without_attrib(cx, xv)?).with(Warns::new()));
-        }
-        ascommon(cx, call, xv, ty, true)
-    })?;
-    w.signal(cx)
+    ascommon(cx, call, x, ty, true, out)
 }
 
 const AS_VECTOR: Generic = Generic::builtin("as.vector");
@@ -273,64 +261,42 @@ pub fn do_asvector(cx: &mut Cx, call: Root<'_>, args: Args<'_>, env: Root<'_>, o
         }
         return Err(cx.error("invalid 'mode' argument"));
     };
-    // Per-element collecting coercions (fill_strings, fill_list, fill_pairlist)
-    {
-        let xv = x.bind(cx);
-        let xt = xv.sexptype();
-        if ty == STRSXP {
-            if to_strings_fills(xv) {
-                return atomic_to_strings(cx, x, false, out);
-            }
-            if matches!(xt, VECSXP | EXPRSXP | LISTSXP | LANGSXP) {
-                return list_or_pairlist_to_strings_fill(cx, x, false, out);
-            }
-        } else if matches!(ty, VECSXP | EXPRSXP) && is_vector_atomic(xv) {
-            return atomic_to_list_fill(cx, x, ty, out);
-        } else if ty == LISTSXP && is_vector_atomic(xv) {
-            return atomic_to_pairlist_fill(cx, x, out);
-        } else if ty == LISTSXP && matches!(xt, VECSXP | EXPRSXP) {
-            if attrib::attrs(xv).any(|a| a.tag.name_bytes() != b"names") {
-                return Err(
-                    cx.error("robigo: as.pairlist() of a list with attributes besides names is not implemented yet")
-                );
-            }
-            return vector_to_pair_list_fill(cx, x, out);
-        }
-    }
     if ty == CLOSXP && x.bind(cx).sexptype() != CLOSXP {
         let f = x.bind(cx).sexptype();
         if !matches!(f, BUILTINSXP | SPECIALSXP) {
             return Err(not_yet(cx, Some(call), "as.vector(x, \"function\") (asFunction)"));
         }
     }
-    let w = cx.build_with(out, |cx| {
-        let xv = x.bind(cx);
-        let xt = xv.sexptype();
-        if ty == ANYSXP || xt == ty {
-            match xt {
-                LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
-                    return Ok(Built::done(without_attrib(cx, xv)?).with(Warns::new()));
-                }
-                // _R_IS_AS_VECTOR_EXPERIMENTS_ is unset: a list stays as
-                // it is
-                EXPRSXP | VECSXP => return Ok(Built::done(xv).with(Warns::new())),
-                _ => {}
+    let xt = x.bind(cx).sexptype();
+    if ty == ANYSXP || xt == ty {
+        match xt {
+            LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => {
+                return cx.build(out, |cx| without_attrib(cx, x.bind(cx)));
             }
-        }
-        if ty == CLOSXP {
-            // isFunction(x): a builtin or special is returned as it is
-            return Ok(Built::done(xv).with(Warns::new()));
-        }
-        // CLEAR_ATTRIB unless the result is NULL, a pairlist, a call or a
-        // list
-        match ascommon(cx, call, xv, ty, false)? {
-            Built::Done(v, w) if !matches!(v.sexptype(), NILSXP | LISTSXP | LANGSXP | VECSXP | EXPRSXP) => {
-                Ok(Built::done(without_attrib(cx, v)?).with(w))
+            // _R_IS_AS_VECTOR_EXPERIMENTS_ is unset: a list stays as
+            // it is
+            EXPRSXP | VECSXP => {
+                out.set(cx, x.bind(cx));
+                return Ok(());
             }
-            b => Ok(b),
+            _ => {}
         }
-    })?;
-    w.signal(cx)
+    }
+    if ty == CLOSXP {
+        // isFunction(x): a builtin or special is returned as it is
+        out.set(cx, x.bind(cx));
+        return Ok(());
+    }
+    // CLEAR_ATTRIB unless the result is NULL, a pairlist, a call or a list
+    let clear = !matches!(ty, NILSXP | LISTSXP | LANGSXP | VECSXP | EXPRSXP);
+    let res = out.root();
+    ascommon(cx, call, x, ty, clear, out)?;
+    let rv = res.bind(cx);
+    if !matches!(rv.sexptype(), NILSXP | LISTSXP | LANGSXP | VECSXP | EXPRSXP) && attrib::has_attrib(rv) {
+        let o = res.reset(cx);
+        cx.build(o, |cx| without_attrib(cx, res.bind(cx)))?;
+    }
+    Ok(())
 }
 
 /// `.Internal(typeof(x))`.
