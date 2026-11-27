@@ -1623,10 +1623,25 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn the_full_check_runs_at_the_first_check_and_every_mth_after() {
+        assert_eq!(crate::gc::parse_freeze_check("0"), Some((0, 1, 0)));
         assert_eq!(crate::gc::parse_freeze_check("16"), Some((16, 1, 0)));
         assert_eq!(crate::gc::parse_freeze_check("16,16"), Some((16, 16, 0)));
         assert_eq!(crate::gc::parse_freeze_check("16,16,524288"), Some((16, 16, 524_288)));
-        for bad in ["16,0", "16,", ",16", "x", "16,x", "-1", "16,16,0", "16,16,", "16,16,x", "16,16,1,2"] {
+        for bad in [
+            "0,1",
+            "0,16",
+            "0,1,524288",
+            "16,0",
+            "16,",
+            ",16",
+            "x",
+            "16,x",
+            "-1",
+            "16,16,0",
+            "16,16,",
+            "16,16,x",
+            "16,16,1,2",
+        ] {
             assert_eq!(crate::gc::parse_freeze_check(bad), None, "{bad}");
         }
         let mut c = Core::new();

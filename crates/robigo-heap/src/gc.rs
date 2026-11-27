@@ -1089,12 +1089,21 @@ fn freeze_check_from_env() -> (u32, u32, u64) {
     }
 }
 
+/// Factor by which `ROBIGO_GC_FREEZE_CHECK=N,M,K` widens the check period
+/// once `stats.collections >= K`.
+const FREEZE_CHECK_GROW: u32 = 4;
+
 /// `N`, `N,M` (`M >= 1`), or `N,M,K` (`M >= 1`, `K >= 1`) of
-/// [`freeze_check_from_env`].
+/// [`freeze_check_from_env`]. Bare `0` turns the check off; explicit `M` or
+/// `K` alongside `N = 0` is refused as dead configuration.
 fn parse_freeze_check(v: &str) -> Option<(u32, u32, u64)> {
     let mut parts = v.split(',');
     let n = parts.next()?.parse().ok()?;
-    let m = match parts.next() {
+    let m_part = parts.next();
+    if n == 0 {
+        return if m_part.is_none() { Some((0, 1, 0)) } else { None };
+    }
+    let m = match m_part {
         Some(m) => m.parse().ok().filter(|&m| m >= 1)?,
         None => 1,
     };
@@ -3249,7 +3258,7 @@ impl Core {
             if self.freeze_check != 0 && (!self.frozen.is_empty() || self.freeze_enabled()) {
                 self.freeze_check_count = self.freeze_check_count.saturating_add(1);
                 let period = if self.freeze_grow != 0 && self.stats.collections >= self.freeze_grow {
-                    self.freeze_check.saturating_mul(4)
+                    self.freeze_check.saturating_mul(FREEZE_CHECK_GROW)
                 } else {
                     self.freeze_check
                 };
