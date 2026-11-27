@@ -693,8 +693,7 @@ pub fn do_mapply(cx: &mut Cx, call: Root<'_>, args: Args<'_>, rho: Root<'_>, out
             VECSXP | EXPRSXP => {
                 let o = s.out(cx);
                 let r = o.root();
-                let w = cx.build_with(o, |cx| coerce::vector::vector_to_pair_list(cx, constant.bind(cx)))?;
-                w.signal(cx)?;
+                coerce::vector::vector_to_pair_list_fill(cx, constant, o)?;
                 r
             }
             // a pairlist passes the check but is not used: fcall stays

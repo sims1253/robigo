@@ -107,7 +107,7 @@
 
 use crate::exit::RResult;
 use crate::fresh::FreshVec;
-use crate::handle::{Char, Ref};
+use crate::handle::{Char, Ref, Sym};
 use crate::isolate::Cx;
 use crate::outcome::{Built, Diag};
 use crate::root::{Out, Root};
@@ -251,7 +251,7 @@ impl<'a> Fill<'a> {
 /// - **Rule 1:** a `&Cx` request of `LARGE` (1 MiB) or more made while a
 ///   collection is due is a defect (panics under `ROBIGO_GC_STATS=check`).
 ///   An element that may need such a request checks [`Cx::gc_due`] first
-///   and, if due, ends the pass with `put(i, Err(NeedGc::Bytes))`.
+///   and, if due, ends the pass with `put(i, Err(NeedGc::new(sexptype, len)))`.
 /// - **Rule 2:** make the whole element, then pass it to [`FillList::put`].
 ///
 /// A view kept from one pass for the next does not compile:
@@ -353,6 +353,123 @@ impl<'a> FillList<'a> {
         #[cfg(debug_assertions)]
         if matches!(pass, Ok(Ok(()))) && self.next >= self.n {
             assert_eq!(self.expect, self.n, "robigo: a fill_list pass returned with elements unmade");
+        }
+        let _ = pass;
+    }
+}
+
+/// Where a pass of [`Cx::fill_pairlist`]'s loop appends cells front to back.
+///
+/// Holds H's four conditions for pausing mid-build (including to raise a
+/// per-element tag warning whose calling handler may allocate, move objects,
+/// error, or re-enter):
+/// 1. The half-built chain is reachable only from the fill's own `head` and
+///    `tail` roots; `out` is unpublished until the fill finishes.
+/// 2. The caller's inputs are reached through its own roots and re-read on
+///    every pass after a serve or warning handler.
+/// 3. The fill is unwind-safe: an error or warning handler that jumps out
+///    drops the scope's roots and leaves `out` untouched.
+/// 4. The fill keeps no state outside its call (re-entrant).
+///
+/// A view kept from one pass for the next does not compile:
+///
+/// ```compile_fail
+/// # use robigo_rtcore::{OwnedIsolate, Ref};
+/// # let mut iso = OwnedIsolate::new();
+/// # let cx = iso.cx();
+/// cx.scope(|cx, s| {
+///     let out = s.out(cx);
+///     let mut kept: Option<Ref<'_>> = None;
+///     cx.fill_pairlist(out, 1, |cx, fill| {
+///         let v = kept.unwrap_or_else(|| cx.nil());
+///         kept = Some(v);
+///         fill.put(0, Ok((v, None, None))).map(|_| Ok(()))
+///     })
+/// })
+/// .unwrap();
+/// ```
+pub struct FillPairlist<'a> {
+    head: Option<Sexp>,
+    tail: Option<Sexp>,
+    start: usize,
+    /// Number of cells already appended to the chain (resumption point on
+    /// stop or refusal).
+    done: usize,
+    n: usize,
+    warning: Option<String>,
+    poll_stopped: bool,
+    poll: &'a AtomicU32,
+    cx: &'a Cx,
+    #[cfg(debug_assertions)]
+    stopped: bool,
+}
+
+impl<'a> FillPairlist<'a> {
+    /// The element this pass starts at: the loop makes elements
+    /// `start()..len`.
+    #[inline(always)]
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Append element `i` (each in turn from `start()`): `(value, tag,
+    /// warning)`. The cons cell is allocated and linked onto the tail through
+    /// the write barrier (`set_cdr`). If `elt` or the cell allocation is
+    /// refused (`Err(NeedGc)`), neither the cell nor its warning is kept and
+    /// the fill retries from `i`. If a warning is present or a poll bit is
+    /// set, returns `Ok(true)` so the pass ends: the fill roots `head` and
+    /// `tail`, raises the warning (if any) once at `i`, serves the safepoint
+    /// (if due), and resumes at `i + 1`.
+    #[inline(always)]
+    pub fn put(
+        &mut self,
+        i: usize,
+        elt: Result<(Ref<'a>, Option<Sym<'a>>, Option<String>), NeedGc>,
+    ) -> Result<bool, NeedGc> {
+        #[cfg(debug_assertions)]
+        {
+            assert!(!self.stopped, "robigo: FillPairlist::put after the stop: the pass did not end at the stop");
+            assert_eq!(i, self.done, "robigo: FillPairlist::put of element {i}, expected {}", self.done);
+        }
+        let (val, tag, warning) = elt?;
+        let cell = match tag {
+            Some(t) => self.cx.cons_tagged(val, self.cx.nil(), t)?,
+            None => self.cx.cons(val, self.cx.nil())?,
+        }
+        .sexp();
+        match self.tail {
+            None => {
+                self.head = Some(cell);
+                self.tail = Some(cell);
+            }
+            Some(tail) => {
+                // SAFETY: `tail` is a live cons cell of this isolate (either
+                // made in this pass or read from `tail_root` at pass entry),
+                // and `cell` is a fresh cons cell of this isolate; `set_cdr`
+                // maintains the write barrier and reference counts.
+                unsafe { tail.set_cdr(cell) };
+                self.tail = Some(cell);
+            }
+        }
+        self.done = i + 1;
+        let poll_due = self.poll.load(Ordering::Relaxed) != 0 && i + 1 < self.n;
+        if warning.is_some() || poll_due {
+            self.warning = warning;
+            self.poll_stopped = poll_due;
+            #[cfg(debug_assertions)]
+            {
+                self.stopped = true;
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    #[inline(always)]
+    fn check_done(&self, pass: &FillPass<'_>) {
+        #[cfg(debug_assertions)]
+        if matches!(pass, Ok(Ok(()))) && !self.stopped {
+            assert_eq!(self.done, self.n, "robigo: a fill_pairlist pass returned with elements unmade");
         }
         let _ = pass;
     }
@@ -577,5 +694,234 @@ impl Cx {
                 Err(e) => stop = (next, Some(e)),
             }
         }
+    }
+
+    /// A pairlist of `n` cells built front to back by `f` (elements
+    /// `fill.start()..n`, each appended with [`FillPairlist::put`]), with
+    /// collections and per-element warnings served between cells. The
+    /// half-built chain is kept only in this call's scope roots and `out` is
+    /// written once all `n` cells (and any final warning) succeed.
+    pub fn fill_pairlist<'r>(
+        &mut self,
+        out: Out<'_>,
+        n: usize,
+        mut f: impl for<'a> FnMut(&'a Cx, &mut FillPairlist<'a>) -> FillPass<'r>,
+    ) -> RResult<()> {
+        if n == 0 {
+            out.set(self, self.nil());
+            return Ok(());
+        }
+        self.scope(|cx, s| {
+            let head_root = s.root(cx, cx.nil());
+            let tail_root = s.root(cx, cx.nil());
+            let mut start = 0usize;
+            let mut refused: Option<NeedGc> = None;
+            #[cfg(feature = "retry-torture")]
+            let mut first = cx.retry_torture();
+            loop {
+                let (pass, new_head, new_tail, done, warning, poll_stopped) = {
+                    #[cfg(feature = "retry-torture")]
+                    let _refuse = cx.refuse_once(&mut first);
+                    let cx = &*cx;
+                    let nil = cx.nil().sexp();
+                    let h = head_root.bind(cx).sexp();
+                    let t = tail_root.bind(cx).sexp();
+                    let mut fill = FillPairlist {
+                        head: (h != nil).then_some(h),
+                        tail: (t != nil).then_some(t),
+                        start,
+                        done: start,
+                        n,
+                        warning: None,
+                        poll_stopped: false,
+                        poll: &cx.iso().poll,
+                        cx,
+                        #[cfg(debug_assertions)]
+                        stopped: false,
+                    };
+                    let pass = f(cx, &mut fill);
+                    fill.check_done(&pass);
+                    (pass, fill.head, fill.tail, fill.done, fill.warning, fill.poll_stopped)
+                };
+                // Fast path: finished all `n` cells with no warning and no stop.
+                if matches!(pass, Ok(Ok(()))) && done >= n && warning.is_none() {
+                    let h = new_head.expect("robigo: non-empty pairlist fill ended without head");
+                    // SAFETY: `h` is a live cons cell of this isolate and
+                    // nothing has collected since the pass returned.
+                    out.set(cx, unsafe { Ref::from_sexp(h, cx) });
+                    return Ok(());
+                }
+                // Root the partial chain before raising a warning, collecting,
+                // or serving a safepoint (any of which may move objects).
+                if let Some(h) = new_head {
+                    let o = head_root.reset(cx);
+                    // SAFETY: `h` is a live cons cell of this isolate and
+                    // nothing has collected since the pass returned.
+                    o.set(cx, unsafe { Ref::from_sexp(h, cx) });
+                }
+                if let Some(t) = new_tail {
+                    let o = tail_root.reset(cx);
+                    // SAFETY: as above.
+                    o.set(cx, unsafe { Ref::from_sexp(t, cx) });
+                }
+                if done > start {
+                    refused = None;
+                }
+                match pass {
+                    Ok(Ok(())) => {
+                        if let Some(msg) = warning {
+                            cx.warning(&msg)?;
+                        }
+                        if done >= n {
+                            out.set(cx, head_root.bind(cx));
+                            return Ok(());
+                        }
+                        if poll_stopped || cx.gc_due() {
+                            cx.safepoint(Safepoint::Loop)?;
+                        }
+                        start = done;
+                    }
+                    Ok(Err(d)) => return Err(cx.raise(d)),
+                    Err(e) if refused == Some(e) => return Err(cx.refused_again(e)),
+                    Err(e) => {
+                        cx.need_gc(e)?;
+                        refused = Some(e);
+                        start = done;
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Diag, Hooks, OwnedIsolate};
+    use robigo_heap::types::NILSXP;
+    use std::cell::RefCell;
+
+    #[test]
+    fn fill_pairlist_builds_front_to_back_and_handles_empty() {
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.scope(|cx, s| {
+            let empty = s.out(cx);
+            let er = empty.root();
+            cx.fill_pairlist(empty, 0, |_cx, _fill| unreachable!()).unwrap();
+            assert_eq!(er.bind(cx).sexptype(), NILSXP);
+
+            let out = s.out(cx);
+            let r = out.root();
+            cx.fill_pairlist(out, 3, |cx, fill| {
+                for i in fill.start()..3 {
+                    let v = cx.alloc_copy(&[i as i32 + 10])?.finish().into();
+                    let tag = if i == 1 { None } else { Some(cx.install(format!("k{i}").as_bytes())?) };
+                    if fill.put(i, Ok((v, tag, None)))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            })
+            .unwrap();
+
+            let mut cur = r.bind(cx).as_cons();
+            let mut got = Vec::new();
+            while let Some(c) = cur {
+                let n = c.car().as_scalar::<i32>().unwrap();
+                let t = c.tag().as_sym().map(|sym| sym.name_bytes().to_vec());
+                got.push((t, n));
+                cur = c.cdr().as_cons();
+            }
+            assert_eq!(got, vec![(Some(b"k0".to_vec()), 10), (None, 11), (Some(b"k2".to_vec()), 12)]);
+        });
+    }
+
+    #[test]
+    fn fill_pairlist_warning_stops_and_unwind_leaves_out_unpublished() {
+        thread_local! {
+            static WARNS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+            static FAIL_SECOND: RefCell<bool> = const { RefCell::new(false) };
+        }
+        let mut iso = OwnedIsolate::new();
+        let cx = iso.cx();
+        cx.install_hooks(Hooks {
+            warning: |cx, _call, msg| {
+                WARNS.with(|w| w.borrow_mut().push(String::from_utf8_lossy(msg).into_owned()));
+                if FAIL_SECOND.with(|f| *f.borrow()) && WARNS.with(|w| w.borrow().len() >= 2) {
+                    return Err(cx.error("handler boom"));
+                }
+                Ok(())
+            },
+            ..Hooks::default()
+        });
+
+        // Two warnings (one mid-chain, one on the final element): both fire in order.
+        WARNS.with(|w| w.borrow_mut().clear());
+        FAIL_SECOND.with(|f| *f.borrow_mut() = false);
+        cx.scope(|cx, s| {
+            let out = s.out(cx);
+            let r = out.root();
+            cx.fill_pairlist(out, 3, |cx, fill| {
+                for i in fill.start()..3 {
+                    let v = cx.alloc_copy(&[i as i32])?.finish().into();
+                    let w = (i == 0 || i == 2).then(|| format!("warn {i}"));
+                    if fill.put(i, Ok((v, None, w)))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            })
+            .unwrap();
+            let mut vals = Vec::new();
+            let mut cur = r.bind(cx).as_cons();
+            while let Some(c) = cur {
+                vals.push(c.car().as_scalar::<i32>().unwrap());
+                cur = c.cdr().as_cons();
+            }
+            assert_eq!(vals, vec![0, 1, 2]);
+        });
+        assert_eq!(WARNS.with(|w| w.borrow().clone()), vec!["warn 0", "warn 2"]);
+
+        // Handler error on second warning unwinds cleanly with `out` still empty (NULL).
+        WARNS.with(|w| w.borrow_mut().clear());
+        FAIL_SECOND.with(|f| *f.borrow_mut() = true);
+        cx.scope(|cx, s| {
+            let out = s.out(cx);
+            let r = out.root();
+            let res = cx.fill_pairlist(out, 3, |cx, fill| {
+                for i in fill.start()..3 {
+                    let v = cx.alloc_copy(&[i as i32])?.finish().into();
+                    let w = Some(format!("warn {i}"));
+                    if fill.put(i, Ok((v, None, w)))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            });
+            let err = res.unwrap_err();
+            assert_eq!(r.bind(cx).sexptype(), NILSXP);
+            let _ = cx.take_exit(err);
+        });
+
+        // Diagnostic error mid-fill leaves `out` untouched.
+        cx.scope(|cx, s| {
+            let out = s.out(cx);
+            let r = out.root();
+            let res = cx.fill_pairlist(out, 2, |cx, fill| {
+                for i in fill.start()..2 {
+                    if i == 1 {
+                        return Ok(Err(Diag::error("bad bytes")));
+                    }
+                    let v = cx.alloc_copy(&[i as i32])?.finish().into();
+                    if fill.put(i, Ok((v, None, None)))? {
+                        return Ok(Ok(()));
+                    }
+                }
+                Ok(Ok(()))
+            });
+            let err = res.unwrap_err();
+            assert_eq!(r.bind(cx).sexptype(), NILSXP);
+            let _ = cx.take_exit(err);
+        });
     }
 }

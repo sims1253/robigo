@@ -484,8 +484,7 @@ entry! {
         safepoint(cx)?;
         let o = s.out(cx);
         let r = o.root();
-        let w = cx.build_with(o, |cx| robigo_rtbuiltins::coerce::vector::vector_to_pair_list(cx, x.bind(cx)))?;
-        w.signal(cx)?;
+        robigo_rtbuiltins::coerce::vector::vector_to_pair_list_fill(cx, x, o)?;
         Ok(r.bind(cx).sexp())
     }
 

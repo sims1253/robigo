@@ -18,7 +18,10 @@ use crate::coerce::{complex_string, int_string, lgl_string, raw_string, real_str
 use crate::util::{is_vector_atomic, type_to_char, type2char};
 use robigo_rtcore::RSym;
 use robigo_rtcore::types::*;
-use robigo_rtcore::{Built, Char, Cx, Diag, Encoding, FreshVec, Lgl, NeedGc, Out, RResult, Rcomplex, Ref, Root, View};
+use robigo_rtcore::{
+    Built, Char, Cx, Diag, Encoding, FreshVec, LARGE, Lgl, ListKind, NeedGc, Out, RResult, Rcomplex, Ref, Root, Sym,
+    Vector, View,
+};
 use robigo_text::strtod::{is_blank, r_strtod};
 
 pub const NA_INTEGER: i32 = i32::MIN;
@@ -591,16 +594,307 @@ pub fn coerce_vector(cx: &mut Cx, v: Root<'_>, ty: u8, out: Out<'_>) -> RResult<
 /// atomic coercion has no attributes copied).
 pub fn coerce_vector_with(cx: &mut Cx, v: Root<'_>, ty: u8, keep_attrs: bool, out: Out<'_>) -> RResult<()> {
     let r = v.bind(cx);
+    let t = r.sexptype();
     // the same type: `v` itself, no warnings (as `coerce` returns it)
-    if r.sexptype() == ty {
+    if t == ty {
         out.set(cx, r);
         return Ok(());
     }
-    if ty == STRSXP && to_strings_fills(r) {
-        return atomic_to_strings(cx, v, keep_attrs, out);
+    if !r.is_package_altrep() && !(r.is_s4() && t == OBJSXP) {
+        if ty == STRSXP && to_strings_fills(r) {
+            return atomic_to_strings(cx, v, keep_attrs, out);
+        }
+        if ty == STRSXP && matches!(t, VECSXP | EXPRSXP | LISTSXP | LANGSXP) {
+            return list_or_pairlist_to_strings_fill(cx, v, keep_attrs, out);
+        }
+        if matches!(ty, VECSXP | EXPRSXP) && is_vector_atomic(r) {
+            return atomic_to_list_fill(cx, v, ty, out);
+        }
+        if ty == LISTSXP && is_vector_atomic(r) {
+            return atomic_to_pairlist_fill(cx, v, out);
+        }
+        if ty == LISTSXP && matches!(t, VECSXP | EXPRSXP) {
+            if attrib::attrs(r).any(|a| a.tag.name_bytes() != b"names") {
+                return Err(
+                    cx.error("robigo: as.pairlist() of a list with attributes besides names is not implemented yet")
+                );
+            }
+            return vector_to_pair_list_fill(cx, v, out);
+        }
     }
     let w = cx.build_with(out, |cx| coerce(cx, v.bind(cx), ty, keep_attrs))?;
     w.signal(cx)
+}
+
+/// Attach `names` from `src` (if any) as the sole attribute of the freshly
+/// filled vector `dst`.
+fn attach_names(cx: &mut Cx, dst: Root<'_>, src: Root<'_>) -> RResult<()> {
+    if attrib::names(src.bind(cx)).is_none() {
+        return Ok(());
+    }
+    cx.scope(|cx, s| {
+        let al = s.capture(cx, |cx, o| {
+            cx.build(o, |cx| {
+                let Some(nm) = attrib::names(src.bind(cx)) else {
+                    return Ok(cx.nil());
+                };
+                cx.cons_tagged(nm, cx.nil(), cx.sym(RSym::Names))
+            })
+        })?;
+        if al.bind(cx).sexptype() != NILSXP {
+            cx.set_attrib_list(dst, al);
+        }
+        Ok(())
+    })
+}
+
+/// `coerceToVectorList(v)` (names kept) or `coerceToExpression(v)` of an
+/// atomic vector via [`Cx::fill_list`], allocating one scalar per element
+/// with collections between elements (H's Rule 1 & Rule 2).
+// R: coerce.c:coerceToVectorList, coerceToExpression
+pub fn atomic_to_list_fill(cx: &mut Cx, v: Root<'_>, ty: u8, out: Out<'_>) -> RResult<()> {
+    let n = v.bind(cx).len().unwrap_or(0);
+    let kind = if ty == EXPRSXP { ListKind::Expr } else { ListKind::List };
+    let res = out.root();
+    cx.fill_list(out, kind, n, |cx, fill| {
+        let vv = v.bind(cx);
+        for i in fill.start()..n {
+            if fill.put(i, scalar_elt(cx, vv, i))? {
+                return Ok(Ok(()));
+            }
+        }
+        Ok(Ok(()))
+    })?;
+    if ty == VECSXP {
+        attach_names(cx, res, v)?;
+    }
+    Ok(())
+}
+
+/// Resolve name `i` (from `names`, if present) as a pairlist tag via
+/// `installTrChar`, skipping empty strings (and `NA_STRING` when `skip_na`
+/// is true). Returns `(tag, untranslated_warning)`, or a `Diag` on `"bytes"`
+/// encoding.
+// R: coerce.c:VectorToPairList, attrib.c:namesgets
+fn pairlist_tag_elt<'g>(
+    cx: &'g Cx,
+    names: Option<Vector<'g, Char<'g>>>,
+    i: usize,
+    skip_na: bool,
+) -> Result<Result<(Option<Sym<'g>>, Option<String>), Diag<'static>>, NeedGc> {
+    let Some(nm) = names else { return Ok(Ok((None, None))) };
+    if i >= nm.len() {
+        return Ok(Ok((None, None)));
+    }
+    let s = nm.get(i);
+    if s.bytes().is_empty() || (skip_na && s == cx.na_string()) {
+        return Ok(Ok((None, None)));
+    }
+    let (name, untranslated) = match crate::text::install_tr_name(crate::coerce::text(s), cx.locale()) {
+        Ok(r) => r,
+        Err(d) => return Ok(Err(d)),
+    };
+    let sym = cx.install_tr(s, &name)?;
+    Ok(Ok((Some(sym), untranslated)))
+}
+
+/// `coerceToPairList(v)` of an atomic vector via [`Cx::fill_pairlist`]:
+/// front-to-back chain of scalars, tags installed from `names(v)` skipping
+/// `""` and `NA_STRING` (`namesgets` semantics), with collections and
+/// per-element `installTrChar` warnings served between cells.
+// R: coerce.c:coerceToPairList, attrib.c:namesgets
+pub fn atomic_to_pairlist_fill(cx: &mut Cx, v: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = v.bind(cx).len().unwrap_or(0);
+    cx.fill_pairlist(out, n, |cx, fill| {
+        let vv = v.bind(cx);
+        let nm = attrib::names(vv).and_then(|nm| nm.as_vector::<Char<'_>>());
+        for i in fill.start()..n {
+            let e = match scalar_elt(cx, vv, i) {
+                Ok(e) => e,
+                Err(err) => {
+                    fill.put(i, Err(err))?;
+                    unreachable!()
+                }
+            };
+            let (tag, warn) = match pairlist_tag_elt(cx, nm, i, true) {
+                Ok(Ok(r)) => r,
+                Ok(Err(d)) => return Ok(Err(d)),
+                Err(err) => {
+                    fill.put(i, Err(err))?;
+                    unreachable!()
+                }
+            };
+            if fill.put(i, Ok((e, tag, warn)))? {
+                return Ok(Ok(()));
+            }
+        }
+        Ok(Ok(()))
+    })
+}
+
+/// `VectorToPairList(v)` of a list or expression vector via
+/// [`Cx::fill_pairlist`]: front-to-back chain of elements, tags installed
+/// from `names(v)` skipping `""` only (`VectorToPairList` semantics), with
+/// collections and per-element `installTrChar` warnings served between cells.
+// R: coerce.c:VectorToPairList
+pub fn vector_to_pair_list_fill(cx: &mut Cx, v: Root<'_>, out: Out<'_>) -> RResult<()> {
+    let n = match v.bind(cx).view() {
+        View::List(l) | View::Expr(l) => l.len(),
+        _ => 0,
+    };
+    cx.fill_pairlist(out, n, |cx, fill| {
+        let vv = v.bind(cx);
+        let list = match vv.view() {
+            View::List(l) | View::Expr(l) => l,
+            _ => return Ok(Ok(())),
+        };
+        let nm = attrib::names(vv).and_then(|nm| nm.as_vector::<Char<'_>>());
+        for i in fill.start()..n {
+            let e = list.get(i);
+            let (tag, warn) = match pairlist_tag_elt(cx, nm, i, false) {
+                Ok(Ok(r)) => r,
+                Ok(Err(d)) => return Ok(Err(d)),
+                Err(err) => {
+                    fill.put(i, Err(err))?;
+                    unreachable!()
+                }
+            };
+            if fill.put(i, Ok((e, tag, warn)))? {
+                return Ok(Ok(()));
+            }
+        }
+        Ok(Ok(()))
+    })
+}
+
+/// Coerce a list, expression vector, pairlist, or call to `STRSXP` via
+/// [`Cx::fill_strings`], allocating one CHARSXP per deparsed element with
+/// collections between elements, and attaching names (from `names(v)` or
+/// pairlist tags) afterwards when `keep_names` is true.
+// R: coerce.c:coerceVectorList, coerce.c:coercePairList, coerce.c:coerceVector
+pub fn list_or_pairlist_to_strings_fill(cx: &mut Cx, v: Root<'_>, keep_names: bool, out: Out<'_>) -> RResult<()> {
+    let (ty, n) = {
+        let vv = v.bind(cx);
+        let ty = vv.sexptype();
+        let n = match vv.view() {
+            View::List(l) | View::Expr(l) => l.len(),
+            _ => {
+                let mut count = 0;
+                let mut c = vv.as_cons();
+                while let Some(cell) = c {
+                    count += 1;
+                    c = cell.cdr().as_cons();
+                }
+                count
+            }
+        };
+        (ty, n)
+    };
+    let opts = if matches!(ty, VECSXP | EXPRSXP) { 1024 } else { 0 };
+    let res = out.root();
+    cx.fill_strings(out, n, |cx, fill| {
+        let vv = v.bind(cx);
+        let start = fill.start();
+        if matches!(ty, VECSXP | EXPRSXP) {
+            let list = match vv.view() {
+                View::List(l) | View::Expr(l) => l,
+                _ => unreachable!("robigo: a list"),
+            };
+            for i in start..n {
+                let c = match deparsed_or_string_checked(cx, list.get(i), opts) {
+                    Ok(Ok(c)) => c,
+                    Ok(Err(m)) => return Ok(Err(Diag::error(m))),
+                    Err(err) => {
+                        fill.put(i, Err(err))?;
+                        unreachable!()
+                    }
+                };
+                if fill.put(i, Ok(c))? {
+                    return Ok(Ok(()));
+                }
+            }
+        } else {
+            let mut c = vv.as_cons();
+            for _ in 0..start {
+                c = c.and_then(|cell| cell.cdr().as_cons());
+            }
+            for i in start..n {
+                let cell = c.expect("robigo: pairlist shortened during coercion");
+                let e = cell.car();
+                let ch = if ty == LANGSXP && i == 0 && e.sexptype() == SYMSXP {
+                    e.as_sym().unwrap().name(cx)
+                } else {
+                    match deparsed_or_string_checked(cx, e, opts) {
+                        Ok(Ok(ch)) => ch,
+                        Ok(Err(m)) => return Ok(Err(Diag::error(m))),
+                        Err(err) => {
+                            fill.put(i, Err(err))?;
+                            unreachable!()
+                        }
+                    }
+                };
+                if fill.put(i, Ok(ch))? {
+                    return Ok(Ok(()));
+                }
+                c = cell.cdr().as_cons();
+            }
+        }
+        Ok(Ok(()))
+    })?;
+    if keep_names {
+        if matches!(ty, VECSXP | EXPRSXP) {
+            attach_names(cx, res, v)?;
+        } else if ty == LISTSXP {
+            cx.scope(|cx, s| {
+                let al = s.capture(cx, |cx, o| {
+                    cx.build(o, |cx| {
+                        let mut tags = Vec::new();
+                        let mut named = false;
+                        let mut c = v.bind(cx).as_cons();
+                        while let Some(cell) = c {
+                            let t = cell.tag().as_sym().map(|sym| sym.name(cx));
+                            named |= t.is_some();
+                            tags.push(t);
+                            c = cell.cdr().as_cons();
+                        }
+                        if !named {
+                            return Ok(cx.nil());
+                        }
+                        let mut nm = cx.alloc_vector::<Char<'_>>(tags.len())?;
+                        for (i, t) in tags.iter().enumerate() {
+                            if let Some(t) = t {
+                                nm.set(i, *t);
+                            }
+                        }
+                        cx.cons_tagged(nm.finish().into(), cx.nil(), cx.sym(RSym::Names))
+                    })
+                })?;
+                if al.bind(cx).sexptype() != NILSXP {
+                    cx.set_attrib_list(res, al);
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// [`deparsed_or_string`] with H's Rule 1 check before a `LARGE` CHARSXP
+/// allocation inside a fill loop.
+fn deparsed_or_string_checked<'g>(cx: &'g Cx, e: Ref<'g>, opts: i32) -> Result<Result<Char<'g>, String>, NeedGc> {
+    if e.sexptype() == STRSXP && e.len() == Some(1) {
+        return Ok(Ok(e.as_vector::<Char<'g>>().unwrap().get(0)));
+    }
+    match cx.deparse1line(e, opts) {
+        Ok(b) => {
+            if b.len() >= LARGE && cx.gc_due() {
+                return Err(NeedGc::new(CHARSXP, b.len()));
+            }
+            let enc = if b.is_ascii() { Encoding::Native } else { Encoding::Utf8 };
+            Ok(Ok(cx.mk_char(&b, enc)?))
+        }
+        Err(m) => Ok(Err(m)),
+    }
 }
 
 /// Whether `coerceVector(v, STRSXP)` of `v` is what [`atomic_to_strings`]

@@ -1,0 +1,84 @@
+-- heavy handler (list)
+warn: unable to translate 'caf<U+00E9>' to native encoding 
+alloc len: 10000 
+warn: unable to translate 'na<U+00EF>ve' to native encoding 
+$`caf<U+00E9>`
+[1] 10
+
+$ok
+[1] 20
+
+$`na<U+00EF>ve`
+[1] 30
+
+-- heavy handler (atomic)
+warn: unable to translate 'caf<U+00E9>' to native encoding 
+alloc len: 200 
+warn: unable to translate 'na<U+00EF>ve' to native encoding 
+alloc len: 200 
+$`caf<U+00E9>`
+[1] 1
+
+$ok
+[1] 2
+
+$`na<U+00EF>ve`
+[1] 3
+
+-- error handler
+warn before stop: unable to translate 'caf<U+00E9>' to native encoding 
+caught: handler abort 
+-- reentrant handler
+outer warn: unable to translate 'caf<U+00E9>' to native encoding 
+outer warn: unable to translate 'na<U+00EF>ve' to native encoding 
+$`caf<U+00E9>`
+[1] 10
+
+$ok
+[1] 20
+
+$`na<U+00EF>ve`
+[1] 30
+
+[[1]]
+[[1]]$p
+[1] 1
+
+[[1]]$q
+[1] 2
+
+
+[[2]]
+[[2]]$r
+[1] 3
+
+[[2]]$s
+[1] 4
+
+
+[[3]]
+[[3]]$p
+[1] 1
+
+[[3]]$q
+[1] 2
+
+
+[[4]]
+[[4]]$r
+[1] 3
+
+[[4]]$s
+[1] 4
+
+
+-- two untranslatable with gc between
+warn: unable to translate 'caf<U+00E9>' to native encoding 
+warn: unable to translate 'na<U+00EF>ve' to native encoding 
+[1] "caf<U+00E9>"  "na<U+00EF>ve"
+-- utf8 then bytes (list)
+warn: unable to translate 'caf<U+00E9>' to native encoding 
+err: translating strings with "bytes" encoding is not allowed 
+-- utf8 then bytes (atomic)
+warn: unable to translate 'caf<U+00E9>' to native encoding 
+err: translating strings with "bytes" encoding is not allowed 
