@@ -1294,40 +1294,57 @@ fn repl_file(cx: &mut Cx, bytes: &[u8], rho: for<'g> fn(&'g Cx) -> Ref<'g>, expr
         robigo_syntax::ErrorStyle::Grammar => robigo_syntax::format_parse_error_since(source, "", e, start),
         _ => crate::repl::parse_error_message(source, e),
     };
-    let mut p = match robigo_syntax::parser::Parser::new(&arena, source) {
-        Ok(p) => p,
-        Err(e) => {
-            crate::repl::parse_error_at_top_after(cx, &[], source, &e, &message(&e, 0));
-            return crate::repl::check_session_exit(cx);
-        }
-    };
-    // the lexer's warnings (R_Parse1File generates code: all of them), each
-    // raised with the statement whose tokens it came from
-    let lexed: Vec<(usize, String)> = p.warnings.iter().map(|w| (w.at as usize, w.message.clone())).collect();
-    let between = |from: usize, to: usize| -> Vec<String> {
-        lexed.iter().filter(|(at, _)| *at >= from && *at < to).map(|(_, m)| m.clone()).collect()
-    };
-    let savestack = cx.pp_top();
-    loop {
-        // the statement's context starts where the last one ended
-        let start = p.consumed_end();
-        let e = match p.program_n(1) {
-            Ok(mut v) if !v.is_empty() => v.remove(0),
-            Ok(_) => return true,
+    // Parse every statement before evaluating so the parser's token buffer
+    // (`Parser::toks`, ~75 KiB on base's Rprofile) is freed before base's
+    // own allocations reach peak malloc (rt-startup's rdb-nojit bar).
+    // Statements before a parse error still run first, and an error in an
+    // earlier statement stops before the parse error is raised.
+    let mut stmts = Vec::new();
+    let mut parse_err = None;
+    {
+        let mut p = match robigo_syntax::parser::Parser::new(&arena, source) {
+            Ok(p) => p,
             Err(e) => {
-                // the warnings of the tokens lexed by then (the raise
-                // site's frontier, as the console's parse counts them)
-                let frontier = p.error_frontier(&e) + 1;
-                crate::repl::parse_error_at_top_after(cx, &between(start, frontier), source, &e, &message(&e, start));
+                crate::repl::parse_error_at_top_after(cx, &[], source, &e, &message(&e, 0));
                 return crate::repl::check_session_exit(cx);
             }
         };
-        let ws = between(start, p.consumed_end());
+        // the lexer's warnings (R_Parse1File generates code: all of them), each
+        // raised with the statement whose tokens it came from
+        let lexed: Vec<(usize, String)> = p.warnings.iter().map(|w| (w.at as usize, w.message.clone())).collect();
+        let between = |from: usize, to: usize| -> Vec<String> {
+            lexed.iter().filter(|(at, _)| *at >= from && *at < to).map(|(_, m)| m.clone()).collect()
+        };
+        loop {
+            // the statement's context starts where the last one ended
+            let start = p.consumed_end();
+            match p.program_n(1) {
+                Ok(mut v) if !v.is_empty() => {
+                    stmts.push((v.remove(0), between(start, p.consumed_end())));
+                }
+                Ok(_) => break,
+                Err(e) => {
+                    // the warnings of the tokens lexed by then (the raise
+                    // site's frontier, as the console's parse counts them)
+                    let frontier = p.error_frontier(&e) + 1;
+                    parse_err = Some((e, between(start, frontier), start));
+                    break;
+                }
+            }
+        }
+    }
+    let savestack = cx.pp_top();
+    for (e, ws) in &stmts {
         *exprs += 1;
-        if !repl_eval_toplevel(cx, &e, None, &ws, rho, savestack, (1, 0)) {
+        if !repl_eval_toplevel(cx, e, None, ws, rho, savestack, (1, 0)) {
             return crate::repl::check_session_exit(cx);
         }
     }
+    if let Some((e, ws, start)) = parse_err {
+        crate::repl::parse_error_at_top_after(cx, &ws, source, &e, &message(&e, start));
+        return crate::repl::check_session_exit(cx);
+    }
+    true
 }
 
 /// `setup_Rmainloop`'s locks right after the system profile: base's
