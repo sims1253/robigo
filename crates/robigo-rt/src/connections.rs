@@ -867,7 +867,7 @@ fn conn_write(c: &mut Conn, buf: &[u8]) -> std::io::Result<usize> {
 const RBUFFCON_LEN_DEFAULT: usize = 4096;
 
 /// `R_EOF`.
-const R_EOF: c_int = -1;
+pub(crate) const R_EOF: c_int = -1;
 
 /// `buff_init(con)`: an empty buffer of the default length.
 // R: connections.c:buff_init, buff_set_len
@@ -2546,13 +2546,16 @@ pub fn open(cx: &mut Cx, n: i32) -> RResult<bool> {
     }
 }
 
-/// Everything left to read on connection `n`, in two parts: what
-/// `Rconn_fgetc` gives before the stream (a held character, the pushback;
-/// all of a text connection), as it gives them, and then the stream's
-/// bytes as they are (`Rconn_fgetc` would map their line ends: the caller
-/// does, [`crate::source`]). A read the system fails ends the input, as
-/// `fgetc`'s EOF does there; robigo-rt's own refusals (a connection it
-/// cannot read yet) are errors.
+/// Everything left to read on connection `n`, in two parts:
+///
+/// 1. what `Rconn_fgetc` gives before the stream (the pushback, then a held
+///    character; all of a text connection, which has no stream), each byte
+///    as `Rconn_fgetc` gives it, and
+/// 2. the stream's bytes as they are: `Rconn_fgetc` would map their line
+///    ends, the caller does ([`crate::source`]).
+///
+/// A read the system fails ends the input, as `fgetc`'s EOF does there;
+/// robigo-rt's own refusals (a connection it cannot read yet) are errors.
 // R: connections.c:Rconn_fgetc, file_fgetc_internal, source.c:R_ParseConn
 pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<(Vec<u8>, Vec<u8>)> {
     let ours = our_fgetc(cx);
@@ -2686,15 +2689,16 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 /// read starts there (what `R_ParseConn` leaves unread when it stops after
 /// the `n`-th expression), and with `held` the character Rconn_fgetc holds
 /// to give first (`con->save`: what it read after a CR, the newline a
-/// second CR stands for, or the end of input). False for any other
-/// connection.
-pub fn unread(cx: &mut Cx, n: i32, k: usize, held: Option<std::ffi::c_int>) -> RResult<bool> {
+/// second CR stands for, or [`R_EOF`]). `held` replaces only that one
+/// character: input pushed back before it is not given back here. False
+/// for any other connection.
+pub fn unread(cx: &mut Cx, n: i32, k: usize, held: Option<c_int>) -> RResult<bool> {
     with_conn(cx, n, |c| {
         let back = match &mut c.imp {
             Imp::File(f) => match f.fp.as_mut() {
                 // nothing to give back but the held character: no seek (a
                 // fifo cannot)
-                Some(_) if k == 0 => true,
+                Some(_) if k == 0 && !f.last_was_write => true,
                 Some(fp) if !f.last_was_write => fp.fseeko(-(k as i64), stdio::Whence::Cur) == 0,
                 _ => false,
             },

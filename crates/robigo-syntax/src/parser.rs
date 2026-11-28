@@ -306,18 +306,22 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
 /// has read the character it rejected.
 fn lex_error_of(toks: &[Token<'_>]) -> Option<LexError> {
     match toks.len().checked_sub(2).map(|k| &toks[k]) {
-        Some(Token { tok: Tok::Invalid(le), span }) => Some(LexError {
-            at: span.start as usize,
-            raised: (le.style == ErrorStyle::Condition).then_some(le.end),
-            incomplete: le.incomplete,
-        }),
+        Some(Token { tok: Tok::Invalid(le), span }) => {
+            debug_assert!(le.style != ErrorStyle::Condition || !le.incomplete);
+            Some(LexError {
+                at: span.start as usize,
+                raised: (le.style == ErrorStyle::Condition).then_some(le.end),
+                incomplete: le.incomplete,
+            })
+        }
         _ => None,
     }
 }
 
 /// The invalid token that ended a chunk's tokens: where it starts, for a
 /// `raiseLexError` where reading stopped, and whether the end of input cut
-/// it short (an unterminated string: the lexer read to the end).
+/// it short (an unterminated string: the lexer read to the end). A raised
+/// `raiseLexError` is never incomplete ([`Parser::read_to`] relies on it).
 #[derive(Clone, Copy)]
 struct LexError {
     at: usize,
@@ -410,9 +414,10 @@ impl<'a> Parser<'a> {
         let la = if invalid.is_some() { invalid_lookahead(tok) } else { lookahead(tok) };
         let mut lexed = match la {
             Lookahead::None => end,
-            _ if end >= raw.len() => past_end,
-            Lookahead::Byte => end + 1,
-            Lookahead::Char => end + crate::utf8clen(raw[end]),
+            Lookahead::Byte if end < raw.len() => end + 1,
+            Lookahead::Char if end < raw.len() => end + crate::utf8clen(raw[end]),
+            // a look past the last byte: the end of input
+            _ => past_end,
         };
         // an invalid token has read the whole character it rejected
         // (`mbcs_get_next`), not its first byte
