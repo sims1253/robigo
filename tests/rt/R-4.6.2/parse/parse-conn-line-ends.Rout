@@ -68,3 +68,7 @@ S4: character(0) "2"
 "(f(_))\r" "error" | character(0) "2" 
 "x <- )\r" "error" | c("", "2") character(0) 
 "``\r" "error" | c("", "2") character(0) 
+"1 |> 2 \"a\r" "error" | "2" character(0) 
+"1 |> 2 `a\r" "error" | "2" character(0) 
+"1 |> 2 r\"(a\r" "error" | "2" character(0) 
+"1 |> 2 \"a\\\r" "error" | "2" character(0) 

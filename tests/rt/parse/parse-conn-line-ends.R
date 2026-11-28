@@ -92,5 +92,8 @@ held_end_err <- function(txt) {
   a <- file(f, "a"); writeLines("2", a); close(a)
   cat(deparse(txt), deparse(p), "|", deparse(readLines(con, warn = FALSE)), deparse(readLines(con, warn = FALSE)), "\n"); close(con)
 }
-for (txt in c("(1 |> 2\r", "1 |> 2\r", "(1 |> 2)\r", "{1 |> 2\r", "f(_)\r", "(f(_))\r", "x <- )\r", "``\r"))
+# (a token the end cuts short, an unterminated string, has read the end too;
+# an if body's newline inside braces, whose else-lookahead reads on, is #1058)
+for (txt in c("(1 |> 2\r", "1 |> 2\r", "(1 |> 2)\r", "{1 |> 2\r", "f(_)\r", "(f(_))\r", "x <- )\r", "``\r",
+              "1 |> 2 \"a\r", "1 |> 2 `a\r", "1 |> 2 r\"(a\r", "1 |> 2 \"a\\\r"))
   held_end_err(txt)
