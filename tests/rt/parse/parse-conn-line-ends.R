@@ -78,3 +78,10 @@ tc <- textConnection("NEXT"); pushBack("'a\rb'", tc); e <- parse(tc); cat("pushB
 f <- wr("1\r"); con <- file(f, "r"); p <- parse(con, n = 1)
 a <- file(f, "a"); writeLines("2", a); close(a)
 cat("S4:", deparse(readLines(con, warn = FALSE)), deparse(readLines(con, warn = FALSE)), "\n"); close(con)
+# a parse that runs out of input reads a held end too: nothing is held after
+held_end <- function(txt, n) {
+  f <- wr(txt); con <- file(f, "r"); p <- if (is.na(n)) parse(con) else parse(con, n = n)
+  a <- file(f, "a"); writeLines("2", a); close(a)
+  cat(deparse(txt), n, length(p), "|", deparse(readLines(con, warn = FALSE)), deparse(readLines(con, warn = FALSE)), "\n"); close(con)
+}
+held_end("\r", 1); held_end("1\r", 1); held_end("1\r", 2); held_end("1\r", NA); held_end("\r\r", 1); held_end("1\r\r", 1)

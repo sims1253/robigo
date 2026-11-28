@@ -423,7 +423,11 @@ fn parse_text(
     crate::reader::check_non_ascii_locale(cx, src)?;
     // the lexer's warnings up to the last expression's terminator
     let consumed = if num < 0 { src.len() } else { end };
-    let gave = give_back(cx, consumed)?;
+    // with fewer than `n` expressions (or no `n`), R_Parse read on to the
+    // end of input: a held end (a final CR's) was read too, and nothing is
+    // left to give back
+    let ran_out = num < 0 || exprs.len() < num as usize;
+    let gave = give_back(cx, if ran_out { usize::MAX } else { consumed })?;
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
     if !gave {
         return Err(lost_rest(cx));

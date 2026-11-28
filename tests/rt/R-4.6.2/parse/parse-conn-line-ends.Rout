@@ -54,3 +54,9 @@ con    0a 22 5c 55 7b 31 32 33 34 35 36 37 38 0d 22 3b 54 41 49 4c | invalidUnic
 pushBack file: 61 0d 62 2 
 pushBack text: 61 0d 62 2 
 S4: character(0) "2" 
+"\r" 1 0 | "2" character(0) 
+"1\r" 1 1 | character(0) "2" 
+"1\r" 2 1 | "2" character(0) 
+"1\r" NA 1 | "2" character(0) 
+"\r\r" 1 0 | "2" character(0) 
+"1\r\r" 1 1 | c("", "2") character(0) 
