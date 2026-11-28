@@ -34,6 +34,9 @@ use crate::{Source, line_col};
 /// gram.y's `CONTEXTSTACK_SIZE`.
 const CONTEXTSTACK_SIZE: usize = 50;
 
+/// [`Parser::la`] of [`Parser::nl`].
+const NL: usize = usize::MAX;
+
 pub struct Parser<'a> {
     src: &'a str,
     /// The source bytes ([`Source::raw`]), for errors in a context that
@@ -54,16 +57,19 @@ pub struct Parser<'a> {
     /// ([`Parser::read_to`], [`Parser::frontier`]).
     pulled: Option<usize>,
     /// yylex's `contextstack` (`' '` at the bottom; `{`, `(`, `[` and `i`,
-    /// an `if` body, above).
-    context: Vec<u8>,
+    /// an `if` body, above), up to `contextp`.
+    context: [u8; CONTEXTSTACK_SIZE],
+    contextp: usize,
     /// yylex's `EatLines`: newlines are no tokens.
     eat_lines: bool,
     /// yylex's `SavedToken`: the token an `if` body's newline read and
     /// pushed back.
-    saved: Option<Token<'a>>,
+    saved: Option<usize>,
     /// bison's lookahead (`yychar`): the token yylex returned that the
-    /// parser has not consumed.
-    la: Option<Token<'a>>,
+    /// parser has not consumed (an index into `toks`, or [`NL`]).
+    la: Option<usize>,
+    /// The newline an if body's newline scan returned ([`NL`]).
+    nl: Token<'a>,
     /// The end of the last token consumed.
     consumed: usize,
     /// Whether the token stream holds a pipe placeholder at all; if not,
@@ -185,7 +191,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         Err(e) => return ConsoleStatus::Error(e, Vec::new()),
     };
     p.defer_codegen = true;
-    match p.peek().map(|t| t.tok == Tok::Newline || t.tok == Tok::Eof) {
+    match p.peek().map(|t| matches!(t.tok, Tok::Newline) || matches!(t.tok, Tok::Eof)) {
         Ok(false) => {}
         Ok(true) if p.la_is(Tok::Newline) => return ConsoleStatus::Null,
         // `prog: END_OF_INPUT` is PARSE_EOF, unless the buffer ends inside
@@ -269,7 +275,7 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
         Ok(p) => p,
         Err(e) => return ConnStatus::Error { read_to: e.end },
     };
-    match p.peek().map(|t| t.tok == Tok::Newline || t.tok == Tok::Eof) {
+    match p.peek().map(|t| matches!(t.tok, Tok::Newline) || matches!(t.tok, Tok::Eof)) {
         Ok(false) => {}
         Ok(true) if p.la_is(Tok::Newline) => return ConnStatus::Null,
         // Nothing but the start of a character the input cuts short, or a
@@ -285,7 +291,7 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
     if p.la_is(Tok::Newline) || p.la_is(Tok::Semi) {
         // `R_Parse1`'s `checkForPlaceholder`, after the terminator
         if p.saw_placeholder && contains_placeholder(&e) {
-            let end = p.la.as_ref().map_or(0, |t| t.span.end as usize);
+            let end = p.la_token().map_or(0, |t| t.span.end as usize);
             return ConnStatus::Error { read_to: end };
         }
         return ConnStatus::Statement;
@@ -456,10 +462,12 @@ impl<'a> Parser<'a> {
             eof_in_comment,
             raw: 0,
             pulled: None,
-            context: vec![b' '],
+            context: [b' '; CONTEXTSTACK_SIZE],
+            contextp: 0,
             eat_lines: false,
             saved: None,
             la: None,
+            nl: Token { tok: Tok::Newline, span: Span { start: 0, end: 0 } },
             consumed: 0,
             saw_placeholder,
             warnings,
@@ -473,8 +481,8 @@ impl<'a> Parser<'a> {
     /// each statement (`R_Parse1`).
     // R: gram.y:ParseInit, R_Parse
     fn parse_init(&mut self) {
-        self.context.clear();
-        self.context.push(b' ');
+        self.contextp = 0;
+        self.context[0] = b' ';
         self.eat_lines = false;
         self.saved = None;
     }
@@ -485,116 +493,143 @@ impl<'a> Parser<'a> {
         self.pulled.map_or(0, |k| self.toks[k].span.start as usize)
     }
 
-    /// `token_()`: the pushed-back token, else the next raw one. A
-    /// `raiseLexError` fires as its token is read (`Invalid` of
+    /// `token_()`: the pushed-back token, else the next raw one, as its
+    /// index. A `raiseLexError` fires as its token is read (`Invalid` of
     /// [`ErrorStyle::Condition`]); any other invalid token is `ERROR`,
     /// which the grammar rejects.
     // R: gram.y:token_, token
-    fn token_(&mut self) -> Result<Token<'a>, ParseError> {
-        if let Some(t) = self.saved.take() {
-            return Ok(t);
+    #[inline]
+    fn token_(&mut self) -> Result<usize, ParseError> {
+        if let Some(i) = self.saved.take() {
+            return Ok(i);
         }
         let i = self.raw;
         self.pulled = Some(i);
-        if matches!(self.toks[i].tok, Tok::Eof) {
-            return Ok(self.toks[i].clone());
+        match &self.toks[i].tok {
+            Tok::Eof => {}
+            Tok::Invalid(le) if le.style == ErrorStyle::Condition => return Err(self.raised(i)),
+            _ => self.raw += 1,
         }
-        self.raw += 1;
-        let span = self.toks[i].span;
-        let t = std::mem::replace(&mut self.toks[i], Token { tok: Tok::Newline, span });
-        if let Tok::Invalid(le) = &t.tok
-            && le.style == ErrorStyle::Condition
-        {
-            return Err((**le).clone());
-        }
-        Ok(t)
+        Ok(i)
     }
 
+    /// The `raiseLexError` of the invalid token `i`.
+    #[cold]
+    #[inline(never)]
+    fn raised(&self, i: usize) -> ParseError {
+        match &self.toks[i].tok {
+            Tok::Invalid(le) => (**le).clone(),
+            _ => unreachable!("robigo: a raised lexical error that is no invalid token"),
+        }
+    }
+
+    #[inline]
     fn top(&self) -> u8 {
-        self.context.last().copied().unwrap_or(0)
+        self.context[self.contextp]
     }
 
     /// `*++contextp = c`, `n` times, after the overflow check.
-    fn push_context(&mut self, c: u8, n: usize, t: &Token) -> Result<(), ParseError> {
-        if self.context.len() - 1 >= CONTEXTSTACK_SIZE - n {
-            // raiseLexError's position: the token's last character, the
-            // last one read and not pushed back
-            let end = t.span.end as usize;
-            let mut e = ParseError::condition("contextstackOverflow", "contextstack overflow", end - 1, end, None);
-            e.fixed_line_col = Some(self.source.r_line_col(end));
-            return Err(e);
+    #[inline]
+    fn push_context(&mut self, c: u8, n: usize, i: usize) -> Result<(), ParseError> {
+        if self.contextp >= CONTEXTSTACK_SIZE - n {
+            return Err(self.context_overflow(i));
         }
         for _ in 0..n {
-            self.context.push(c);
+            self.contextp += 1;
+            self.context[self.contextp] = c;
         }
         Ok(())
     }
 
+    /// `raiseLexError("contextstackOverflow", ...)` after the token `i`.
+    #[cold]
+    #[inline(never)]
+    fn context_overflow(&self, i: usize) -> ParseError {
+        // raiseLexError's position: the token's last character, the last
+        // one read and not pushed back
+        let end = self.toks[i].span.end as usize;
+        let mut e = ParseError::condition("contextstackOverflow", "contextstack overflow", end - 1, end, None);
+        e.fixed_line_col = Some(self.source.r_line_col(end));
+        e
+    }
+
     // R: gram.y:ifpop
+    #[inline]
     fn ifpop(&mut self) {
         if self.top() == b'i' {
-            self.context.pop();
+            self.context[self.contextp] = 0;
+            self.contextp -= 1;
         }
     }
 
-    /// A closing bracket's `while (*contextp == 'i') ifpop(); *contextp-- = 0;`.
+    /// A closing bracket's `while (*contextp == 'i') ifpop(); *contextp-- = 0;`
+    /// (a stray one at the bottom stays there: the grammar rejects it).
+    #[inline]
     fn pop_context(&mut self) {
         while self.top() == b'i' {
             self.ifpop();
         }
-        if self.context.len() > 1 {
-            self.context.pop();
-        } else if let Some(c) = self.context.last_mut() {
-            *c = 0;
-        }
+        self.context[self.contextp] = 0;
+        self.contextp = self.contextp.saturating_sub(1);
     }
 
-    /// `yylex()`: the next token bison sees. A newline is one only where
-    /// it can end an expression; in an `if` body outside the top level
-    /// (`'i'`) it is decided by the token after it (`else` drops it, any
-    /// other token is pushed back behind it).
+    /// `yylex()`: the next token bison sees, as its index ([`NL`] for the
+    /// newline an if body's newline scan returns). A newline is one only
+    /// where it can end an expression; in an `if` body outside the top
+    /// level (`'i'`) it is decided by the token after it (`else` drops it,
+    /// any other token is pushed back behind it).
     // R: gram.y:yylex, IfPush, ifpop
-    fn yylex(&mut self) -> Result<Token<'a>, ParseError> {
+    #[inline(never)]
+    fn yylex(&mut self) -> Result<usize, ParseError> {
         loop {
-            let t = self.token_()?;
-            if t.tok == Tok::Newline {
-                let top = self.top();
-                if self.eat_lines || top == b'[' || top == b'(' {
-                    continue;
+            // token_(), its checks of the token in the match below
+            let i = match self.saved.take() {
+                Some(i) => i,
+                None => {
+                    let i = self.raw;
+                    self.pulled = Some(i);
+                    self.raw += 1;
+                    i
                 }
-                if top != b'i' {
-                    return Ok(t);
+            };
+            match self.toks[i].tok {
+                // (the end is read again and again)
+                Tok::Eof => self.raw = i,
+                Tok::Invalid(ref le) if le.style == ErrorStyle::Condition => {
+                    self.raw = i;
+                    return Err(self.raised(i));
                 }
-                // Find the next non-newline token
-                let mut t = t;
-                while t.tok == Tok::Newline {
-                    t = self.token_()?;
+                Tok::Newline => {
+                    let top = self.top();
+                    if self.eat_lines || top == b'[' || top == b'(' {
+                        continue;
+                    }
+                    if top != b'i' {
+                        return Ok(i);
+                    }
+                    // Find the next non-newline token
+                    let mut i = i;
+                    while matches!(self.toks[i].tok, Tok::Newline) {
+                        i = self.token_()?;
+                    }
+                    match self.toks[i].tok {
+                        Tok::RBrace | Tok::RParen | Tok::RBracket => self.pop_context(),
+                        Tok::Comma => self.ifpop(),
+                        Tok::Else => {
+                            self.eat_lines = true;
+                            self.ifpop();
+                        }
+                        _ => {
+                            self.ifpop();
+                            // (the newline's position is the pushed-back
+                            // token's, where the lexer stands)
+                            self.nl.span = self.toks[i].span;
+                            self.saved = Some(i);
+                            return Ok(NL);
+                        }
+                    }
+                    return Ok(i);
                 }
-                match t.tok {
-                    Tok::RBrace | Tok::RParen | Tok::RBracket => {
-                        self.pop_context();
-                        return Ok(t);
-                    }
-                    Tok::Comma => {
-                        self.ifpop();
-                        return Ok(t);
-                    }
-                    Tok::Else => {
-                        self.eat_lines = true;
-                        self.ifpop();
-                        return Ok(t);
-                    }
-                    _ => {
-                        self.ifpop();
-                        // (the newline's position is the pushed-back
-                        // token's, where the lexer stands)
-                        let span = t.span;
-                        self.saved = Some(t);
-                        return Ok(Token { tok: Tok::Newline, span });
-                    }
-                }
-            }
-            match t.tok {
                 Tok::Plus
                 | Tok::Minus
                 | Tok::Star
@@ -625,7 +660,7 @@ impl<'a> Parser<'a> {
                 Tok::If => {
                     // IfPush
                     if matches!(self.top(), b'{' | b'[' | b'(' | b'i') {
-                        self.push_context(b'i', 1, &t)?;
+                        self.push_context(b'i', 1, i)?;
                     }
                     self.eat_lines = true;
                 }
@@ -637,13 +672,13 @@ impl<'a> Parser<'a> {
                 Tok::Sym(_) | Tok::Placeholder | Tok::Str(_) | Tok::Const(_) | Tok::Next | Tok::Break => {
                     self.eat_lines = false
                 }
-                Tok::LBB => self.push_context(b'[', 2, &t)?,
-                Tok::LBracket => self.push_context(b'[', 1, &t)?,
+                Tok::LBB => self.push_context(b'[', 2, i)?,
+                Tok::LBracket => self.push_context(b'[', 1, i)?,
                 Tok::LBrace => {
-                    self.push_context(b'{', 1, &t)?;
+                    self.push_context(b'{', 1, i)?;
                     self.eat_lines = true;
                 }
-                Tok::LParen => self.push_context(b'(', 1, &t)?,
+                Tok::LParen => self.push_context(b'(', 1, i)?,
                 Tok::RBracket | Tok::RParen => {
                     self.pop_context();
                     self.eat_lines = false;
@@ -651,35 +686,64 @@ impl<'a> Parser<'a> {
                 Tok::RBrace => self.pop_context(),
                 _ => {}
             }
-            return Ok(t);
+            return Ok(i);
         }
+    }
+
+    /// The token at a [`Parser::la`] index.
+    #[inline]
+    fn at(&self, i: usize) -> &Token<'a> {
+        if i == NL { &self.nl } else { &self.toks[i] }
     }
 
     /// The lookahead, read (by `yylex`) if it is not yet.
+    #[inline]
     fn peek(&mut self) -> Result<&Token<'a>, ParseError> {
-        if self.la.is_none() {
-            let t = self.yylex()?;
-            self.la = Some(t);
-        }
-        Ok(self.la.as_ref().expect("read above"))
+        let i = match self.la {
+            Some(i) => i,
+            None => {
+                let i = self.yylex()?;
+                self.la = Some(i);
+                i
+            }
+        };
+        Ok(self.at(i))
+    }
+
+    /// The lookahead, if it has been read.
+    #[inline]
+    fn la_token(&self) -> Option<&Token<'a>> {
+        self.la.map(|i| self.at(i))
     }
 
     /// Whether the lookahead, already read, is `tok` (a unit variant).
+    #[inline]
     fn la_is(&self, tok: Tok<'_>) -> bool {
-        self.la.as_ref().is_some_and(|t| t.tok == tok)
+        // (a unit variant: its discriminant is the whole comparison)
+        self.la_token().is_some_and(|t| std::mem::discriminant(&t.tok) == std::mem::discriminant(&tok))
     }
 
-    /// Consume the lookahead, already read. The end token stays.
+    /// Consume the lookahead, already read: moved out of the tokens, which
+    /// keep a newline with its span. The end token stays.
+    #[inline]
     fn take(&mut self) -> Token<'a> {
-        let t = match &self.la {
-            Some(t) if t.tok == Tok::Eof => t.clone(),
-            _ => self.la.take().expect("robigo: a token taken before it was read"),
+        let i = self.la.expect("robigo: a token taken before it was read");
+        let t = if i == NL {
+            self.la = None;
+            self.nl.clone()
+        } else if matches!(self.toks[i].tok, Tok::Eof) {
+            self.toks[i].clone()
+        } else {
+            self.la = None;
+            let span = self.toks[i].span;
+            std::mem::replace(&mut self.toks[i], Token { tok: Tok::Newline, span })
         };
         self.consumed = t.span.end as usize;
         t
     }
 
     /// Consume the next token.
+    #[inline]
     fn bump(&mut self) -> Result<Token<'a>, ParseError> {
         self.peek()?;
         Ok(self.take())
@@ -687,7 +751,7 @@ impl<'a> Parser<'a> {
 
     /// The syntax error on the lookahead, already read.
     fn unexpected_la(&self) -> ParseError {
-        self.unexpected(self.la.as_ref().expect("robigo: an unexpected token not read"))
+        self.unexpected(self.la_token().expect("robigo: an unexpected token not read"))
     }
 
     /// An error that a gram.y action raises only when `GenerateCode` is on,
@@ -820,7 +884,11 @@ impl<'a> Parser<'a> {
     /// variants, so the match compares discriminants without cloning the
     /// token (the cold error path may clone).
     fn expect(&mut self, want: Tok<'_>) -> Result<Token<'a>, ParseError> {
-        if self.peek()?.tok == want { Ok(self.take()) } else { Err(self.unexpected_la()) }
+        if std::mem::discriminant(&self.peek()?.tok) == std::mem::discriminant(&want) {
+            Ok(self.take())
+        } else {
+            Err(self.unexpected_la())
+        }
     }
 
     pub fn program(&mut self) -> Result<Vec<Expr<'a>>, ParseError> {
@@ -849,9 +917,9 @@ impl<'a> Parser<'a> {
 
     /// End of input consumed by `program_n`, including its terminator.
     pub fn consumed_end(&self) -> usize {
-        match &self.la {
+        match self.la_token() {
             // The end of the input, or where an invalid character ended it.
-            Some(t) if t.tok == Tok::Eof => t.span.start as usize,
+            Some(t) if matches!(t.tok, Tok::Eof) => t.span.start as usize,
             _ => self.consumed,
         }
     }
@@ -864,7 +932,7 @@ impl<'a> Parser<'a> {
                 self.parse_init();
             }
             // `prog: '\n'` (PARSE_NULL, which `R_Parse` skips)
-            if self.peek()?.tok == Tok::Newline {
+            if matches!(self.peek()?.tok, Tok::Newline) {
                 self.take();
                 continue;
             }
@@ -904,7 +972,7 @@ impl<'a> Parser<'a> {
     /// already peeked at (`;` at its own column; a newline at column 0 of
     /// its own line; end of input likewise).
     fn statement_check_error(&self, expr: &Expr) -> ParseError {
-        let t = self.la.as_ref().expect("robigo: a statement's terminator not read");
+        let t = self.la_token().expect("robigo: a statement's terminator not read");
         let (line, col) = match t.tok {
             Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
             // R: gram.y:xxcolno counts bytes unless the input is known to
@@ -941,8 +1009,7 @@ impl<'a> Parser<'a> {
     /// Parse an expression whose operators all bind tighter than `min_bp`.
     fn expr(&mut self, min_bp: u8) -> Result<Expr<'a>, ParseError> {
         let no_eq = std::mem::take(&mut self.no_eq_next);
-        let t = self.bump()?;
-        let lhs = self.prefix(t)?;
+        let lhs = self.prefix()?;
         self.infix(lhs, min_bp, no_eq)
     }
 
@@ -979,7 +1046,7 @@ impl<'a> Parser<'a> {
             lhs = match &t.tok {
                 Tok::Dollar | Tok::At => {
                     let name = self.member_name()?;
-                    let op = if t.tok == Tok::Dollar { "$" } else { "@" };
+                    let op = if matches!(t.tok, Tok::Dollar) { "$" } else { "@" };
                     let span = lhs.span().to(name.span());
                     call2(arena, op, t.span, vec![Arg::positional(lhs), Arg::positional(name)], span)
                 }
@@ -1028,7 +1095,7 @@ impl<'a> Parser<'a> {
                 _ => {
                     // `expr '?' expr`: in an argument, its right side is no
                     // assignment either
-                    self.no_eq_next = no_eq && t.tok == Tok::Question;
+                    self.no_eq_next = no_eq && matches!(t.tok, Tok::Question);
                     let rhs = self.expr(rbp)?;
                     let span = lhs.span().to(rhs.span());
                     let (name, a, b) = match &t.tok {
@@ -1152,10 +1219,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The expression that starts with the token `t`, consumed, up to its
-    /// operators.
-    fn prefix(&mut self, t: Token<'a>) -> Result<Expr<'a>, ParseError> {
+    /// The expression that starts with the next token, up to its operators.
+    fn prefix(&mut self) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
+        let t = self.bump()?;
         let span = t.span;
         match t.tok {
             Tok::Const(c) => Ok(Expr::Const(c, span)),
@@ -1170,7 +1237,7 @@ impl<'a> Parser<'a> {
             Tok::LBrace => self.brace_body(span),
             Tok::Minus | Tok::Plus => {
                 let operand = self.expr(BP_UNARY)?;
-                let name = if t.tok == Tok::Minus { "-" } else { "+" };
+                let name = if matches!(t.tok, Tok::Minus) { "-" } else { "+" };
                 let full = span.to(operand.span());
                 Ok(call2(arena, name, span, vec![Arg::positional(operand)], full))
             }
@@ -1250,7 +1317,7 @@ impl<'a> Parser<'a> {
         let then = self.expr(BP_LOW)?;
         // (yylex has dropped the newlines before an `else` in an if body
         // outside the top level)
-        if self.peek()?.tok == Tok::Else {
+        if matches!(self.peek()?.tok, Tok::Else) {
             self.take();
             let other = self.expr(BP_LOW)?;
             let full = span.to(other.span());
@@ -1281,7 +1348,7 @@ impl<'a> Parser<'a> {
         let arena = self.arena;
         self.expect(Tok::LParen)?;
         let mut out: Vec<Formal> = Vec::new();
-        if self.peek()?.tok == Tok::RParen {
+        if matches!(self.peek()?.tok, Tok::RParen) {
             self.take();
             return Ok(out);
         }
@@ -1290,7 +1357,7 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected_la());
             }
             let Token { tok: Tok::Sym(name), span: formal_span } = self.take() else { unreachable!("checked above") };
-            let default = if self.peek()?.tok == Tok::EqAssign {
+            let default = if matches!(self.peek()?.tok, Tok::EqAssign) {
                 self.take();
                 // `SYMBOL EQ_ASSIGN expr_or_help`: `?`, but no `=`
                 self.no_eq_next = true;
@@ -1411,7 +1478,7 @@ impl<'a> Parser<'a> {
     #[inline]
     fn at_close(&mut self, bracket: bool) -> Result<bool, ParseError> {
         let t = &self.peek()?.tok;
-        Ok(if bracket { *t == Tok::RBracket } else { *t == Tok::RParen })
+        Ok(if bracket { matches!(*t, Tok::RBracket) } else { matches!(*t, Tok::RParen) })
     }
 
     /// Argument list up to (not including) `close`. The hot checks read
@@ -1429,7 +1496,7 @@ impl<'a> Parser<'a> {
                 // `name = value`, where name is a symbol, string or NULL:
                 // the token after it decides
                 let t = self.take();
-                if self.peek()?.tok == Tok::EqAssign {
+                if matches!(self.peek()?.tok, Tok::EqAssign) {
                     let name = match t.tok {
                         Tok::Sym(s) => sym_name(arena, &s),
                         Tok::Str(s) => arena.str(&String::from_utf8_lossy(str_bytes(arena, &s))),
@@ -1452,7 +1519,13 @@ impl<'a> Parser<'a> {
                     arg
                 } else {
                     // `sub: expr_or_help`, which starts with the name
-                    let lhs = self.prefix(t)?;
+                    let span = t.span;
+                    let lhs = match t.tok {
+                        Tok::Sym(s) => Expr::Sym(sym_name(arena, &s), span),
+                        Tok::Str(s) => Expr::Const(str_const(arena, &s), span),
+                        Tok::Const(c) => Expr::Const(c, span),
+                        _ => unreachable!("checked above"),
+                    };
                     Arg { name: None, value: Some(self.infix(lhs, 0, true)?) }
                 }
             } else {
@@ -1460,7 +1533,7 @@ impl<'a> Parser<'a> {
                 Arg { name: None, value: Some(self.expr(0)?) }
             };
             out.push(arg);
-            if self.peek()?.tok == Tok::Comma {
+            if matches!(self.peek()?.tok, Tok::Comma) {
                 // `sublist cr ',' sub`: `cr` is reduced with the `,` read
                 self.eat_lines = true;
                 self.take();
