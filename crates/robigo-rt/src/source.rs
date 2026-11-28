@@ -286,19 +286,17 @@ fn parse_text(
     // first. (A lexer warning is raised in GNU R
     // while the lexer is at its token, before the rest of the statement is
     // read; here it comes after the statement, so a handler that reads the
-    // connection finds it at the statement's end.)
+    // connection finds it at the statement's end.) False when the rest
+    // could not be given back: that is reported once the parse has
+    // signalled what it signals ([`lost_rest`]).
     // R: gram.y:R_ParseConn, con_getc
-    let give_back = |cx: &mut Cx, consumed: usize| -> RResult<()> {
+    let give_back = |cx: &mut Cx, consumed: usize| -> RResult<bool> {
         match conn {
-            Some((ifile, read)) if consumed < read => {
-                if !crate::connections::unread(cx, ifile, read - consumed)? {
-                    return Err(cx.error("robigo: parse() could not leave the rest of the connection unread"));
-                }
-                Ok(())
-            }
-            _ => Ok(()),
+            Some((ifile, read)) if consumed < read => crate::connections::unread(cx, ifile, read - consumed),
+            _ => Ok(true),
         }
     };
+    let lost_rest = |cx: &mut Cx| cx.error("robigo: parse() could not leave the rest of the connection unread");
     let signal = |cx: &mut Cx, upto: usize| -> RResult<()> {
         for w in warnings.iter().filter(|w| (w.at as usize) <= upto) {
             cx.warning(&w.message)?;
@@ -321,6 +319,7 @@ fn parse_text(
         Ok(r) => r,
         Err(e) => {
             crate::reader::check_non_ascii_locale(cx, src)?;
+            let mut gave = true;
             if !e.incomplete {
                 let consumed = match frontier {
                     // an action's error or the lexer's condition: where the
@@ -334,25 +333,26 @@ fn parse_text(
                         end + read_ahead(src, e.offset.min(end), end)
                     }
                 };
-                give_back(cx, consumed)?;
+                gave = give_back(cx, consumed)?;
             }
             signal(cx, if e.incomplete { usize::MAX } else { frontier.map_or(e.offset, |f| f.0) })?;
-            return Err(match e.style {
+            let err = match e.style {
                 robigo_syntax::ErrorStyle::Grammar => cx.error(&robigo_syntax::format_parse_error(source, srcname, &e)),
                 robigo_syntax::ErrorStyle::RError => cx.error(&e.message),
                 robigo_syntax::ErrorStyle::Condition => {
                     let f = crate::reader::error_filename(cx, src, known_utf8, srcfile, &in_string, e.offset);
                     crate::parse_cond::signal(cx, source, &e, &String::from_utf8_lossy(&f))
                 }
-            });
+            };
+            return Err(if gave { err } else { lost_rest(cx) });
         }
     };
     crate::reader::check_non_ascii_locale(cx, src)?;
     // the lexer's warnings up to the last expression's terminator
     let consumed = if num < 0 { src.len() } else { end };
-    give_back(cx, consumed)?;
+    let gave = give_back(cx, consumed)?;
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
-    match srcfile {
+    let lowered = match srcfile {
         // what the parse read, no further: R_Parse stops after the n-th
         // expression, so its wholeSrcref ends there and a later `#line` is
         // unread
@@ -361,5 +361,9 @@ fn parse_text(
             crate::reader::lower_all_src(cx, read, &exprs, known_utf8, f, &in_string[..read.len()], out)
         }
         None => crate::reader::lower_all(cx, &exprs, known_utf8, out),
+    };
+    if !gave {
+        return Err(lost_rest(cx));
     }
+    lowered
 }
