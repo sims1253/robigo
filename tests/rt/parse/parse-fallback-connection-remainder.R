@@ -1,9 +1,8 @@
-# Not fixed (issue #1010; recorded, not ratcheted): parse(con, n = 1) on an
-# open file connection after a grammar (yyerror) error leaves a different
-# remainder unread than GNU R for four token families: `<<`, `%abc` and a
-# newline, a rejected multibyte token, `_` after `y ` or `function(`. The
-# grammar-error fallback (source.rs parse_text) predates the parseError
-# conditions; ratchet this when #1010 is fixed.
+# parse(con, n = 1) on an open file connection after a grammar (yyerror)
+# error: what stays unread is what GNU R's lexer had not read yet, through
+# the error token and what it looked at past it (#1010): `<<` (its failed
+# nextchar), `%abc` and a newline (SpecialValue reads the newline), a
+# rejected multibyte token (read whole), `_` (nothing past it).
 rem <- function(txt) {
   f <- tempfile(); writeLines(c(txt, "NEXT"), f, useBytes = TRUE)
   con <- file(f, "r")

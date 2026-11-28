@@ -385,10 +385,12 @@ impl<'a> Parser<'a> {
         let raw = self.source.raw();
         let k = self.toks.partition_point(|t| t.span.start as usize <= frontier);
         let Some(t) = k.checked_sub(1).map(|k| &self.toks[k]) else {
-            return e.end;
+            return e.end.min(raw.len());
         };
-        // A bumped token keeps its span (see `bump`), so read its bytes.
-        let (start, end) = (t.span.start as usize, t.span.end as usize);
+        // A bumped token keeps its span (see `bump`), so read its bytes. (An
+        // error at the end of input has a span past it.)
+        let end = (t.span.end as usize).min(raw.len());
+        let start = (t.span.start as usize).min(end);
         let tok = &raw[start..end];
         let la = if lex_error.is_some_and(|le| le.at == start) { invalid_lookahead(tok) } else { lookahead(tok) };
         let mut lexed = match la {
@@ -402,7 +404,7 @@ impl<'a> Parser<'a> {
         if lex_error.is_some_and(|le| le.at == start) && start < raw.len() {
             lexed = lexed.max((start + crate::utf8clen(raw[start])).min(raw.len()));
         }
-        lexed.max(e.end)
+        lexed.max(e.end).min(raw.len())
     }
 
     /// The lexer's warnings as GNU R's REPL signals them for this chunk
@@ -651,17 +653,13 @@ impl<'a> Parser<'a> {
         self.lex_error
     }
 
-    /// For an error a grammar action raised (it has a frontier: the
-    /// lookahead the action reduced with) or a `raiseLexError`, where GNU
-    /// R's lexer had stopped reading ([`Parser::read_to`]): the bytes after
-    /// it stay unread on a connection (`R_ParseConn`'s `con_getc`). None
-    /// for the grammar's own errors, whose read position the caller has
-    /// from the error token's span.
-    pub fn error_read_to(&self, e: &ParseError) -> Option<usize> {
-        if self.trial_frontier.is_some() || e.style == ErrorStyle::Condition {
-            return Some(self.read_to(e, self.lex_error()));
-        }
-        None
+    /// Where GNU R's lexer had stopped reading when `e` was raised
+    /// ([`Parser::read_to`]): through the error token and what it looked at
+    /// past it, the lookahead a failing action reduced with, or where a
+    /// `raiseLexError` stopped. The bytes after it stay unread on a
+    /// connection (`R_ParseConn`'s `con_getc`).
+    pub fn error_read_to(&self, e: &ParseError) -> usize {
+        self.read_to(e, self.lex_error())
     }
 
     /// The start of the last token GNU R's lexer had read when `e` was

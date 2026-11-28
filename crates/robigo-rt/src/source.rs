@@ -149,36 +149,6 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
     })
 }
 
-/// The bytes gram.y's `token()` reads past the token `src[start..end]`
-/// before it returns it (the connection's position runs ahead of the token
-/// by that much): one when it looked for a longer token and found none (a
-/// symbol's or number's end, `<` without `=`, `-` without `>`, ...), none
-/// when the token ends on a character of its own or at the end of input.
-// R: gram.y:token, nextchar, SymbolValue, NumericValue
-fn read_ahead(src: &[u8], start: usize, end: usize) -> usize {
-    let tok = &src[start..end];
-    let (Some(&first), Some(&last)) = (tok.first(), tok.last()) else { return 0 };
-    if end >= src.len() {
-        return 0;
-    }
-    let extends = match tok {
-        b"<" | b"-" | b"->" | b">" | b"!" | b"=" | b":" | b"::" | b"&" | b"|" | b"[" | b"*" => true,
-        // NumericValue keeps a final L or i without reading on
-        _ if (first.is_ascii_digit() || (first == b'.' && tok.get(1).is_some_and(u8::is_ascii_digit)))
-            && matches!(last, b'L' | b'i') =>
-        {
-            false
-        }
-        // SymbolValue and NumericValue read until a character that is not
-        // the token's (a quoted string or symbol, a %op% end on their own)
-        _ => {
-            !matches!(first, b'"' | b'\'' | b'`' | b'%')
-                && (last.is_ascii_alphanumeric() || matches!(last, b'.' | b'_') || last >= 0x80)
-        }
-    };
-    extends as usize
-}
-
 /// `.Internal(str2lang(s))`: the one expression the string `s` parses to.
 // R: coerce.c:do_str2lang (op 0)
 pub fn do_str2lang(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
@@ -318,18 +288,11 @@ fn parse_text(
             crate::reader::check_non_ascii_locale(cx, src)?;
             let mut gave = true;
             if !e.incomplete {
-                let consumed = match frontier {
-                    // an action's error or the lexer's condition: where the
-                    // lexer stopped (through the action's lookahead, or the
-                    // character an escape rejected)
-                    Some((_, Some(read_to))) => read_to,
-                    // the grammar's: the error token and what the lexer
-                    // looked at past it
-                    _ => {
-                        let end = e.end.max(e.offset);
-                        end + read_ahead(src, e.offset.min(end), end)
-                    }
-                };
+                // where the lexer stopped: through the error token and what
+                // it looked at past it, an action's lookahead, or the
+                // character an escape rejected (the lexer's own error, from
+                // Parser::new, ends at its token)
+                let consumed = frontier.map_or(e.end.max(e.offset), |f| f.1);
                 gave = give_back(cx, consumed)?;
             }
             signal(cx, if e.incomplete { usize::MAX } else { frontier.map_or(e.offset, |f| f.0) })?;
