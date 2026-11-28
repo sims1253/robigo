@@ -852,6 +852,16 @@ impl<'a> Parser<'a> {
     }
 
     fn syntax_error(&self, t: &Token) -> ParseError {
+        // The newline an if body's newline scan returned when the scan read
+        // the end of input: the lexer stands at the end (`EndOfFile`), so
+        // the error is placed there and the statement is incomplete
+        // (`R_Parse1`'s PARSE_INCOMPLETE: the console reads another line).
+        if std::ptr::eq(t, &self.nl)
+            && let Some(i) = self.saved
+            && matches!(self.toks[i].tok, Tok::Eof)
+        {
+            return ParseError { message: "unexpected end of line".into(), ..self.syntax_error(&self.toks[i]) };
+        }
         ParseError {
             // `PLACEHOLDER` is reported as "unexpected input", a deliberate
             // quirk of gram.y ("cheat to avoid changing the parse error
@@ -1783,6 +1793,13 @@ mod tests {
         assert!(ok("`a#b`;\n"));
         assert!(ok("if (TRUE) 1 else 2;"));
         assert!(ok("function(x)\n  x\n"));
+        // An if body's newline scan that reads the end of the chunk: the
+        // lexer hit the end, so the statement is incomplete, not an
+        // "unexpected end of line" (yylex, R_Parse1's EndOfFile).
+        assert!(incomplete("(if (TRUE) 1\n"));
+        assert!(incomplete("{if (TRUE) 1\n"));
+        assert!(ok("(if (TRUE) 1\n)\n"));
+        assert!(error("(if (TRUE) 1\n+ 2)\n", "unexpected end of line"));
         // A statement without its terminator (a line cut at the console
         // buffer size) needs more input.
         assert!(incomplete("1 + 1 + "));

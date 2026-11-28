@@ -56,6 +56,11 @@ p("-\n1")
 p("{x <- \n 1}")
 p("{1 ->\n x}")
 p("{if (a) 1\n# c\nelse 2}")
+# the else scan reads the end of input: the error stands there
+p("(if (TRUE) 1")
+p("(if (TRUE) 1\n")
+p("f(if (TRUE) 1\n\n")
+p("{if (TRUE) 1")
 # what parse(con, n = 1) leaves unread: the else lookahead read the token
 rem <- function(txt) {
   f <- tempfile(); writeLines(txt, f, sep = "", useBytes = TRUE); con <- file(f, "r")
@@ -72,6 +77,8 @@ rem("\\\n(x) x\nNEXT\n")
 rem(paste0(strrep("(", 50), "1\nNEXT\n"))
 rem(paste0("{", strrep("(", 48), "if(a) 1\nNEXT\n"))
 rem("{if(a) 1\n+ 2}\nNEXT\n")
+rem("(if (TRUE) 1\n)\nNEXT\n")
+rem("{if (TRUE) 1\n\n}\nNEXT\n")
 # a held end of input (a final CR) is read by the else lookahead
 f <- tempfile()
 writeLines("{if(TRUE) 1 |> 2\r", f, sep = "", useBytes = TRUE)

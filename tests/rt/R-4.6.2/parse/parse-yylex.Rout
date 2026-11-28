@@ -62,6 +62,20 @@
 "{x <- \n 1}" => {     x <- 1 } 
 "{1 ->\n x}" => {     x <- 1 } 
 "{if (a) 1\n# c\nelse 2}" => {     if (a)          1     else 2 } 
+"(if (TRUE) 1" => <simpleError> <text>:2:0: unexpected end of line
+1: (if (TRUE) 1
+   ^ 
+"(if (TRUE) 1\n" => <simpleError> <text>:3:0: unexpected end of line
+1: (if (TRUE) 1
+2: 
+  ^ 
+"f(if (TRUE) 1\n\n" => <simpleError> <text>:4:0: unexpected end of line
+2: 
+3: 
+  ^ 
+"{if (TRUE) 1" => <simpleError> <text>:2:0: unexpected end of input
+1: {if (TRUE) 1
+   ^ 
 "f(if(a) 1 |> 2\n^\r" RHSnotFnCall | "" 
 "f(if(a) 1 |> 2\n^ 3)\nNEXT\n" RHSnotFnCall | c(" 3)", "NEXT") 
 "{if(a) 1 |> 2\n\"\\q\";TAIL\n" unrecognizedEscape | "\";TAIL" 
@@ -72,5 +86,7 @@
 "((((((((((((((((((((((((((((((((((((((((((((((((((1\nNEXT\n" contextstackOverflow | c("1", "NEXT") 
 "{((((((((((((((((((((((((((((((((((((((((((((((((if(a) 1\nNEXT\n" contextstackOverflow | c("a) 1", "NEXT") 
 "{if(a) 1\n+ 2}\nNEXT\n" ok | "NEXT" 
+"(if (TRUE) 1\n)\nNEXT\n" ok | "NEXT" 
+"{if (TRUE) 1\n\n}\nNEXT\n" ok | "NEXT" 
 [1] "RHSnotFnCall"
 [1] "2"
