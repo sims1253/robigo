@@ -290,9 +290,11 @@ fn parse_text(
             if !e.incomplete {
                 // where the lexer stopped: through the error token and what
                 // it looked at past it, an action's lookahead, or the
-                // character an escape rejected (the lexer's own error, from
-                // Parser::new, ends at its token)
-                let consumed = frontier.map_or(e.end.max(e.offset), |f| f.1);
+                // character an escape rejected. (`frontier` is always set:
+                // the lexer folds its errors into invalid tokens, so
+                // Parser::new does not fail; the fallback is the error's
+                // end.)
+                let consumed = frontier.map_or(e.end.max(e.offset).min(src.len()), |f| f.1);
                 gave = give_back(cx, consumed)?;
             }
             signal(cx, if e.incomplete { usize::MAX } else { frontier.map_or(e.offset, |f| f.0) })?;

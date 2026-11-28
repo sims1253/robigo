@@ -380,7 +380,7 @@ impl<'a> Parser<'a> {
         if let Some(LexError { at, raised: Some(end) }) = lex_error
             && frontier >= at
         {
-            return end;
+            return end.min(self.source.raw().len());
         }
         let raw = self.source.raw();
         let k = self.toks.partition_point(|t| t.span.start as usize <= frontier);
