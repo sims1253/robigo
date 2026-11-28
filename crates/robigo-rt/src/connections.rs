@@ -1795,8 +1795,19 @@ fn rconn_printf(c: &mut Conn, parts: &[&[u8]]) -> Result<(), String> {
     Ok(())
 }
 
-/// [`rconn_printf`] on connection `n`, its error raised.
+/// [`rconn_printf`] on connection `n`, its error raised; the standard
+/// connections' `vfprintf` writes the console (stdout's, under no sink) or
+/// `REvprintf` (stderr's, under the message sink).
+// R: connections.c:Rconn_printf, stdout_vfprintf, stderr_vfprintf
 pub fn printf_write(cx: &mut Cx, n: i32, buf: &[u8]) -> RResult<()> {
+    if with_conn(cx, n, |c| matches!(c.imp, Imp::Std) && c.canwrite())? {
+        if n == 1 {
+            cx.write_console_out(buf);
+        } else {
+            cx.reprintf(buf);
+        }
+        return Ok(());
+    }
     let r = with_conn(cx, n, |c| rconn_printf(c, &[buf]))?;
     r.map_err(|m| cx.error(&m))
 }
@@ -2008,7 +2019,8 @@ fn write_to_sink_con(cx: &Cx, con_num: i32, b: &[u8]) -> bool {
         return true;
     }
     if con_num == 2 {
-        cx.write_console_err(b);
+        // stderr_vfprintf: REvprintf, under the message sink
+        cx.reprintf(b);
         return true;
     }
     let Ok(mut slots) = table(cx).slots.try_borrow_mut() else {
@@ -2144,6 +2156,49 @@ fn switch_or_tee_stdout(cx: &mut Cx, icon: i32, close_on_exit: bool, tee: bool) 
         }
     }
     Ok(true)
+}
+
+/// `R_OutputCon`: the connection output goes to, the top sink's or 1.
+pub fn output_con(cx: &Cx) -> i32 {
+    table(cx).sinks.borrow().last().map_or(1, |s| s.icon)
+}
+
+/// Connection `n`'s class (`con->class`), GNU R's "invalid connection"
+/// for a slot that holds none.
+pub fn class(cx: &mut Cx, n: i32) -> RResult<&'static str> {
+    with_conn(cx, n, |c| c.class)
+}
+
+/// Run `f` with the output (`Rprintf`) switched to connection `icon`, as
+/// `do_cat` does: `switch_stdout(icon, 0)`, which opens a closed connection
+/// for writing, then `cat_cleanup` however `f` ends: the connection
+/// flushed, the switch undone, and the connection closed again when the
+/// switch opened it.
+// R: builtin.c:do_cat, cat_cleanup; connections.c:switch_stdout
+pub fn with_output_to<T>(cx: &mut Cx, icon: i32, f: impl FnOnce(&mut Cx) -> RResult<T>) -> RResult<T> {
+    let (wasopen, reencode, enc) = with_conn(cx, icon, |c| (c.isopen(), c.reencode, c.encname()))?;
+    // a sink drops what it cannot write: refuse a re-encoding before the
+    // switch opens (and truncates) the file
+    if !wasopen || reencode {
+        check_encoding(cx, &enc)?;
+    }
+    let changed = switch_or_tee_stdout(cx, icon, false, false)?;
+    let r = f(cx);
+    // con->fflush(con)
+    if with_conn(cx, icon, conn_fflush)?.is_none() {
+        cx.flush_console();
+    }
+    if changed {
+        switch_or_tee_stdout(cx, -1, false, false)?;
+    }
+    // (the line before might have closed it); con->close(con), whose
+    // status no one checks (checkClose is close()'s)
+    with_conn(cx, icon, |c| {
+        if !wasopen && c.isopen() {
+            close_conn(c);
+        }
+    })?;
+    r
 }
 
 /// `.Internal(sink(icon, closeOnExit, errcon, split))`.
