@@ -1,12 +1,9 @@
 //! source.c's `parse()` (L2): `.Internal(parse(file, n, text, prompt,
-//! srcfile, encoding))` over robigo-syntax, from text.
+//! srcfile, encoding))` over robigo-syntax, from text or a connection.
 //!
-//! Not yet, each an error saying so: source references (a `srcfile` that is
-//! an environment, `keep.source = TRUE`), parsing from the console, and the
-//! parse errors GNU R raises as `parseError` conditions (gram.y's
-//! `raiseParseError`/`raiseLexError`: invalid escapes and the like); the
-//! grammar's errors (`unexpected ...`) are GNU R's messages; `n` on a
-//! connection that was already open (the rest would stay unread).
+//! Not yet, each an error saying so: parsing from the console, `n` on an
+//! open connection that is not a file or has pushed-back input, and
+//! `encoding = "latin1"` in a single-byte locale.
 
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, View};
@@ -352,7 +349,10 @@ fn parse_text(
     let consumed = if num < 0 { src.len() } else { end };
     let gave = give_back(cx, consumed)?;
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
-    let lowered = match srcfile {
+    if !gave {
+        return Err(lost_rest(cx));
+    }
+    match srcfile {
         // what the parse read, no further: R_Parse stops after the n-th
         // expression, so its wholeSrcref ends there and a later `#line` is
         // unread
@@ -361,9 +361,5 @@ fn parse_text(
             crate::reader::lower_all_src(cx, read, &exprs, known_utf8, f, &in_string[..read.len()], out)
         }
         None => crate::reader::lower_all(cx, &exprs, known_utf8, out),
-    };
-    if !gave {
-        return Err(lost_rest(cx));
     }
-    lowered
 }
