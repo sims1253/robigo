@@ -554,7 +554,12 @@ fn parse_warnings(cx: &mut Cx, warnings: &[String]) -> bool {
 pub(crate) fn parse_error_message(src: robigo_syntax::Source<'_>, e: &robigo_syntax::ParseError) -> String {
     use robigo_syntax::ErrorStyle;
     match e.style {
-        ErrorStyle::Condition => robigo_syntax::condition_message(src, robigo_syntax::CONSOLE_SRCNAME, e),
+        // (shown lossily: the console signals a condition through
+        // parse_cond::signal, with the message's bytes)
+        ErrorStyle::Condition => {
+            String::from_utf8_lossy(&robigo_syntax::condition_message(src, robigo_syntax::CONSOLE_SRCNAME, e))
+                .into_owned()
+        }
         ErrorStyle::RError => e.message.clone(),
         ErrorStyle::Grammar => {
             let lines = robigo_syntax::parse_context(src.raw(), e.end);

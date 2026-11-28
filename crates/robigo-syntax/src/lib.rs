@@ -301,9 +301,11 @@ pub fn parse_context_line(src: &str, end: usize) -> usize {
 
 /// `raiseParseError`'s message (R: gram.y): the message text with the
 /// `(<file>:<line>:<col>)` suffix that the format strings append.
-pub fn condition_message<'a>(src: impl Into<Source<'a>>, srcname: &str, e: &ParseError) -> String {
+pub fn condition_message<'a>(src: impl Into<Source<'a>>, srcname: &str, e: &ParseError) -> Vec<u8> {
     let (line, col) = error_line_col(src, e);
-    format!("{} ({}:{}:{})", e.message, srcname, line, col)
+    let mut msg = e.message_bytes().to_vec();
+    msg.extend_from_slice(format!(" ({}:{}:{})", srcname, line, col).as_bytes());
+    msg
 }
 
 /// `parseError(call, linenum)` with a non-zero line number (R:

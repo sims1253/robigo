@@ -93,10 +93,10 @@ pub fn parse_condition<'a>(
     let value = match &e.value {
         ConditionValue::Null => Value::Null,
         ConditionValue::Int(v) => Value::int(*v),
-        ConditionValue::Str(v) => Value::str(v),
+        ConditionValue::Str(v) => Value::str(&String::from_utf8_lossy(v)),
     };
     let mut cond = Vector::new(vec![
-        Value::str(&robigo_syntax::condition_message(src, srcname, e)),
+        Value::str(&String::from_utf8_lossy(&robigo_syntax::condition_message(src, srcname, e))),
         call.clone(),
         value,
         Value::str(srcname),
