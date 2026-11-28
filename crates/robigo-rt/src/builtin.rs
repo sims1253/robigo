@@ -4,11 +4,9 @@
 //! `deparse` and `dput`, connections.c's `stdout()` and `stderr()`, and
 //! builtin.c's `args` (which reads the primitives' names).
 //!
-//! Connections: robigo-rt has the three standard ones only (GNU R's
-//! `Connections[0..2]`, `stdin` not writable), so `getConnection` of any
-//! other number is GNU R's "invalid connection", exactly what GNU R says
-//! for a connection that does not exist. `cat(file = stderr())` writes to
-//! the console's error stream, as GNU R's sink to connection 2 does.
+//! Connections: `cat` writes as GNU R's does, with the output switched to
+//! its connection (`switch_stdout`, which opens a closed one), `dput`
+//! through `Rconn_printf` unless its connection is 1.
 
 use crate::deparse;
 use crate::print::PrintData;
@@ -62,15 +60,17 @@ pub fn do_invisible(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>,
     Ok(())
 }
 
-/// `stdout()`, `stderr()`: the connection's number, of class
-/// `c("terminal", "connection")`.
-// R: connections.c:do_stdout, do_stderr
+/// `stdin()`, `stdout()`, `stderr()`: the connection's number, of class
+/// `c(con->class, "connection")`; `stdout()`'s is `R_OutputCon`, where
+/// output goes while a sink is active.
+// R: connections.c:do_stdin, do_stdout, do_stderr
 fn std_connection(cx: &mut Cx, args: Args<'_>, call: Root<'_>, out: Out<'_>, n: i32, name: &str) -> RResult<()> {
+    let con_class = crate::connections::class(cx, n)?;
     check_arity(cx, call, args, name, 0, true)?;
     cx.build(out, |cx| {
         let mut v = cx.alloc_copy(&[n])?;
         let mut class = cx.alloc_vector::<Char<'_>>(2)?;
-        class.set(0, cx.mk_char(b"terminal", robigo_rtcore::Encoding::Native)?);
+        class.set(0, cx.mk_char(con_class.as_bytes(), robigo_rtcore::Encoding::Native)?);
         class.set(1, cx.mk_char(b"connection", robigo_rtcore::Encoding::Native)?);
         let mut a = Attrs::new();
         a.set_class(cx.sym(RSym::Class), Some(class.finish().into()));
@@ -80,7 +80,8 @@ fn std_connection(cx: &mut Cx, args: Args<'_>, call: Root<'_>, out: Out<'_>, n: 
 }
 
 pub fn do_stdout(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
-    std_connection(cx, args, call, out, 1, "stdout")
+    let n = crate::connections::output_con(cx);
+    std_connection(cx, args, call, out, n, "stdout")
 }
 
 pub fn do_stdin(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: Out<'_>) -> RResult<()> {
@@ -107,21 +108,6 @@ fn as_integer(x: Ref<'_>) -> i32 {
         View::Cplx(a) => real(a.get(0).r),
         View::Raw(a) => a.get(0) as i32,
         _ => i32::MIN,
-    }
-}
-
-/// Where `cat` writes: GNU R's connection 1 or 2 (`switch_stdout` sinks
-/// the console to stderr for the latter).
-#[derive(Clone, Copy)]
-enum Target {
-    Out,
-    Err,
-}
-
-fn emit(cx: &Cx, t: Target, b: &[u8]) {
-    match t {
-        Target::Out => cx.rprintf(b),
-        Target::Err => cx.reprintf(b),
     }
 }
 
@@ -170,17 +156,34 @@ pub fn do_dput(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out:
     if !robigo_rtbuiltins::attrib::inherits(file, b"connection") {
         return Err(cx.error("'file' must be a character string or connection"));
     }
-    let target = match as_integer(file) {
-        1 => Target::Out,
-        2 => Target::Err,
-        // stdin
-        0 => return Err(cx.error("cannot write to this connection")),
-        _ => return Err(cx.error("invalid connection")),
-    };
-    for l in &d.lines {
-        let mut b = l.clone();
-        b.push(b'\n');
-        emit(cx, target, &b);
+    let line = |l: &[u8]| [l, b"\n"].concat();
+    let ifile = as_integer(file);
+    if ifile == 1 {
+        // "Stdout"
+        for l in &d.lines {
+            cx.rprintf(&line(l));
+        }
+    } else {
+        use crate::connections as conn;
+        let wasopen = conn::flags(cx, ifile)?.isopen;
+        if !wasopen && !conn::open_with_mode(cx, ifile, "w")? {
+            return Err(cx.error("cannot open the connection"));
+        }
+        let write = |cx: &mut Cx| -> RResult<()> {
+            if !conn::flags(cx, ifile)?.canwrite {
+                return Err(cx.error("cannot write to this connection"));
+            }
+            for l in &d.lines {
+                conn::printf_write(cx, ifile, &line(l))?;
+            }
+            Ok(())
+        };
+        let r = write(cx);
+        // (con_cleanup on an error)
+        if !wasopen {
+            conn::close_only(cx, ifile)?;
+        }
+        r?;
     }
     out.set(cx, args.get(cx, 0));
     Ok(())
@@ -262,14 +265,10 @@ pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
     // Use standard printing defaults
     let data = PrintData::init(cx, None)?;
     let ifile = as_integer(args.get(cx, 1));
-    // getConnection(ifile): robigo-rt has the standard connections only
-    let target = match ifile {
-        1 => Target::Out,
-        2 => Target::Err,
-        // stdin
-        0 => return Err(cx.error("cannot write to this connection")),
-        _ => return Err(cx.error("invalid connection")),
-    };
+    // getConnection(ifile); a closed connection may not know yet
+    if !crate::connections::flags(cx, ifile)?.canwrite {
+        return Err(cx.error("cannot write to this connection"));
+    }
     // a package class's elements are its C methods' (M5): `sep` and `labels`
     // are read as standard storage
     if args.get(cx, 2).is_package_altrep() || args.get(cx, 4).is_package_altrep() {
@@ -300,24 +299,13 @@ pub fn do_cat(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out: 
     if as_logical(cx, args.get(cx, 5)) == i32::MIN {
         return Err(cx.error("invalid 'append' specification"));
     }
-    let r = cat(cx, args, &data, target, pwidth, fill_int, nlsep);
-    // cat_cleanup: con->fflush(con)
-    cx.flush_console();
-    r?;
+    crate::connections::with_output_to(cx, ifile, |cx| cat(cx, args, &data, pwidth, fill_int, nlsep))?;
     out.set(cx, cx.nil());
     Ok(())
 }
 
 /// What `do_cat` writes, element by element.
-fn cat(
-    cx: &mut Cx,
-    args: Args<'_>,
-    data: &PrintData,
-    target: Target,
-    pwidth: usize,
-    fill_int: i32,
-    nlsep: bool,
-) -> RResult<()> {
+fn cat(cx: &mut Cx, args: Args<'_>, data: &PrintData, pwidth: usize, fill_int: i32, nlsep: bool) -> RResult<()> {
     // The elements' text is computed under `&Cx`; an error found on the
     // way is raised after what was written so far (GNU R writes as it goes).
     let failure: Option<String> = {
@@ -346,12 +334,12 @@ fn cat(
         };
         let printsep = |ntot: usize| -> Result<(), String> {
             if !sepr.is_empty() {
-                emit(cx, target, &native(sepr.get(ntot % sepr.len()))?);
+                cx.rprintf(&native(sepr.get(ntot % sepr.len()))?);
             }
             Ok(())
         };
         let newline = |width: &mut usize, ntot: usize| {
-            emit(cx, target, b"\n");
+            cx.rprintf(b"\n");
             *width = 0;
             if let Some(l) = labs
                 && lablen > 0
@@ -361,7 +349,7 @@ fn cat(
                 let mut b = Vec::new();
                 encode_string(&mut b, s, 1, 0, Justify::Left, false, &pp);
                 b.push(b' ');
-                emit(cx, target, &b);
+                cx.rprintf(&b);
                 *width += s.map_or(pp.na_width_noquote, |s| rstrlen(s, 0, loc)) as usize + 1;
             }
         };
@@ -394,7 +382,7 @@ fn cat(
                     let c = l.get(nlines % lablen);
                     let mut b = native(c)?;
                     b.push(b' ');
-                    emit(cx, target, &b);
+                    cx.rprintf(&b);
                     width += rstrlen(robigo_rtbuiltins::coerce::text(c), 0, loc) as usize + 1;
                     nlines += 1;
                 }
@@ -425,7 +413,7 @@ fn cat(
                     nlines += 1;
                 }
                 for i in 0..n {
-                    emit(cx, target, &p);
+                    cx.rprintf(&p);
                     width += w + sw;
                     if i < n - 1 {
                         printsep(ntot)?;
@@ -443,7 +431,7 @@ fn cat(
                 }
             }
             if pwidth != usize::MAX || nlsep {
-                emit(cx, target, b"\n");
+                cx.rprintf(b"\n");
             }
             Ok(())
         };
