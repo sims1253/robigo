@@ -2176,7 +2176,12 @@ pub fn class(cx: &mut Cx, n: i32) -> RResult<&'static str> {
 /// switch opened it.
 // R: builtin.c:do_cat, cat_cleanup; connections.c:switch_stdout
 pub fn with_output_to<T>(cx: &mut Cx, icon: i32, f: impl FnOnce(&mut Cx) -> RResult<T>) -> RResult<T> {
-    let wasopen = with_conn(cx, icon, |c| c.isopen())?;
+    let (wasopen, reencode, enc) = with_conn(cx, icon, |c| (c.isopen(), c.reencode, c.encname()))?;
+    // a sink drops what it cannot write: refuse a re-encoding before the
+    // switch opens (and truncates) the file
+    if !wasopen || reencode {
+        check_encoding(cx, &enc)?;
+    }
     let changed = switch_or_tee_stdout(cx, icon, false, false)?;
     let r = f(cx);
     // con->fflush(con)
