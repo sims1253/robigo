@@ -23,7 +23,7 @@ pub fn dump_error(src: &str, e: &ParseError) -> Vec<u8> {
     let mut out = format!("ERROR {} {} ", line, col).into_bytes();
     match e.style {
         ErrorStyle::Condition => out.extend(crate::condition_message(src, crate::CONSOLE_SRCNAME, e)),
-        _ => out.extend_from_slice(e.message.as_bytes()),
+        _ => out.extend_from_slice(e.message_bytes()),
     }
     out
 }

@@ -93,10 +93,12 @@ pub fn parse_condition<'a>(
     let value = match &e.value {
         ConditionValue::Null => Value::Null,
         ConditionValue::Int(v) => Value::int(*v),
-        ConditionValue::Str(v) => Value::str(&String::from_utf8_lossy(v)),
+        // (gram.y's bytes, mkString'd native: a lone escape byte included)
+        ConditionValue::Str(v) => Value::strs(vec![Some(RString::from_bytes(v, Encoding::Native))]),
     };
+    let msg = robigo_syntax::condition_message(src, srcname, e);
     let mut cond = Vector::new(vec![
-        Value::str(&String::from_utf8_lossy(&robigo_syntax::condition_message(src, srcname, e))),
+        Value::strs(vec![Some(RString::from_bytes(&msg, Encoding::Native))]),
         call.clone(),
         value,
         Value::str(srcname),
