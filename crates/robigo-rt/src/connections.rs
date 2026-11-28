@@ -2680,14 +2680,22 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 
 /// Give the last `k` bytes read from a file connection back, so the next
 /// read starts there (what `R_ParseConn` leaves unread when it stops after
-/// the `n`-th expression). False for any other connection.
-pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
-    with_conn(cx, n, |c| match &mut c.imp {
-        Imp::File(f) => match f.fp.as_mut() {
-            Some(fp) if !f.last_was_write => fp.fseeko(-(k as i64), stdio::Whence::Cur) == 0,
+/// the `n`-th expression), and with `held` a character Rconn_fgetc holds
+/// to give first (`con->save`: the newline a CR after a CR stands for).
+/// False for any other connection.
+pub fn unread(cx: &mut Cx, n: i32, k: usize, held: Option<u8>) -> RResult<bool> {
+    with_conn(cx, n, |c| {
+        let back = match &mut c.imp {
+            Imp::File(f) => match f.fp.as_mut() {
+                Some(fp) if !f.last_was_write => fp.fseeko(-(k as i64), stdio::Whence::Cur) == 0,
+                _ => false,
+            },
             _ => false,
-        },
-        _ => false,
+        };
+        if back && let Some(b) = held {
+            c.c.save = b as std::ffi::c_int;
+        }
+        back
     })
 }
 
