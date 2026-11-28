@@ -853,14 +853,23 @@ impl<'a> Parser<'a> {
 
     fn syntax_error(&self, t: &Token) -> ParseError {
         // The newline an if body's newline scan returned when the scan read
-        // the end of input: the lexer stands at the end (`EndOfFile`), so
-        // the error is placed there and the statement is incomplete
+        // the end of input (`EndOfFile`): the statement is incomplete
         // (`R_Parse1`'s PARSE_INCOMPLETE: the console reads another line).
+        // At the end token the error is placed there; in a token the end
+        // cut short (a string), at that token.
         if std::ptr::eq(t, &self.nl)
             && let Some(i) = self.saved
-            && matches!(self.toks[i].tok, Tok::Eof)
         {
-            return ParseError { message: "unexpected end of line".into(), ..self.syntax_error(&self.toks[i]) };
+            match &self.toks[i].tok {
+                Tok::Eof => {
+                    return ParseError { message: "unexpected end of line".into(), ..self.syntax_error(&self.toks[i]) };
+                }
+                Tok::Invalid(le) if le.incomplete => {
+                    let nl = Token { tok: Tok::Newline, span: t.span };
+                    return ParseError { incomplete: true, ..self.syntax_error(&nl) };
+                }
+                _ => {}
+            }
         }
         ParseError {
             // `PLACEHOLDER` is reported as "unexpected input", a deliberate
@@ -1800,6 +1809,9 @@ mod tests {
         assert!(incomplete("{if (TRUE) 1\n"));
         assert!(ok("(if (TRUE) 1\n)\n"));
         assert!(error("(if (TRUE) 1\n+ 2)\n", "unexpected end of line"));
+        // ... or a string the end of the chunk cuts short
+        assert!(incomplete("(if (TRUE) 1\n\"abc\n"));
+        assert!(error("(if (TRUE) 1\n\"abc\nxyz\\q\"\n", "'\\q' is an unrecognized escape in character string"));
         // A statement without its terminator (a line cut at the console
         // buffer size) needs more input.
         assert!(incomplete("1 + 1 + "));
