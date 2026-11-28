@@ -529,8 +529,13 @@ impl<'a> Lexer<'a> {
                 if name.is_empty() {
                     // `SymbolValue` installs the name right in the lexer
                     // (`// R: gram.y:SymbolValue`, `names.c:install`), and
-                    // `install("")` errors without a position.
-                    return Err(ParseError::r_error("attempt to use zero-length variable name"));
+                    // `install("")` errors without a position; the token's
+                    // span says how far the lexer read (both backticks).
+                    return Err(ParseError {
+                        offset: start,
+                        end: self.pos,
+                        ..ParseError::r_error("attempt to use zero-length variable name")
+                    });
                 }
                 Tok::Sym(name)
             }

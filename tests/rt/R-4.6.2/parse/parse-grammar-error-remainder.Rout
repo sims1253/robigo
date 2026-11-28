@@ -1,0 +1,454 @@
+"y 1;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y 1zTAIL"                 simpleError | c("TAIL", "NEXT") 
+"y 1 TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y 12;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y 12zTAIL"                simpleError | c("TAIL", "NEXT") 
+"y 12 TAIL"                simpleError | c("TAIL", "NEXT") 
+"y 1L;TAIL"                simpleError | c(";TAIL", "NEXT") 
+"y 1LzTAIL"                simpleError | c("zTAIL", "NEXT") 
+"y 1L TAIL"                simpleError | c(" TAIL", "NEXT") 
+"y 1i;TAIL"                simpleError | c(";TAIL", "NEXT") 
+"y 1izTAIL"                simpleError | c("zTAIL", "NEXT") 
+"y 1i TAIL"                simpleError | c(" TAIL", "NEXT") 
+"y 1.5;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y 1.5zTAIL"               simpleError | c("TAIL", "NEXT") 
+"y 1.5 TAIL"               simpleError | c("TAIL", "NEXT") 
+"y .5;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y .5zTAIL"                simpleError | c("TAIL", "NEXT") 
+"y .5 TAIL"                simpleError | c("TAIL", "NEXT") 
+"y 0x1F;TAIL"              simpleError | c("TAIL", "NEXT") 
+"y 0x1FzTAIL"              simpleError | c("TAIL", "NEXT") 
+"y 0x1F TAIL"              simpleError | c("TAIL", "NEXT") 
+"y 0x1FL;TAIL"             simpleError | c(";TAIL", "NEXT") 
+"y 0x1FLzTAIL"             simpleError | c("zTAIL", "NEXT") 
+"y 0x1FL TAIL"             simpleError | c(" TAIL", "NEXT") 
+"y 1e5;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y 1e5zTAIL"               simpleError | c("TAIL", "NEXT") 
+"y 1e5 TAIL"               simpleError | c("TAIL", "NEXT") 
+"y 1e;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y 1ezTAIL"                simpleError | c("TAIL", "NEXT") 
+"y 1e TAIL"                simpleError | c("TAIL", "NEXT") 
+"y abc;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y abczTAIL"               simpleError | "NEXT" 
+"y abc TAIL"               simpleError | c("TAIL", "NEXT") 
+"y a.b;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y a.bzTAIL"               simpleError | "NEXT" 
+"y a.b TAIL"               simpleError | c("TAIL", "NEXT") 
+"y a_b;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y a_bzTAIL"               simpleError | "NEXT" 
+"y a_b TAIL"               simpleError | c("TAIL", "NEXT") 
+"y .x;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y .xzTAIL"                simpleError | "NEXT" 
+"y .x TAIL"                simpleError | c("TAIL", "NEXT") 
+"y TRUE;TAIL"              simpleError | c("TAIL", "NEXT") 
+"y TRUEzTAIL"              simpleError | "NEXT" 
+"y TRUE TAIL"              simpleError | c("TAIL", "NEXT") 
+"y NULL;TAIL"              simpleError | c("TAIL", "NEXT") 
+"y NULLzTAIL"              simpleError | "NEXT" 
+"y NULL TAIL"              simpleError | c("TAIL", "NEXT") 
+"y Inf;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y InfzTAIL"               simpleError | "NEXT" 
+"y Inf TAIL"               simpleError | c("TAIL", "NEXT") 
+"y NA_integer_;TAIL"       simpleError | c("TAIL", "NEXT") 
+"y NA_integer_zTAIL"       simpleError | "NEXT" 
+"y NA_integer_ TAIL"       simpleError | c("TAIL", "NEXT") 
+"y 's';TAIL"               simpleError | c(";TAIL", "NEXT") 
+"y 's'zTAIL"               simpleError | c("zTAIL", "NEXT") 
+"y 's' TAIL"               simpleError | c(" TAIL", "NEXT") 
+"y \"s\";TAIL"             simpleError | c(";TAIL", "NEXT") 
+"y \"s\"zTAIL"             simpleError | c("zTAIL", "NEXT") 
+"y \"s\" TAIL"             simpleError | c(" TAIL", "NEXT") 
+"y `b`;TAIL"               simpleError | c(";TAIL", "NEXT") 
+"y `b`zTAIL"               simpleError | c("zTAIL", "NEXT") 
+"y `b` TAIL"               simpleError | c(" TAIL", "NEXT") 
+"y r\"(raw)\";TAIL"        simpleError | c(";TAIL", "NEXT") 
+"y r\"(raw)\"zTAIL"        simpleError | c("zTAIL", "NEXT") 
+"y r\"(raw)\" TAIL"        simpleError | c(" TAIL", "NEXT") 
+"y %in%;TAIL"              simpleError | c("TAIL", "NEXT") 
+"y %in%zTAIL"              ok | "NEXT" 
+"y %in% TAIL"              ok | "NEXT" 
+"y <-;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y <-zTAIL"                ok | "NEXT" 
+"y <- TAIL"                ok | "NEXT" 
+"y <<-;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y <<-zTAIL"               ok | "NEXT" 
+"y <<- TAIL"               ok | "NEXT" 
+"y ->;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y ->zTAIL"                ok | "NEXT" 
+"y -> TAIL"                ok | "NEXT" 
+"y ->>;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y ->>zTAIL"               ok | "NEXT" 
+"y ->> TAIL"               ok | "NEXT" 
+"y <=;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y <=zTAIL"                ok | "NEXT" 
+"y <= TAIL"                ok | "NEXT" 
+"y <;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y <zTAIL"                 ok | "NEXT" 
+"y < TAIL"                 ok | "NEXT" 
+"y >=;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y >=zTAIL"                ok | "NEXT" 
+"y >= TAIL"                ok | "NEXT" 
+"y >;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y >zTAIL"                 ok | "NEXT" 
+"y > TAIL"                 ok | "NEXT" 
+"y ==;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y ==zTAIL"                ok | "NEXT" 
+"y == TAIL"                ok | "NEXT" 
+"y =;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y =zTAIL"                 ok | "NEXT" 
+"y = TAIL"                 ok | "NEXT" 
+"y !=;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y !=zTAIL"                ok | "NEXT" 
+"y != TAIL"                ok | "NEXT" 
+"y !;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y !zTAIL"                 simpleError | c("TAIL", "NEXT") 
+"y ! TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y &&;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y &&zTAIL"                ok | "NEXT" 
+"y && TAIL"                ok | "NEXT" 
+"y &;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y &zTAIL"                 ok | "NEXT" 
+"y & TAIL"                 ok | "NEXT" 
+"y ||;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y ||zTAIL"                ok | "NEXT" 
+"y || TAIL"                ok | "NEXT" 
+"y |;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y |zTAIL"                 ok | "NEXT" 
+"y | TAIL"                 ok | "NEXT" 
+"y |>;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y |>zTAIL"                RHSnotFnCall | "NEXT" 
+"y |> TAIL"                RHSnotFnCall | "NEXT" 
+"y ::;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y ::zTAIL"                ok | "NEXT" 
+"y :: TAIL"                ok | "NEXT" 
+"y :::;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y :::zTAIL"               ok | "NEXT" 
+"y ::: TAIL"               ok | "NEXT" 
+"y :;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y :zTAIL"                 ok | "NEXT" 
+"y : TAIL"                 ok | "NEXT" 
+"y +;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y +zTAIL"                 ok | "NEXT" 
+"y + TAIL"                 ok | "NEXT" 
+"y -;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y -zTAIL"                 ok | "NEXT" 
+"y - TAIL"                 ok | "NEXT" 
+"y *;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y *zTAIL"                 ok | "NEXT" 
+"y * TAIL"                 ok | "NEXT" 
+"y **;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y **zTAIL"                ok | "NEXT" 
+"y ** TAIL"                ok | "NEXT" 
+"y /;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y /zTAIL"                 ok | "NEXT" 
+"y / TAIL"                 ok | "NEXT" 
+"y ^;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y ^zTAIL"                 ok | "NEXT" 
+"y ^ TAIL"                 ok | "NEXT" 
+"y ~;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y ~zTAIL"                 ok | "NEXT" 
+"y ~ TAIL"                 ok | "NEXT" 
+"y ?;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y ?zTAIL"                 ok | "NEXT" 
+"y ? TAIL"                 ok | "NEXT" 
+"y @;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y @zTAIL"                 ok | "NEXT" 
+"y @ TAIL"                 ok | "NEXT" 
+"y $;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y $zTAIL"                 ok | "NEXT" 
+"y $ TAIL"                 ok | "NEXT" 
+"y if;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y ifzTAIL"                simpleError | "NEXT" 
+"y if TAIL"                simpleError | c("TAIL", "NEXT") 
+"y else;TAIL"              simpleError | c("TAIL", "NEXT") 
+"y elsezTAIL"              simpleError | "NEXT" 
+"y else TAIL"              simpleError | c("TAIL", "NEXT") 
+"y for;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y forzTAIL"               simpleError | "NEXT" 
+"y for TAIL"               simpleError | c("TAIL", "NEXT") 
+"y while;TAIL"             simpleError | c("TAIL", "NEXT") 
+"y whilezTAIL"             simpleError | "NEXT" 
+"y while TAIL"             simpleError | c("TAIL", "NEXT") 
+"y repeat;TAIL"            simpleError | c("TAIL", "NEXT") 
+"y repeatzTAIL"            simpleError | "NEXT" 
+"y repeat TAIL"            simpleError | c("TAIL", "NEXT") 
+"y function;TAIL"          simpleError | c("TAIL", "NEXT") 
+"y functionzTAIL"          simpleError | "NEXT" 
+"y function TAIL"          simpleError | c("TAIL", "NEXT") 
+"y \\(x);TAIL"             simpleError | c("(x);TAIL", "NEXT") 
+"y \\(x)zTAIL"             simpleError | c("(x)zTAIL", "NEXT") 
+"y \\(x) TAIL"             simpleError | c("(x) TAIL", "NEXT") 
+"y break;TAIL"             simpleError | c("TAIL", "NEXT") 
+"y breakzTAIL"             simpleError | "NEXT" 
+"y break TAIL"             simpleError | c("TAIL", "NEXT") 
+"y next;TAIL"              simpleError | c("TAIL", "NEXT") 
+"y nextzTAIL"              simpleError | "NEXT" 
+"y next TAIL"              simpleError | c("TAIL", "NEXT") 
+"y {;TAIL"                 simpleError | c(";TAIL", "NEXT") 
+"y {zTAIL"                 simpleError | c("zTAIL", "NEXT") 
+"y { TAIL"                 simpleError | c(" TAIL", "NEXT") 
+"y };TAIL"                 simpleError | c(";TAIL", "NEXT") 
+"y }zTAIL"                 simpleError | c("zTAIL", "NEXT") 
+"y } TAIL"                 simpleError | c(" TAIL", "NEXT") 
+"y (;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y (zTAIL"                 simpleError | character(0) 
+"y ( TAIL"                 simpleError | character(0) 
+"y );TAIL"                 simpleError | c(";TAIL", "NEXT") 
+"y )zTAIL"                 simpleError | c("zTAIL", "NEXT") 
+"y ) TAIL"                 simpleError | c(" TAIL", "NEXT") 
+"y [;TAIL"                 simpleError | c("TAIL", "NEXT") 
+"y [zTAIL"                 simpleError | character(0) 
+"y [ TAIL"                 simpleError | character(0) 
+"y [[;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y [[zTAIL"                simpleError | character(0) 
+"y [[ TAIL"                simpleError | character(0) 
+"y ];TAIL"                 simpleError | c(";TAIL", "NEXT") 
+"y ]zTAIL"                 simpleError | c("zTAIL", "NEXT") 
+"y ] TAIL"                 simpleError | c(" TAIL", "NEXT") 
+"y ]];TAIL"                simpleError | c("];TAIL", "NEXT") 
+"y ]]zTAIL"                simpleError | c("]zTAIL", "NEXT") 
+"y ]] TAIL"                simpleError | c("] TAIL", "NEXT") 
+"y ,;TAIL"                 simpleError | c(";TAIL", "NEXT") 
+"y ,zTAIL"                 simpleError | c("zTAIL", "NEXT") 
+"y , TAIL"                 simpleError | c(" TAIL", "NEXT") 
+"y ...;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y ...zTAIL"               simpleError | "NEXT" 
+"y ... TAIL"               simpleError | c("TAIL", "NEXT") 
+"y ..1;TAIL"               simpleError | c("TAIL", "NEXT") 
+"y ..1zTAIL"               simpleError | "NEXT" 
+"y ..1 TAIL"               simpleError | c("TAIL", "NEXT") 
+"y =>;TAIL"                simpleError | c("TAIL", "NEXT") 
+"y =>zTAIL"                pipebindDisabled | "NEXT" 
+"y => TAIL"                pipebindDisabled | "NEXT" 
+"f(1) 1;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) 1zTAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) 1 TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) 12;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) 12zTAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) 12 TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) 1L;TAIL"             simpleError | c(";TAIL", "NEXT") 
+"f(1) 1LzTAIL"             simpleError | c("zTAIL", "NEXT") 
+"f(1) 1L TAIL"             simpleError | c(" TAIL", "NEXT") 
+"f(1) 1i;TAIL"             simpleError | c(";TAIL", "NEXT") 
+"f(1) 1izTAIL"             simpleError | c("zTAIL", "NEXT") 
+"f(1) 1i TAIL"             simpleError | c(" TAIL", "NEXT") 
+"f(1) 1.5;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) 1.5zTAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) 1.5 TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) .5;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) .5zTAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) .5 TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) 0x1F;TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) 0x1FzTAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) 0x1F TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) 0x1FL;TAIL"          simpleError | c(";TAIL", "NEXT") 
+"f(1) 0x1FLzTAIL"          simpleError | c("zTAIL", "NEXT") 
+"f(1) 0x1FL TAIL"          simpleError | c(" TAIL", "NEXT") 
+"f(1) 1e5;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) 1e5zTAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) 1e5 TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) 1e;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) 1ezTAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) 1e TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) abc;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) abczTAIL"            simpleError | "NEXT" 
+"f(1) abc TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) a.b;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) a.bzTAIL"            simpleError | "NEXT" 
+"f(1) a.b TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) a_b;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) a_bzTAIL"            simpleError | "NEXT" 
+"f(1) a_b TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) .x;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) .xzTAIL"             simpleError | "NEXT" 
+"f(1) .x TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) TRUE;TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) TRUEzTAIL"           simpleError | "NEXT" 
+"f(1) TRUE TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) NULL;TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) NULLzTAIL"           simpleError | "NEXT" 
+"f(1) NULL TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) Inf;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) InfzTAIL"            simpleError | "NEXT" 
+"f(1) Inf TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) NA_integer_;TAIL"    simpleError | c("TAIL", "NEXT") 
+"f(1) NA_integer_zTAIL"    simpleError | "NEXT" 
+"f(1) NA_integer_ TAIL"    simpleError | c("TAIL", "NEXT") 
+"f(1) 's';TAIL"            simpleError | c(";TAIL", "NEXT") 
+"f(1) 's'zTAIL"            simpleError | c("zTAIL", "NEXT") 
+"f(1) 's' TAIL"            simpleError | c(" TAIL", "NEXT") 
+"f(1) \"s\";TAIL"          simpleError | c(";TAIL", "NEXT") 
+"f(1) \"s\"zTAIL"          simpleError | c("zTAIL", "NEXT") 
+"f(1) \"s\" TAIL"          simpleError | c(" TAIL", "NEXT") 
+"f(1) `b`;TAIL"            simpleError | c(";TAIL", "NEXT") 
+"f(1) `b`zTAIL"            simpleError | c("zTAIL", "NEXT") 
+"f(1) `b` TAIL"            simpleError | c(" TAIL", "NEXT") 
+"f(1) r\"(raw)\";TAIL"     simpleError | c(";TAIL", "NEXT") 
+"f(1) r\"(raw)\"zTAIL"     simpleError | c("zTAIL", "NEXT") 
+"f(1) r\"(raw)\" TAIL"     simpleError | c(" TAIL", "NEXT") 
+"f(1) %in%;TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) %in%zTAIL"           ok | "NEXT" 
+"f(1) %in% TAIL"           ok | "NEXT" 
+"f(1) <-;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) <-zTAIL"             ok | "NEXT" 
+"f(1) <- TAIL"             ok | "NEXT" 
+"f(1) <<-;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) <<-zTAIL"            ok | "NEXT" 
+"f(1) <<- TAIL"            ok | "NEXT" 
+"f(1) ->;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) ->zTAIL"             ok | "NEXT" 
+"f(1) -> TAIL"             ok | "NEXT" 
+"f(1) ->>;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) ->>zTAIL"            ok | "NEXT" 
+"f(1) ->> TAIL"            ok | "NEXT" 
+"f(1) <=;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) <=zTAIL"             ok | "NEXT" 
+"f(1) <= TAIL"             ok | "NEXT" 
+"f(1) <;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) <zTAIL"              ok | "NEXT" 
+"f(1) < TAIL"              ok | "NEXT" 
+"f(1) >=;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) >=zTAIL"             ok | "NEXT" 
+"f(1) >= TAIL"             ok | "NEXT" 
+"f(1) >;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) >zTAIL"              ok | "NEXT" 
+"f(1) > TAIL"              ok | "NEXT" 
+"f(1) ==;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) ==zTAIL"             ok | "NEXT" 
+"f(1) == TAIL"             ok | "NEXT" 
+"f(1) =;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) =zTAIL"              ok | "NEXT" 
+"f(1) = TAIL"              ok | "NEXT" 
+"f(1) !=;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) !=zTAIL"             ok | "NEXT" 
+"f(1) != TAIL"             ok | "NEXT" 
+"f(1) !;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) !zTAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) ! TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) &&;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) &&zTAIL"             ok | "NEXT" 
+"f(1) && TAIL"             ok | "NEXT" 
+"f(1) &;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) &zTAIL"              ok | "NEXT" 
+"f(1) & TAIL"              ok | "NEXT" 
+"f(1) ||;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) ||zTAIL"             ok | "NEXT" 
+"f(1) || TAIL"             ok | "NEXT" 
+"f(1) |;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) |zTAIL"              ok | "NEXT" 
+"f(1) | TAIL"              ok | "NEXT" 
+"f(1) |>;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) |>zTAIL"             RHSnotFnCall | "NEXT" 
+"f(1) |> TAIL"             RHSnotFnCall | "NEXT" 
+"f(1) ::;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) ::zTAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) :: TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) :::;TAIL"            simpleError | c(";TAIL", "NEXT") 
+"f(1) :::zTAIL"            simpleError | c("zTAIL", "NEXT") 
+"f(1) ::: TAIL"            simpleError | c(" TAIL", "NEXT") 
+"f(1) :;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) :zTAIL"              ok | "NEXT" 
+"f(1) : TAIL"              ok | "NEXT" 
+"f(1) +;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) +zTAIL"              ok | "NEXT" 
+"f(1) + TAIL"              ok | "NEXT" 
+"f(1) -;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) -zTAIL"              ok | "NEXT" 
+"f(1) - TAIL"              ok | "NEXT" 
+"f(1) *;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) *zTAIL"              ok | "NEXT" 
+"f(1) * TAIL"              ok | "NEXT" 
+"f(1) **;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) **zTAIL"             ok | "NEXT" 
+"f(1) ** TAIL"             ok | "NEXT" 
+"f(1) /;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) /zTAIL"              ok | "NEXT" 
+"f(1) / TAIL"              ok | "NEXT" 
+"f(1) ^;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) ^zTAIL"              ok | "NEXT" 
+"f(1) ^ TAIL"              ok | "NEXT" 
+"f(1) ~;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) ~zTAIL"              ok | "NEXT" 
+"f(1) ~ TAIL"              ok | "NEXT" 
+"f(1) ?;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) ?zTAIL"              ok | "NEXT" 
+"f(1) ? TAIL"              ok | "NEXT" 
+"f(1) @;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) @zTAIL"              ok | "NEXT" 
+"f(1) @ TAIL"              ok | "NEXT" 
+"f(1) $;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) $zTAIL"              ok | "NEXT" 
+"f(1) $ TAIL"              ok | "NEXT" 
+"f(1) if;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) ifzTAIL"             simpleError | "NEXT" 
+"f(1) if TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) else;TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) elsezTAIL"           simpleError | "NEXT" 
+"f(1) else TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) for;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) forzTAIL"            simpleError | "NEXT" 
+"f(1) for TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) while;TAIL"          simpleError | c("TAIL", "NEXT") 
+"f(1) whilezTAIL"          simpleError | "NEXT" 
+"f(1) while TAIL"          simpleError | c("TAIL", "NEXT") 
+"f(1) repeat;TAIL"         simpleError | c("TAIL", "NEXT") 
+"f(1) repeatzTAIL"         simpleError | "NEXT" 
+"f(1) repeat TAIL"         simpleError | c("TAIL", "NEXT") 
+"f(1) function;TAIL"       simpleError | c("TAIL", "NEXT") 
+"f(1) functionzTAIL"       simpleError | "NEXT" 
+"f(1) function TAIL"       simpleError | c("TAIL", "NEXT") 
+"f(1) \\(x);TAIL"          simpleError | c("(x);TAIL", "NEXT") 
+"f(1) \\(x)zTAIL"          simpleError | c("(x)zTAIL", "NEXT") 
+"f(1) \\(x) TAIL"          simpleError | c("(x) TAIL", "NEXT") 
+"f(1) break;TAIL"          simpleError | c("TAIL", "NEXT") 
+"f(1) breakzTAIL"          simpleError | "NEXT" 
+"f(1) break TAIL"          simpleError | c("TAIL", "NEXT") 
+"f(1) next;TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) nextzTAIL"           simpleError | "NEXT" 
+"f(1) next TAIL"           simpleError | c("TAIL", "NEXT") 
+"f(1) {;TAIL"              simpleError | c(";TAIL", "NEXT") 
+"f(1) {zTAIL"              simpleError | c("zTAIL", "NEXT") 
+"f(1) { TAIL"              simpleError | c(" TAIL", "NEXT") 
+"f(1) };TAIL"              simpleError | c(";TAIL", "NEXT") 
+"f(1) }zTAIL"              simpleError | c("zTAIL", "NEXT") 
+"f(1) } TAIL"              simpleError | c(" TAIL", "NEXT") 
+"f(1) (;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) (zTAIL"              simpleError | character(0) 
+"f(1) ( TAIL"              simpleError | character(0) 
+"f(1) );TAIL"              simpleError | c(";TAIL", "NEXT") 
+"f(1) )zTAIL"              simpleError | c("zTAIL", "NEXT") 
+"f(1) ) TAIL"              simpleError | c(" TAIL", "NEXT") 
+"f(1) [;TAIL"              simpleError | c("TAIL", "NEXT") 
+"f(1) [zTAIL"              simpleError | character(0) 
+"f(1) [ TAIL"              simpleError | character(0) 
+"f(1) [[;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) [[zTAIL"             simpleError | character(0) 
+"f(1) [[ TAIL"             simpleError | character(0) 
+"f(1) ];TAIL"              simpleError | c(";TAIL", "NEXT") 
+"f(1) ]zTAIL"              simpleError | c("zTAIL", "NEXT") 
+"f(1) ] TAIL"              simpleError | c(" TAIL", "NEXT") 
+"f(1) ]];TAIL"             simpleError | c("];TAIL", "NEXT") 
+"f(1) ]]zTAIL"             simpleError | c("]zTAIL", "NEXT") 
+"f(1) ]] TAIL"             simpleError | c("] TAIL", "NEXT") 
+"f(1) ,;TAIL"              simpleError | c(";TAIL", "NEXT") 
+"f(1) ,zTAIL"              simpleError | c("zTAIL", "NEXT") 
+"f(1) , TAIL"              simpleError | c(" TAIL", "NEXT") 
+"f(1) ...;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) ...zTAIL"            simpleError | "NEXT" 
+"f(1) ... TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) ..1;TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) ..1zTAIL"            simpleError | "NEXT" 
+"f(1) ..1 TAIL"            simpleError | c("TAIL", "NEXT") 
+"f(1) =>;TAIL"             simpleError | c("TAIL", "NEXT") 
+"f(1) =>zTAIL"             pipebindDisabled | "NEXT" 
+"f(1) => TAIL"             pipebindDisabled | "NEXT" 
+"y z ``TAIL" 1 "1:3: unexpected symbol\n1: y z\n      ^" | c("``TAIL", "NEXT") 
+"``TAIL" 1 "attempt to use zero-length variable name" | c("TAIL", "NEXT") 
+"y ``TAIL" 1 "attempt to use zero-length variable name" | c("TAIL", "NEXT") 
+"f(``)TAIL" 1 "attempt to use zero-length variable name" | c(")TAIL", "NEXT") 
+"1e" 1 "1:1: unexpected input\n1: 1e\n    ^" | "NEXT" 
+"y 1e" 1 "1:3: unexpected input\n1: y 1e\n      ^" | "NEXT" 
+"0x" 1 "1:1: unexpected input\n1: 0x\n    ^" | "NEXT" 
+"1.5e+" 1 "1:1: unexpected input\n1: 1.5e+\n    ^" | "NEXT" 
+"a\ny z ``TAIL" 2 "2:3: unexpected symbol\n1: a\n2: y z\n     ^" | c("``TAIL", "NEXT") 
+"a\n``TAIL" 2 "attempt to use zero-length variable name" | c("TAIL", "NEXT") 
