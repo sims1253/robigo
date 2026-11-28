@@ -60,3 +60,11 @@ S4: character(0) "2"
 "1\r" NA 1 | "2" character(0) 
 "\r\r" 1 0 | "2" character(0) 
 "1\r\r" 1 1 | c("", "2") character(0) 
+"(1 |> 2\r" "error" | "2" character(0) 
+"1 |> 2\r" "error" | character(0) "2" 
+"(1 |> 2)\r" "error" | c("", "2") character(0) 
+"{1 |> 2\r" "error" | character(0) "2" 
+"f(_)\r" "error" | character(0) "2" 
+"(f(_))\r" "error" | character(0) "2" 
+"x <- )\r" "error" | c("", "2") character(0) 
+"``\r" "error" | c("", "2") character(0) 

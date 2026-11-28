@@ -388,7 +388,7 @@ fn parse_text(
         match p.program_n(if num < 0 { usize::MAX } else { num as usize }) {
             Ok(exprs) => Ok((exprs, p.consumed_end())),
             Err(e) => {
-                frontier = Some((p.error_frontier(&e), p.error_read_to(&e)));
+                frontier = Some((p.error_frontier(&e), p.error_read_to(&e), p.error_read_end(&e)));
                 Err(e)
             }
         }
@@ -406,7 +406,10 @@ fn parse_text(
                 // Parser::new does not fail; the fallback is the error's
                 // end.)
                 let consumed = frontier.map_or(e.end.max(e.offset).min(src.len()), |f| f.1);
-                gave = give_back(cx, consumed)?;
+                // (a lexer that read the end of input has read a held end
+                // too: nothing to give back)
+                let read_end = frontier.is_some_and(|f| f.2);
+                gave = give_back(cx, if read_end { usize::MAX } else { consumed })?;
             }
             signal(cx, if e.incomplete { usize::MAX } else { frontier.map_or(e.offset, |f| f.0) })?;
             let err = match e.style {

@@ -662,6 +662,19 @@ impl<'a> Parser<'a> {
         self.read_to(e, self.lex_error())
     }
 
+    /// Whether GNU R's lexer had read the end of input when `e` was
+    /// raised: the last token it lexed is the end (an action's lookahead
+    /// past the last newline, which inside brackets is no token). Not when
+    /// an invalid token ended the lexing first.
+    pub fn error_read_end(&self, e: &ParseError) -> bool {
+        let frontier = self.trial_frontier.unwrap_or(e.offset);
+        if self.lex_error().is_some_and(|le| frontier >= le.at) {
+            return false;
+        }
+        let k = self.toks.partition_point(|t| t.span.start as usize <= frontier);
+        k.checked_sub(1).is_some_and(|k| matches!(self.toks[k].tok, Tok::Eof))
+    }
+
     /// The start of the last token GNU R's lexer had read when `e` was
     /// raised: the raise site's frontier for an action's error (the
     /// lookahead it reduced with, or none: `Parser::codegen`), else the

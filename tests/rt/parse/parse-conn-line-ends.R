@@ -85,3 +85,12 @@ held_end <- function(txt, n) {
   cat(deparse(txt), n, length(p), "|", deparse(readLines(con, warn = FALSE)), deparse(readLines(con, warn = FALSE)), "\n"); close(con)
 }
 held_end("\r", 1); held_end("1\r", 1); held_end("1\r", 2); held_end("1\r", NA); held_end("\r\r", 1); held_end("1\r\r", 1)
+# and an error whose lookahead was the end of input (inside parentheses a
+# newline is no token) has read it; at a newline it has not
+held_end_err <- function(txt) {
+  f <- wr(txt); con <- file(f, "r"); p <- tryCatch(parse(con, n = 1), error = function(e) "error")
+  a <- file(f, "a"); writeLines("2", a); close(a)
+  cat(deparse(txt), deparse(p), "|", deparse(readLines(con, warn = FALSE)), deparse(readLines(con, warn = FALSE)), "\n"); close(con)
+}
+for (txt in c("(1 |> 2\r", "1 |> 2\r", "(1 |> 2)\r", "{1 |> 2\r", "f(_)\r", "(f(_))\r", "x <- )\r", "``\r"))
+  held_end_err(txt)
