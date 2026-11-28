@@ -380,6 +380,7 @@ impl<'a> Lexer<'a> {
             call: None,
             subclass: "",
             value: ConditionValue::Null,
+            raw_message: None,
             fixed_line_col: None,
         }
     }
@@ -844,6 +845,7 @@ impl<'a> Lexer<'a> {
             call: None,
             subclass: "",
             value: ConditionValue::Null,
+            raw_message: None,
             fixed_line_col: None,
         }
     }
@@ -1041,14 +1043,20 @@ impl<'a> Lexer<'a> {
         use_wcs: &mut bool,
     ) -> Result<Option<char>, ParseError> {
         let _ = quote;
-        let Some(e) = self.peek_char() else {
+        let Some(&b) = self.source.raw().get(self.pos) else {
             return Err(self.err("unexpected INCOMPLETE_STRING", start, true));
         };
-        if e == INVALID_BYTE as char && self.invalid_at(self.pos).is_some() {
-            // StringValue reports the raw byte as an unrecognized escape.
-            return Err(ParseError::r_error("robigo: an invalid UTF-8 byte after '\\' is not implemented yet"));
+        // StringValue reads one byte after the backslash (xxgetc): a byte
+        // that is not ASCII, the lead byte of a multibyte character or
+        // invalid UTF-8, is an unrecognized escape by itself, and the rest
+        // of its character stays unread.
+        // R: gram.y:StringValue
+        if !b.is_ascii() {
+            self.pos += 1;
+            return Err(self.unrecognized_escape(b));
         }
-        self.pos += e.len_utf8();
+        let e = b as char;
+        self.pos += 1;
         Ok(match e {
             'n' => Some('\n'),
             't' => Some('\t'),
@@ -1218,15 +1226,26 @@ impl<'a> Lexer<'a> {
                 wide.push(v);
                 None
             }
-            other => {
-                return Err(self
-                    .lex_err(
-                        "unrecognizedEscape",
-                        format!("'\\{}' is an unrecognized escape in character string", other),
-                    )
-                    .with_value(ConditionValue::Str(other.to_string())));
-            }
+            // (ASCII: a byte that is not was rejected above)
+            other => return Err(self.unrecognized_escape(other as u8)),
         })
+    }
+
+    /// `raiseLexError("unrecognizedEscape", STRING_VALUE, ch, ...)` for the
+    /// byte `b` read after a backslash: the message and the value carry
+    /// that byte, which need not be UTF-8 by itself.
+    // R: gram.y:StringValue
+    fn unrecognized_escape(&mut self, b: u8) -> ParseError {
+        let mut raw = b"'\\".to_vec();
+        raw.push(b);
+        raw.extend_from_slice(b"' is an unrecognized escape in character string");
+        let mut e = self
+            .lex_err("unrecognizedEscape", String::from_utf8_lossy(&raw).into_owned())
+            .with_value(ConditionValue::Str(vec![b]));
+        if !b.is_ascii() {
+            e.raw_message = Some(raw.into());
+        }
+        e
     }
 
     fn operator(&mut self, start: usize) -> Result<Tok<'a>, ParseError> {

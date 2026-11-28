@@ -45,10 +45,10 @@ pub fn signal(cx: &mut Cx, src: Source<'_>, e: &ParseError, filename: &str) -> R
     let encoded;
     let e = match (&e.value, e.subclass) {
         (ConditionValue::Str(v), "repeatedFormal") => {
-            let name = cx.encode_char(v.as_bytes(), robigo_rtcore::Encoding::Native);
+            let name = cx.encode_char(v, robigo_rtcore::Encoding::Native);
             encoded = ParseError {
                 message: format!("repeated formal argument '{name}'"),
-                value: ConditionValue::Str(name),
+                value: ConditionValue::Str(name.into_bytes()),
                 ..e.clone()
             };
             &encoded
@@ -63,7 +63,7 @@ pub fn signal(cx: &mut Cx, src: Source<'_>, e: &ParseError, filename: &str) -> R
                 Ok(match &e.value {
                     ConditionValue::Null => cx.nil(),
                     ConditionValue::Int(v) => cx.alloc_with(1, |_| *v)?.finish().as_ref(),
-                    ConditionValue::Str(v) => cx.mk_string(v.as_bytes(), robigo_rtcore::Encoding::Native)?,
+                    ConditionValue::Str(v) => cx.mk_string(v, robigo_rtcore::Encoding::Native)?,
                 })
             })
         })?;
@@ -85,7 +85,7 @@ pub fn signal(cx: &mut Cx, src: Source<'_>, e: &ParseError, filename: &str) -> R
         let cond = robigo_rtcore::ErrorCond {
             class: "parseError",
             subclass: Some(e.subclass),
-            msg: msg.as_bytes(),
+            msg: &msg,
             fields: &fields,
             exit_only: false,
         };

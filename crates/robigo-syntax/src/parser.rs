@@ -621,6 +621,7 @@ impl<'a> Parser<'a> {
             call: None,
             subclass: "",
             value: ConditionValue::Null,
+            raw_message: None,
             fixed_line_col: if matches!(t.tok, Tok::Eof) { self.eof_line_col } else { None },
         }
     }
@@ -758,6 +759,7 @@ impl<'a> Parser<'a> {
             call: Some(Box::new(ErrorExpr::from_expr(expr))),
             subclass: "invalidPlaceholder",
             value: ConditionValue::Null,
+            raw_message: None,
             fixed_line_col: Some((line, col)),
         }
     }
@@ -960,7 +962,7 @@ impl<'a> Parser<'a> {
                             "unsupportedInPipe",
                             &format!("function '{name}' not supported in RHS call of a pipe"),
                         )
-                        .with_value(ConditionValue::Str(name.to_string())));
+                        .with_value(ConditionValue::Str(name.as_bytes().to_vec())));
                     }
                 }
                 let mut all = Vec::with_capacity(args.len() + 1);
@@ -978,7 +980,7 @@ impl<'a> Parser<'a> {
                     Err(err("placeholderNotNamed", "pipe placeholder can only be used as a named argument"))
                 } else {
                     Err(err("unsupportedInPipe", "function 'function' not supported in RHS call of a pipe")
-                        .with_value(ConditionValue::Str("function".into())))
+                        .with_value(ConditionValue::Str(b"function".to_vec())))
                 }
             }
             _ => Err(err("RHSnotFnCall", "The pipe operator requires a function call as RHS")),
@@ -1169,7 +1171,8 @@ impl<'a> Parser<'a> {
                     style: ErrorStyle::Condition,
                     call: None,
                     subclass: "repeatedFormal",
-                    value: ConditionValue::Str(name.to_string()),
+                    value: ConditionValue::Str(name.as_bytes().to_vec()),
+                    raw_message: None,
                     fixed_line_col: None,
                 };
                 self.codegen_after_lookahead(e)?;

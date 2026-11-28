@@ -91,7 +91,10 @@ fn parse_error_message<'a>(buf: impl Into<robigo_syntax::Source<'a>>, e: &robigo
     use robigo_syntax::ErrorStyle;
     let buf = buf.into();
     match e.style {
-        ErrorStyle::Condition => robigo_syntax::condition_message(buf, robigo_syntax::CONSOLE_SRCNAME, e),
+        ErrorStyle::Condition => {
+            String::from_utf8_lossy(&robigo_syntax::condition_message(buf, robigo_syntax::CONSOLE_SRCNAME, e))
+                .into_owned()
+        }
         ErrorStyle::RError => e.message.clone(),
         ErrorStyle::Grammar => {
             let lines = robigo_syntax::parse_context(buf.raw(), e.end);

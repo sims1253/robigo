@@ -134,13 +134,16 @@ pub enum ErrorStyle {
 }
 
 /// The `value` field of a `parseError` condition (R: gram.y:raiseParseError's
-/// `valuetype`): `NULL`, a scalar integer or a string.
+/// `valuetype`): `NULL`, a scalar integer or a string. A string is the
+/// bytes gram.y passes (`STRING_VALUE`'s `const char *`, made a native
+/// string by `mkString`), which need not be UTF-8: an unrecognized
+/// escape's value is the one byte read after the backslash.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum ConditionValue {
     #[default]
     Null,
     Int(i32),
-    Str(String),
+    Str(Vec<u8>),
 }
 
 /// A parse error with a byte offset into the source.
@@ -170,6 +173,10 @@ pub struct ParseError {
     /// A position not derived from `offset`, as when GNU R reports the
     /// statement terminator for pipe-placeholder misuse.
     pub fixed_line_col: Option<(usize, usize)>,
+    /// The message's bytes when they are not UTF-8 (gram.y formats a
+    /// source byte into it: an unrecognized escape's lone byte); `message`
+    /// then shows them lossily. See [`ParseError::message_bytes`].
+    pub raw_message: Option<Box<[u8]>>,
 }
 
 impl ParseError {
@@ -185,6 +192,7 @@ impl ParseError {
             call: None,
             subclass: "",
             value: ConditionValue::Null,
+            raw_message: None,
             fixed_line_col: None,
         }
     }
@@ -210,6 +218,7 @@ impl ParseError {
             call: call.map(Box::new),
             subclass,
             value: ConditionValue::Null,
+            raw_message: None,
             fixed_line_col: None,
         }
     }
@@ -232,8 +241,17 @@ impl ParseError {
             call: None,
             subclass: "",
             value: ConditionValue::Null,
+            raw_message: None,
             fixed_line_col: Some((0, 0)),
         }
+    }
+}
+
+impl ParseError {
+    /// The message as GNU R's bytes: [`ParseError::raw_message`] when set,
+    /// otherwise `message`.
+    pub fn message_bytes(&self) -> &[u8] {
+        self.raw_message.as_deref().unwrap_or(self.message.as_bytes())
     }
 }
 
