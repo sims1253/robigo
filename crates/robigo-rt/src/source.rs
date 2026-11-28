@@ -396,7 +396,7 @@ fn parse_text(
         match p.program_n(if num < 0 { usize::MAX } else { num as usize }) {
             Ok(exprs) => Ok((exprs, p.consumed_end())),
             Err(e) => {
-                frontier = Some((p.error_frontier(&e), p.error_read_to(&e)));
+                frontier = Some((p.error_frontier(), p.error_read_to(&e)));
                 Err(e)
             }
         }

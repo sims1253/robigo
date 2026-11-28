@@ -1,5 +1,8 @@
-//! Pratt parser reproducing the precedence and newline rules of GNU R's
-//! `gram.y`. Binding powers (higher binds tighter):
+//! Pratt parser reproducing the precedence rules of GNU R's `gram.y`, over
+//! a port of its `yylex` (the token filter between the lexer and bison
+//! that decides where a newline is a token, with its context stack, its
+//! `EatLines` and the token an `if` body's newline pushes back). Binding
+//! powers (higher binds tighter):
 //!
 //! | ops                     | assoc | bp      |
 //! |-------------------------|-------|---------|
@@ -28,15 +31,8 @@ use crate::ast::*;
 use crate::lexer::{LexWarning, Lexed, Lexer, StrTok, SymStr, Tok, Token};
 use crate::{Source, line_col};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Ctx {
-    /// Newlines end statements and `else` must be on the same line.
-    TopLevel,
-    /// Newlines end statements, but `else` may follow on a later line.
-    Brace,
-    /// Newlines are insignificant.
-    Paren,
-}
+/// gram.y's `CONTEXTSTACK_SIZE`.
+const CONTEXTSTACK_SIZE: usize = 50;
 
 pub struct Parser<'a> {
     src: &'a str,
@@ -44,12 +40,32 @@ pub struct Parser<'a> {
     /// ends inside a character.
     source: Source<'a>,
     arena: &'a Arena,
+    /// The raw tokens, `token()`'s, each read once by [`Parser::token_`]
+    /// (which moves it out, leaving a newline with its span).
     toks: Vec<Token<'a>>,
     /// Where an invalid character ended the input early (see
     /// [`Lexer::eof_line_col`]): the position of the `Eof` token.
     eof_line_col: Option<(usize, usize)>,
-    pos: usize,
-    ctx: Vec<Ctx>,
+    /// The input ends inside an unterminated comment (`EndOfFile = 2`).
+    eof_in_comment: bool,
+    /// The next raw token [`Parser::token_`] reads.
+    raw: usize,
+    /// The last raw token read: how far GNU R's lexer had read
+    /// ([`Parser::read_to`], [`Parser::frontier`]).
+    pulled: Option<usize>,
+    /// yylex's `contextstack` (`' '` at the bottom; `{`, `(`, `[` and `i`,
+    /// an `if` body, above).
+    context: Vec<u8>,
+    /// yylex's `EatLines`: newlines are no tokens.
+    eat_lines: bool,
+    /// yylex's `SavedToken`: the token an `if` body's newline read and
+    /// pushed back.
+    saved: Option<Token<'a>>,
+    /// bison's lookahead (`yychar`): the token yylex returned that the
+    /// parser has not consumed.
+    la: Option<Token<'a>>,
+    /// The end of the last token consumed.
+    consumed: usize,
     /// Whether the token stream holds a pipe placeholder at all; if not,
     /// `checkForPlaceholder`'s tree walk is skipped.
     saw_placeholder: bool,
@@ -67,11 +83,8 @@ pub struct Parser<'a> {
     /// syntax: a later syntax error wins, as in the trial parse.
     defer_codegen: bool,
     /// The first deferred code-generation error, and the real parse's
-    /// lexing frontier when it raised it (the lookahead at the reduction).
+    /// lexing frontier when it raised it ([`Parser::frontier`]).
     codegen_err: Option<(ParseError, usize)>,
-    /// The lexing frontier of a trial-parse error raised by an action
-    /// (`xxpipebind`), which lies past the error's reported position.
-    trial_frontier: Option<usize>,
     /// The next [`Parser::expr`] is gram.y's `expr` or `expr_or_help`
     /// rather than `expr_or_assign_or_help`: an argument's value, a
     /// formal's default, an `if`/`while` condition or a `for` sequence,
@@ -165,41 +178,25 @@ pub enum ConsoleStatus<'a> {
 /// is incomplete. Trailing bytes after the first statement are ignored:
 /// the REPL's buffer discipline never produces them.
 pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> ConsoleStatus<'a> {
-    let src = src.into();
-    let Lexed { toks, warnings, eof_in_comment, eof_line_col } = match Lexer::new(src).lex() {
-        Ok(t) => t,
+    let mut p = match Parser::new(arena, src) {
+        Ok(p) => p,
         // The lexer never fails: lexical errors become `Invalid` tokens
         // the parser reports when it reaches them.
         Err(e) => return ConsoleStatus::Error(e, Vec::new()),
     };
-    let mut p = Parser {
-        lex_error: lex_error_of(&toks),
-        src: src.text,
-        source: src,
-        arena,
-        saw_placeholder: toks.iter().any(|t| matches!(t.tok, Tok::Placeholder)),
-        toks,
-        eof_line_col,
-        pos: 0,
-        ctx: vec![Ctx::TopLevel],
-        warnings,
-        defer_codegen: true,
-        codegen_err: None,
-        trial_frontier: None,
-        no_eq_next: false,
-    };
-    if matches!(p.toks[p.pos].tok, Tok::Newline) {
-        return ConsoleStatus::Null;
-    }
-    // `prog: END_OF_INPUT` is PARSE_EOF, unless the buffer ends inside a
-    // comment (`SkipComment`'s `EndOfFile = 2`), which makes it
-    // PARSE_INCOMPLETE — the REPL's cut can land inside a comment.
-    if matches!(p.toks[p.pos].tok, Tok::Eof) {
-        return if eof_in_comment {
-            ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None))
-        } else {
-            ConsoleStatus::Eof
-        };
+    p.defer_codegen = true;
+    match p.peek().map(|t| t.tok == Tok::Newline || t.tok == Tok::Eof) {
+        Ok(false) => {}
+        Ok(true) if p.la_is(Tok::Newline) => return ConsoleStatus::Null,
+        // `prog: END_OF_INPUT` is PARSE_EOF, unless the buffer ends inside
+        // a comment (`SkipComment`'s `EndOfFile = 2`), which makes it
+        // PARSE_INCOMPLETE — the REPL's cut can land inside a comment.
+        Ok(true) if p.eof_in_comment => return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None)),
+        Ok(true) => return ConsoleStatus::Eof,
+        Err(e) => {
+            let w = p.console_warnings(p.frontier(), None);
+            return ConsoleStatus::Error(e, w);
+        }
     }
     let e = match p.expr(0) {
         Ok(e) => e,
@@ -211,15 +208,16 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         // A trial-parse failure: only the trial parse's warnings, from the
         // tokens lexed up to it.
         Err(e) => {
-            let w = p.console_warnings(p.trial_frontier.unwrap_or(e.offset), None);
+            let w = p.console_warnings(p.frontier(), None);
             return ConsoleStatus::Error(e, w);
         }
     };
     // The terminator is part of the statement's grammar; a syntax error
     // on it wins over every code-generation error (as in `program`).
-    if matches!(p.toks[p.pos].tok, Tok::Newline | Tok::Semi) {
+    // (`expr` returns with its lookahead read.)
+    if p.la_is(Tok::Newline) || p.la_is(Tok::Semi) {
         // The terminator was the last token the trial parse lexed.
-        let frontier = p.toks[p.pos].span.start as usize;
+        let frontier = p.frontier();
         // The real parse, up to its first failing action. `R_Parse1`'s
         // `checkForPlaceholder` runs after the whole real parse.
         if let Some((err, real)) = p.codegen_err.take() {
@@ -231,11 +229,10 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         }
         return ConsoleStatus::Ok(vec![e], p.console_warnings(frontier, Some(frontier)));
     }
-    if matches!(p.toks[p.pos].tok, Tok::Eof) {
+    if p.la_is(Tok::Eof) {
         return ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None));
     }
-    let t = p.toks[p.pos].clone();
-    match p.unexpected(&t) {
+    match p.unexpected_la() {
         e if e.incomplete => ConsoleStatus::Incomplete(p.console_warnings(usize::MAX, None)),
         e => {
             let w = p.console_warnings(e.offset, None);
@@ -272,31 +269,33 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
         Ok(p) => p,
         Err(e) => return ConnStatus::Error { read_to: e.end },
     };
-    let lex_error = p.lex_error();
-    match p.toks[p.pos].tok {
-        Tok::Newline => return ConnStatus::Null,
+    match p.peek().map(|t| t.tok == Tok::Newline || t.tok == Tok::Eof) {
+        Ok(false) => {}
+        Ok(true) if p.la_is(Tok::Newline) => return ConnStatus::Null,
         // Nothing but the start of a character the input cuts short, or a
         // comment that runs to the end.
-        Tok::Eof => return ConnStatus::More,
-        _ => {}
+        Ok(true) => return ConnStatus::More,
+        Err(e) => return ConnStatus::Error { read_to: p.read_to(&e) },
     }
     let e = match p.expr(0) {
         Ok(e) => e,
         Err(e) if e.incomplete => return ConnStatus::More,
-        Err(e) => return ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
+        Err(e) => return ConnStatus::Error { read_to: p.read_to(&e) },
     };
-    let t = p.toks[p.pos].clone();
-    match t.tok {
+    if p.la_is(Tok::Newline) || p.la_is(Tok::Semi) {
         // `R_Parse1`'s `checkForPlaceholder`, after the terminator
-        Tok::Newline | Tok::Semi if p.saw_placeholder && contains_placeholder(&e) => {
-            ConnStatus::Error { read_to: t.span.end as usize }
+        if p.saw_placeholder && contains_placeholder(&e) {
+            let end = p.la.as_ref().map_or(0, |t| t.span.end as usize);
+            return ConnStatus::Error { read_to: end };
         }
-        Tok::Newline | Tok::Semi => ConnStatus::Statement,
-        Tok::Eof => ConnStatus::More,
-        _ => match p.unexpected(&t) {
-            e if e.incomplete => ConnStatus::More,
-            e => ConnStatus::Error { read_to: p.read_to(&e, lex_error) },
-        },
+        return ConnStatus::Statement;
+    }
+    if p.la_is(Tok::Eof) {
+        return ConnStatus::More;
+    }
+    match p.unexpected_la() {
+        e if e.incomplete => ConnStatus::More,
+        e => ConnStatus::Error { read_to: p.read_to(&e) },
     }
 }
 
@@ -386,25 +385,23 @@ impl<'a> Parser<'a> {
     /// input counts as one byte past the text: `raw.len() + 1` when the
     /// lexer had fetched it (the end token, a token the end cut short, a
     /// look past the last byte).
-    fn read_to(&self, e: &ParseError, lex_error: Option<LexError>) -> usize {
+    fn read_to(&self, e: &ParseError) -> usize {
         let raw = self.source.raw();
         let past_end = raw.len() + 1;
-        let frontier = self.trial_frontier.unwrap_or(e.offset);
-        if let Some(LexError { at, raised: Some(end), .. }) = lex_error
-            && frontier >= at
+        let Some(t) = self.pulled.map(|k| &self.toks[k]) else {
+            return e.end.min(past_end);
+        };
+        if let Some(LexError { at, raised: Some(end), .. }) = self.lex_error
+            && t.span.start as usize >= at
         {
             return end.min(past_end);
         }
-        let k = self.toks.partition_point(|t| t.span.start as usize <= frontier);
-        let Some(t) = k.checked_sub(1).map(|k| &self.toks[k]) else {
-            return e.end.min(past_end);
-        };
-        // A bumped token keeps its span (see `bump`), so read its bytes. (An
+        // A token read keeps its span (see `token_`), so read its bytes. (An
         // invalid token and the end token after it share a span; an error at
         // the end of input has a span past it.)
         let end = (t.span.end as usize).min(raw.len());
         let start = (t.span.start as usize).min(end);
-        let invalid = lex_error.filter(|le| le.at == start);
+        let invalid = self.lex_error.filter(|le| le.at == start);
         match invalid {
             Some(le) if le.incomplete => return past_end,
             None if matches!(t.tok, Tok::Eof) => return past_end,
@@ -447,7 +444,7 @@ impl<'a> Parser<'a> {
 
     pub fn new(arena: &'a Arena, src: impl Into<Source<'a>>) -> Result<Self, ParseError> {
         let src = src.into();
-        let Lexed { toks, warnings, eof_line_col, .. } = Lexer::new(src).lex()?;
+        let Lexed { toks, warnings, eof_line_col, eof_in_comment } = Lexer::new(src).lex()?;
         let saw_placeholder = toks.iter().any(|t| matches!(t.tok, Tok::Placeholder));
         Ok(Parser {
             lex_error: lex_error_of(&toks),
@@ -456,38 +453,253 @@ impl<'a> Parser<'a> {
             arena,
             toks,
             eof_line_col,
-            pos: 0,
-            ctx: vec![Ctx::TopLevel],
+            eof_in_comment,
+            raw: 0,
+            pulled: None,
+            context: vec![b' '],
+            eat_lines: false,
+            saved: None,
+            la: None,
+            consumed: 0,
             saw_placeholder,
             warnings,
             defer_codegen: false,
             codegen_err: None,
-            trial_frontier: None,
             no_eq_next: false,
         })
     }
 
-    /// The start of the lookahead token, which the lexer has already read
-    /// when bison reduces a rule that needs one. Inside brackets, newlines
-    /// are not tokens.
-    fn lookahead_start(&mut self) -> usize {
-        if self.cur_ctx() == Ctx::Paren {
-            self.skip_newlines();
+    /// `ParseInit`'s part of yylex's state, which `R_Parse` resets before
+    /// each statement (`R_Parse1`).
+    // R: gram.y:ParseInit, R_Parse
+    fn parse_init(&mut self) {
+        self.context.clear();
+        self.context.push(b' ');
+        self.eat_lines = false;
+        self.saved = None;
+    }
+
+    /// The start of the last raw token read: a token's warnings
+    /// (NumericValue's) have fired once it is read.
+    fn frontier(&self) -> usize {
+        self.pulled.map_or(0, |k| self.toks[k].span.start as usize)
+    }
+
+    /// `token_()`: the pushed-back token, else the next raw one. A
+    /// `raiseLexError` fires as its token is read (`Invalid` of
+    /// [`ErrorStyle::Condition`]); any other invalid token is `ERROR`,
+    /// which the grammar rejects.
+    // R: gram.y:token_, token
+    fn token_(&mut self) -> Result<Token<'a>, ParseError> {
+        if let Some(t) = self.saved.take() {
+            return Ok(t);
         }
-        self.toks[self.pos].span.start as usize
+        let i = self.raw;
+        self.pulled = Some(i);
+        if matches!(self.toks[i].tok, Tok::Eof) {
+            return Ok(self.toks[i].clone());
+        }
+        self.raw += 1;
+        let span = self.toks[i].span;
+        let t = std::mem::replace(&mut self.toks[i], Token { tok: Tok::Newline, span });
+        if let Tok::Invalid(le) = &t.tok
+            && le.style == ErrorStyle::Condition
+        {
+            return Err((**le).clone());
+        }
+        Ok(t)
+    }
+
+    fn top(&self) -> u8 {
+        self.context.last().copied().unwrap_or(0)
+    }
+
+    /// `*++contextp = c`, `n` times, after the overflow check.
+    fn push_context(&mut self, c: u8, n: usize, t: &Token) -> Result<(), ParseError> {
+        if self.context.len() - 1 >= CONTEXTSTACK_SIZE - n {
+            // raiseLexError's position: the token's last character, the
+            // last one read and not pushed back
+            let end = t.span.end as usize;
+            let mut e = ParseError::condition("contextstackOverflow", "contextstack overflow", end - 1, end, None);
+            e.fixed_line_col = Some(self.source.r_line_col(end));
+            return Err(e);
+        }
+        for _ in 0..n {
+            self.context.push(c);
+        }
+        Ok(())
+    }
+
+    // R: gram.y:ifpop
+    fn ifpop(&mut self) {
+        if self.top() == b'i' {
+            self.context.pop();
+        }
+    }
+
+    /// A closing bracket's `while (*contextp == 'i') ifpop(); *contextp-- = 0;`.
+    fn pop_context(&mut self) {
+        while self.top() == b'i' {
+            self.ifpop();
+        }
+        if self.context.len() > 1 {
+            self.context.pop();
+        } else if let Some(c) = self.context.last_mut() {
+            *c = 0;
+        }
+    }
+
+    /// `yylex()`: the next token bison sees. A newline is one only where
+    /// it can end an expression; in an `if` body outside the top level
+    /// (`'i'`) it is decided by the token after it (`else` drops it, any
+    /// other token is pushed back behind it).
+    // R: gram.y:yylex, IfPush, ifpop
+    fn yylex(&mut self) -> Result<Token<'a>, ParseError> {
+        loop {
+            let t = self.token_()?;
+            if t.tok == Tok::Newline {
+                let top = self.top();
+                if self.eat_lines || top == b'[' || top == b'(' {
+                    continue;
+                }
+                if top != b'i' {
+                    return Ok(t);
+                }
+                // Find the next non-newline token
+                let mut t = t;
+                while t.tok == Tok::Newline {
+                    t = self.token_()?;
+                }
+                match t.tok {
+                    Tok::RBrace | Tok::RParen | Tok::RBracket => {
+                        self.pop_context();
+                        return Ok(t);
+                    }
+                    Tok::Comma => {
+                        self.ifpop();
+                        return Ok(t);
+                    }
+                    Tok::Else => {
+                        self.eat_lines = true;
+                        self.ifpop();
+                        return Ok(t);
+                    }
+                    _ => {
+                        self.ifpop();
+                        // (the newline's position is the pushed-back
+                        // token's, where the lexer stands)
+                        let span = t.span;
+                        self.saved = Some(t);
+                        return Ok(Token { tok: Tok::Newline, span });
+                    }
+                }
+            }
+            match t.tok {
+                Tok::Plus
+                | Tok::Minus
+                | Tok::Star
+                | Tok::Slash
+                | Tok::Caret
+                | Tok::Cmp(_)
+                | Tok::Or
+                | Tok::And
+                | Tok::Or2
+                | Tok::And2
+                | Tok::Pipe
+                | Tok::PipeBind
+                | Tok::Special(_)
+                | Tok::Function
+                | Tok::While
+                | Tok::Repeat
+                | Tok::For
+                | Tok::In
+                | Tok::Question
+                | Tok::Not
+                | Tok::EqAssign
+                | Tok::Colon
+                | Tok::Tilde
+                | Tok::Dollar
+                | Tok::At
+                | Tok::LeftAssign(_)
+                | Tok::RightAssign(_) => self.eat_lines = true,
+                Tok::If => {
+                    // IfPush
+                    if matches!(self.top(), b'{' | b'[' | b'(' | b'i') {
+                        self.push_context(b'i', 1, &t)?;
+                    }
+                    self.eat_lines = true;
+                }
+                Tok::Else => {
+                    self.ifpop();
+                    self.eat_lines = true;
+                }
+                Tok::Semi | Tok::Comma => self.ifpop(),
+                Tok::Sym(_) | Tok::Placeholder | Tok::Str(_) | Tok::Const(_) | Tok::Next | Tok::Break => {
+                    self.eat_lines = false
+                }
+                Tok::LBB => self.push_context(b'[', 2, &t)?,
+                Tok::LBracket => self.push_context(b'[', 1, &t)?,
+                Tok::LBrace => {
+                    self.push_context(b'{', 1, &t)?;
+                    self.eat_lines = true;
+                }
+                Tok::LParen => self.push_context(b'(', 1, &t)?,
+                Tok::RBracket | Tok::RParen => {
+                    self.pop_context();
+                    self.eat_lines = false;
+                }
+                Tok::RBrace => self.pop_context(),
+                _ => {}
+            }
+            return Ok(t);
+        }
+    }
+
+    /// The lookahead, read (by `yylex`) if it is not yet.
+    fn peek(&mut self) -> Result<&Token<'a>, ParseError> {
+        if self.la.is_none() {
+            let t = self.yylex()?;
+            self.la = Some(t);
+        }
+        Ok(self.la.as_ref().expect("read above"))
+    }
+
+    /// Whether the lookahead, already read, is `tok` (a unit variant).
+    fn la_is(&self, tok: Tok<'_>) -> bool {
+        self.la.as_ref().is_some_and(|t| t.tok == tok)
+    }
+
+    /// Consume the lookahead, already read. The end token stays.
+    fn take(&mut self) -> Token<'a> {
+        let t = match &self.la {
+            Some(t) if t.tok == Tok::Eof => t.clone(),
+            _ => self.la.take().expect("robigo: a token taken before it was read"),
+        };
+        self.consumed = t.span.end as usize;
+        t
+    }
+
+    /// Consume the next token.
+    fn bump(&mut self) -> Result<Token<'a>, ParseError> {
+        self.peek()?;
+        Ok(self.take())
+    }
+
+    /// The syntax error on the lookahead, already read.
+    fn unexpected_la(&self) -> ParseError {
+        self.unexpected(self.la.as_ref().expect("robigo: an unexpected token not read"))
     }
 
     /// An error that a gram.y action raises only when `GenerateCode` is on,
-    /// at the reduction whose lookahead starts at `frontier`.
+    /// at its reduction, with the lexer where it stands then.
     /// `R_ParseVector` raises it immediately. The console defers the
     /// first one until the statement's syntax is known to be good (see
     /// [`Parser::defer_codegen`]).
-    fn codegen(&mut self, e: ParseError, frontier: usize) -> Result<(), ParseError> {
+    fn codegen(&mut self, e: ParseError) -> Result<(), ParseError> {
         if !self.defer_codegen {
-            // [`parse_conn_statement`]'s lexing frontier (`read_to`)
-            self.trial_frontier = Some(frontier);
             return Err(e);
         }
+        let frontier = self.frontier();
         self.codegen_err.get_or_insert((e, frontier));
         Ok(())
     }
@@ -495,65 +707,11 @@ impl<'a> Parser<'a> {
     /// [`Parser::codegen`] of an action whose reduction reads a lookahead
     /// (the pipe, a repeated formal, an argument's tag): GNU R lexes the
     /// lookahead first, so its `raiseLexError` fires before the action's
-    /// error. Not for `xxfuncall`, which reduces on `)` without one.
+    /// error (`1 |> f(_) "\q"` is unrecognizedEscape). Not for
+    /// `xxfuncall`, which reduces on `)` without one.
     fn codegen_after_lookahead(&mut self, e: ParseError) -> Result<(), ParseError> {
-        let frontier = self.lookahead_start();
-        if let Some(le) = self.lookahead_lex_condition() {
-            return Err(le);
-        }
-        self.codegen(e, frontier)
-    }
-
-    /// The lexer's condition in the lookahead token, if it holds one: GNU
-    /// R reads the lookahead before an action that needs it runs, and a
-    /// `raiseLexError` in it fires inside `yylex`, before the action can
-    /// raise its own (`1 |> f(_) "\q"` is unrecognizedEscape). A reduction
-    /// whose lookahead is a good token is unaffected.
-    // R: gram.y:yylex, raiseLexError
-    fn lookahead_lex_condition(&self) -> Option<ParseError> {
-        // (looked at, not moved to: newlines are skipped in parentheses,
-        // as `lookahead_start` does)
-        let mut i = self.pos;
-        if self.cur_ctx() == Ctx::Paren {
-            while matches!(self.toks[i].tok, Tok::Newline) {
-                i += 1;
-            }
-        }
-        match &self.toks[i].tok {
-            Tok::Invalid(le) if le.style == ErrorStyle::Condition => Some((**le).clone()),
-            _ => None,
-        }
-    }
-
-    fn cur_ctx(&self) -> Ctx {
-        *self.ctx.last().unwrap()
-    }
-
-    /// Next token, skipping newlines when they are insignificant.
-    fn peek(&mut self) -> &Token<'a> {
-        if self.cur_ctx() == Ctx::Paren {
-            self.skip_newlines();
-        }
-        &self.toks[self.pos]
-    }
-
-    fn skip_newlines(&mut self) {
-        while matches!(self.toks[self.pos].tok, Tok::Newline) {
-            self.pos += 1;
-        }
-    }
-
-    /// Consume the next token. Tokens are only read again after a
-    /// `bump` when backtracking over newlines (see `if_expr`), so the token
-    /// is moved out, leaving a newline in its place.
-    fn bump(&mut self) -> Token<'a> {
-        if matches!(self.toks[self.pos].tok, Tok::Eof) {
-            return self.toks[self.pos].clone();
-        }
-        let span = self.toks[self.pos].span;
-        let t = std::mem::replace(&mut self.toks[self.pos], Token { tok: Tok::Newline, span });
-        self.pos += 1;
-        t
+        self.peek()?;
+        self.codegen(e)
     }
 
     /// The user-visible name of an unexpected token, a port of the
@@ -644,7 +802,17 @@ impl<'a> Parser<'a> {
             subclass: "",
             value: ConditionValue::Null,
             raw_message: None,
-            fixed_line_col: if matches!(t.tok, Tok::Eof) { self.eof_line_col } else { None },
+            fixed_line_col: match t.tok {
+                Tok::Eof => self.eof_line_col,
+                // yylloc's start is where the lexer stands after the token's
+                // first character: a newline's is the next line's column 0.
+                // (The newline an if body's newline scan returns has the
+                // position of the token it pushed back.)
+                Tok::Newline if self.src.as_bytes().get(t.span.start as usize) == Some(&b'\n') => {
+                    Some((line_col(self.src, t.span.start as usize).0 + 1, 0))
+                }
+                _ => None,
+            },
         }
     }
 
@@ -652,25 +820,11 @@ impl<'a> Parser<'a> {
     /// variants, so the match compares discriminants without cloning the
     /// token (the cold error path may clone).
     fn expect(&mut self, want: Tok<'_>) -> Result<Token<'a>, ParseError> {
-        if self.cur_ctx() == Ctx::Paren {
-            self.skip_newlines();
-        }
-        if self.toks[self.pos].tok == want {
-            Ok(self.bump())
-        } else {
-            let t = self.toks[self.pos].clone();
-            Err(self.unexpected(&t))
-        }
+        if self.peek()?.tok == want { Ok(self.take()) } else { Err(self.unexpected_la()) }
     }
 
     pub fn program(&mut self) -> Result<Vec<Expr<'a>>, ParseError> {
         self.program_n(usize::MAX)
-    }
-
-    /// The invalid token that ended the tokens, if one did: where it starts,
-    /// and for a `raiseLexError` where reading stopped.
-    fn lex_error(&self) -> Option<LexError> {
-        self.lex_error
     }
 
     /// Where GNU R's lexer had stopped reading when `e` was raised
@@ -680,28 +834,25 @@ impl<'a> Parser<'a> {
     /// end of input. The bytes after it stay unread on a connection
     /// (`R_ParseConn`'s `con_getc`).
     pub fn error_read_to(&self, e: &ParseError) -> usize {
-        self.read_to(e, self.lex_error())
+        self.read_to(e)
     }
 
-    /// The start of the last token GNU R's lexer had read when `e` was
-    /// raised: the raise site's frontier for an action's error (the
-    /// lookahead it reduced with, or none: `Parser::codegen`), else the
-    /// rejected token. A token's warnings (NumericValue's) have fired once
-    /// it is read, so those of the tokens starting at or before this one
-    /// precede the error (as the console's [`parse_console`] counts them).
-    pub fn error_frontier(&self, e: &ParseError) -> usize {
-        self.trial_frontier.unwrap_or(e.offset)
+    /// The start of the last token GNU R's lexer had read when an error
+    /// was raised (the error token, an action's lookahead, or what an `if`
+    /// body's newline read past it). A token's warnings (NumericValue's)
+    /// have fired once it is read, so those of the tokens starting at or
+    /// before this one precede the error (as the console's
+    /// [`parse_console`] counts them).
+    pub fn error_frontier(&self) -> usize {
+        self.frontier()
     }
 
     /// End of input consumed by `program_n`, including its terminator.
     pub fn consumed_end(&self) -> usize {
-        if matches!(self.toks[self.pos].tok, Tok::Eof) {
+        match &self.la {
             // The end of the input, or where an invalid character ended it.
-            self.toks[self.pos].span.start as usize
-        } else if self.pos == 0 {
-            0
-        } else {
-            self.toks[self.pos - 1].span.end as usize
+            Some(t) if t.tok == Tok::Eof => t.span.start as usize,
+            _ => self.consumed,
         }
     }
 
@@ -709,10 +860,15 @@ impl<'a> Parser<'a> {
     pub fn program_n(&mut self, n: usize) -> Result<Vec<Expr<'a>>, ParseError> {
         let mut out = Vec::new();
         while out.len() < n {
-            while matches!(self.toks[self.pos].tok, Tok::Newline) {
-                self.pos += 1;
+            if self.la.is_none() {
+                self.parse_init();
             }
-            if matches!(self.toks[self.pos].tok, Tok::Eof) {
+            // `prog: '\n'` (PARSE_NULL, which `R_Parse` skips)
+            if self.peek()?.tok == Tok::Newline {
+                self.take();
+                continue;
+            }
+            if self.la_is(Tok::Eof) {
                 break;
             }
             // `;` only terminates an expression (`prog` in gram.y has no
@@ -721,26 +877,25 @@ impl<'a> Parser<'a> {
             let e = self.expr(0)?;
             // `checkForPlaceholder` in gram.y runs when a statement
             // completes; a syntax error on the terminator wins over it.
-            if matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
+            if self.la_is(Tok::Newline) || self.la_is(Tok::Semi) {
                 if self.saw_placeholder && contains_placeholder(&e) {
                     return Err(self.statement_check_error(&e));
                 }
                 out.push(e);
-                self.pos += 1;
+                self.take();
                 continue;
             }
             // `prog: expr_or_assign_or_help END_OF_INPUT` is no rule: the
             // lexer's virtual trailing newline ends the last statement,
             // unless an invalid character ended the input early.
-            if matches!(self.toks[self.pos].tok, Tok::Eof) && self.eof_line_col.is_none() {
+            if self.la_is(Tok::Eof) && self.eof_line_col.is_none() {
                 if self.saw_placeholder && contains_placeholder(&e) {
                     return Err(self.statement_check_error(&e));
                 }
                 out.push(e);
                 break;
             }
-            let t = self.toks[self.pos].clone();
-            return Err(self.unexpected(&t));
+            return Err(self.unexpected_la());
         }
         Ok(out)
     }
@@ -749,7 +904,7 @@ impl<'a> Parser<'a> {
     /// already peeked at (`;` at its own column; a newline at column 0 of
     /// its own line; end of input likewise).
     fn statement_check_error(&self, expr: &Expr) -> ParseError {
-        let t = &self.toks[self.pos];
+        let t = self.la.as_ref().expect("robigo: a statement's terminator not read");
         let (line, col) = match t.tok {
             Tok::Newline => (line_col(self.src, t.span.start as usize).0, 0),
             // R: gram.y:xxcolno counts bytes unless the input is known to
@@ -785,16 +940,22 @@ impl<'a> Parser<'a> {
 
     /// Parse an expression whose operators all bind tighter than `min_bp`.
     fn expr(&mut self, min_bp: u8) -> Result<Expr<'a>, ParseError> {
-        let arena = self.arena;
         let no_eq = std::mem::take(&mut self.no_eq_next);
-        self.skip_newlines();
-        let mut lhs = self.prefix()?;
+        let t = self.bump()?;
+        let lhs = self.prefix(t)?;
+        self.infix(lhs, min_bp, no_eq)
+    }
+
+    /// The operators after `lhs` in an expression whose operators all bind
+    /// tighter than `min_bp` (`no_eq`: see [`Parser::no_eq_next`]).
+    fn infix(&mut self, mut lhs: Expr<'a>, min_bp: u8, no_eq: bool) -> Result<Expr<'a>, ParseError> {
+        let arena = self.arena;
         loop {
             // Read the lookahead's binding powers (Copy) before any
             // mutable call, so the token itself can be taken by value
-            // below: `bump` already moves it out of the stream.
+            // below: `take` moves it out.
             let (lbp, rbp, postfixable) = {
-                let t = self.peek();
+                let t = self.peek()?;
                 match infix_bp(&t.tok) {
                     Some((l, r)) => (l, r, false),
                     None => (0, 0, matches!(t.tok, Tok::LParen | Tok::LBracket | Tok::LBB)),
@@ -814,7 +975,7 @@ impl<'a> Parser<'a> {
                 // (an argument's value: the caller reports the `=`)
                 break;
             }
-            let t = self.bump();
+            let t = self.take();
             lhs = match &t.tok {
                 Tok::Dollar | Tok::At => {
                     let name = self.member_name()?;
@@ -852,10 +1013,7 @@ impl<'a> Parser<'a> {
                     // gated, so the trial parse raises it once the
                     // lookahead after the RHS is lexed.
                     if !pipebind_enabled() {
-                        if let Some(le) = self.lookahead_lex_condition() {
-                            return Err(le);
-                        }
-                        self.trial_frontier = Some(self.lookahead_start());
+                        self.peek()?;
                         return Err(ParseError::condition(
                             "pipebindDisabled",
                             "'=>' is disabled; set '_R_USE_PIPEBIND_' envvar to a true value to enable it",
@@ -880,19 +1038,9 @@ impl<'a> Parser<'a> {
                         _ => (binary_name(&t.tok), lhs, rhs),
                     };
                     let e = call2(arena, name, t.span, vec![Arg::positional(a), Arg::positional(b)], span);
-                    if matches!(t.tok, Tok::Cmp(_)) {
-                        // Comparisons do not associate: `a < b < c` is
-                        // an error. `peek` would skip newlines in a
-                        // bracket context; do the same here.
-                        if min_bp < BP_CMP {
-                            if self.cur_ctx() == Ctx::Paren {
-                                self.skip_newlines();
-                            }
-                            if matches!(self.toks[self.pos].tok, Tok::Cmp(_)) {
-                                let t = self.toks[self.pos].clone();
-                                return Err(self.unexpected(&t));
-                            }
-                        }
+                    // Comparisons do not associate: `a < b < c` is an error.
+                    if matches!(t.tok, Tok::Cmp(_)) && min_bp < BP_CMP && matches!(self.peek()?.tok, Tok::Cmp(_)) {
+                        return Err(self.unexpected_la());
                     }
                     e
                 }
@@ -903,13 +1051,11 @@ impl<'a> Parser<'a> {
 
     fn member_name(&mut self) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
-        self.skip_newlines();
         // `x$(name)` is not valid R, but `x@.Data` etc. are symbols.
-        if !matches!(self.toks[self.pos].tok, Tok::Sym(_) | Tok::Str(_)) {
-            let t = self.toks[self.pos].clone();
-            return Err(self.unexpected(&t));
+        if !matches!(self.peek()?.tok, Tok::Sym(_) | Tok::Str(_)) {
+            return Err(self.unexpected_la());
         }
-        let t = self.bump();
+        let t = self.take();
         match t.tok {
             Tok::Sym(s) => Ok(Expr::Sym(sym_name(arena, &s), t.span)),
             Tok::Str(s) => Ok(Expr::Const(str_const(arena, &s), t.span)),
@@ -1006,9 +1152,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn prefix(&mut self) -> Result<Expr<'a>, ParseError> {
+    /// The expression that starts with the token `t`, consumed, up to its
+    /// operators.
+    fn prefix(&mut self, t: Token<'a>) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
-        let t = self.bump();
         let span = t.span;
         match t.tok {
             Tok::Const(c) => Ok(Expr::Const(c, span)),
@@ -1016,19 +1163,11 @@ impl<'a> Parser<'a> {
             Tok::Sym(s) => Ok(Expr::Sym(sym_name(arena, &s), span)),
             Tok::Placeholder => Ok(Expr::Placeholder(span)),
             Tok::LParen => {
-                self.ctx.push(Ctx::Paren);
-                let inner = self.expr(0);
-                let close = inner.and_then(|e| self.expect(Tok::RParen).map(|c| (e, c)));
-                self.ctx.pop();
-                let (inner, close) = close?;
+                let inner = self.expr(0)?;
+                let close = self.expect(Tok::RParen)?;
                 Ok(call2(arena, "(", span, vec![Arg::positional(inner)], span.to(close.span)))
             }
-            Tok::LBrace => {
-                self.ctx.push(Ctx::Brace);
-                let r = self.brace_body(span);
-                self.ctx.pop();
-                r
-            }
+            Tok::LBrace => self.brace_body(span),
             Tok::Minus | Tok::Plus => {
                 let operand = self.expr(BP_UNARY)?;
                 let name = if t.tok == Tok::Minus { "-" } else { "+" };
@@ -1053,25 +1192,19 @@ impl<'a> Parser<'a> {
             Tok::Function | Tok::Lambda => self.function(span),
             Tok::If => self.if_expr(span),
             Tok::For => {
-                self.ctx.push(Ctx::Paren);
-                let header = (|| {
-                    self.expect(Tok::LParen)?;
-                    self.skip_newlines(); // `peek` inside the parentheses
-                    if !matches!(self.toks[self.pos].tok, Tok::Sym(_)) {
-                        let t = self.toks[self.pos].clone();
-                        return Err(self.unexpected(&t));
-                    }
-                    let Token { tok: Tok::Sym(s), span: sym_span } = self.bump() else { unreachable!("checked above") };
-                    let var = Expr::Sym(sym_name(arena, &s), sym_span);
-                    self.expect(Tok::In)?;
-                    // `forcond`'s sequence is `expr_or_help`: no `=`
-                    self.no_eq_next = true;
-                    let seq = self.expr(0)?;
-                    self.expect(Tok::RParen)?;
-                    Ok((var, seq))
-                })();
-                self.ctx.pop();
-                let (var, seq) = header?;
+                self.expect(Tok::LParen)?;
+                if !matches!(self.peek()?.tok, Tok::Sym(_)) {
+                    return Err(self.unexpected_la());
+                }
+                let Token { tok: Tok::Sym(s), span: sym_span } = self.take() else { unreachable!("checked above") };
+                let var = Expr::Sym(sym_name(arena, &s), sym_span);
+                self.expect(Tok::In)?;
+                // `forcond`'s sequence is `expr_or_help`: no `=`
+                self.no_eq_next = true;
+                let seq = self.expr(0)?;
+                self.expect(Tok::RParen)?;
+                // xxforcond, reduced on `)` without a lookahead
+                self.eat_lines = true;
                 let body = self.expr(BP_LOW)?;
                 let full = span.to(body.span());
                 Ok(call2(
@@ -1101,30 +1234,24 @@ impl<'a> Parser<'a> {
     }
 
     fn paren_cond(&mut self) -> Result<Expr<'a>, ParseError> {
-        self.ctx.push(Ctx::Paren);
-        let r = (|| {
-            self.expect(Tok::LParen)?;
-            // `ifcond` and `cond` are `'(' expr_or_help ')'`: no `=`
-            self.no_eq_next = true;
-            let c = self.expr(0)?;
-            self.expect(Tok::RParen)?;
-            Ok(c)
-        })();
-        self.ctx.pop();
-        r
+        self.expect(Tok::LParen)?;
+        // `ifcond` and `cond` are `'(' expr_or_help ')'`: no `=`
+        self.no_eq_next = true;
+        let c = self.expr(0)?;
+        self.expect(Tok::RParen)?;
+        // xxcond, xxifcond: reduced on `)` without a lookahead
+        self.eat_lines = true;
+        Ok(c)
     }
 
     fn if_expr(&mut self, span: Span) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
         let cond = self.paren_cond()?;
         let then = self.expr(BP_LOW)?;
-        // Look for `else`. Outside of the top level, it may follow newlines.
-        let save = self.pos;
-        if self.cur_ctx() != Ctx::TopLevel {
-            self.skip_newlines();
-        }
-        if matches!(self.toks[self.pos].tok, Tok::Else) {
-            self.bump();
+        // (yylex has dropped the newlines before an `else` in an if body
+        // outside the top level)
+        if self.peek()?.tok == Tok::Else {
+            self.take();
             let other = self.expr(BP_LOW)?;
             let full = span.to(other.span());
             return Ok(call2(
@@ -1135,17 +1262,15 @@ impl<'a> Parser<'a> {
                 full,
             ));
         }
-        self.pos = save;
         let full = span.to(then.span());
         Ok(call2(arena, "if", span, vec![Arg::positional(cond), Arg::positional(then)], full))
     }
 
     fn function(&mut self, span: Span) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
-        self.ctx.push(Ctx::Paren);
-        let formals = self.formals();
-        self.ctx.pop();
-        let formals = formals?;
+        let formals = self.formals()?;
+        // `cr`, reduced after `)` without a lookahead
+        self.eat_lines = true;
         // `%prec LOW` in gram.y: the body ends before `?`.
         let body = self.expr(BP_LOW)?;
         let full = span.to(body.span());
@@ -1156,21 +1281,17 @@ impl<'a> Parser<'a> {
         let arena = self.arena;
         self.expect(Tok::LParen)?;
         let mut out: Vec<Formal> = Vec::new();
-        self.skip_newlines(); // `peek` inside the parentheses
-        if matches!(self.toks[self.pos].tok, Tok::RParen) {
-            self.bump();
+        if self.peek()?.tok == Tok::RParen {
+            self.take();
             return Ok(out);
         }
         loop {
-            self.skip_newlines(); // `peek` inside the parentheses
-            if !matches!(self.toks[self.pos].tok, Tok::Sym(_)) {
-                let t = self.toks[self.pos].clone();
-                return Err(self.unexpected(&t));
+            if !matches!(self.peek()?.tok, Tok::Sym(_)) {
+                return Err(self.unexpected_la());
             }
-            let Token { tok: Tok::Sym(name), span: formal_span } = self.bump() else { unreachable!("checked above") };
-            self.skip_newlines();
-            let default = if matches!(self.toks[self.pos].tok, Tok::EqAssign) {
-                self.bump();
+            let Token { tok: Tok::Sym(name), span: formal_span } = self.take() else { unreachable!("checked above") };
+            let default = if self.peek()?.tok == Tok::EqAssign {
+                self.take();
                 // `SYMBOL EQ_ASSIGN expr_or_help`: `?`, but no `=`
                 self.no_eq_next = true;
                 Some(self.expr(0)?)
@@ -1197,19 +1318,15 @@ impl<'a> Parser<'a> {
                 self.codegen_after_lookahead(e)?;
             }
             out.push(Formal { name: sym_name(arena, &name), default });
-            self.skip_newlines();
-            match self.toks[self.pos].tok {
+            match self.peek()?.tok {
                 Tok::Comma => {
-                    self.bump();
+                    self.take();
                 }
                 Tok::RParen => {
-                    self.bump();
+                    self.take();
                     return Ok(out);
                 }
-                _ => {
-                    let t = self.toks[self.pos].clone();
-                    return Err(self.unexpected(&t));
-                }
+                _ => return Err(self.unexpected_la()),
             }
         }
     }
@@ -1218,34 +1335,32 @@ impl<'a> Parser<'a> {
         let arena = self.arena;
         let mut stmts = Vec::new();
         loop {
-            while matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
-                self.pos += 1;
+            while matches!(self.peek()?.tok, Tok::Newline | Tok::Semi) {
+                self.take();
             }
-            if matches!(self.toks[self.pos].tok, Tok::RBrace) {
-                let close = self.toks[self.pos].span;
-                self.pos += 1;
+            if self.la_is(Tok::RBrace) {
+                let close = self.take().span;
+                // xxexprlist, reduced on `}` without a lookahead
+                self.eat_lines = false;
                 return Ok(call2(arena, "{", open, stmts, open.to(close)));
             }
-            if matches!(self.toks[self.pos].tok, Tok::Eof) {
-                let t = self.toks[self.pos].clone();
-                return Err(self.unexpected(&t));
+            if self.la_is(Tok::Eof) {
+                return Err(self.unexpected_la());
             }
             let e = self.expr(0)?;
             stmts.push(Arg::positional(e));
-            if matches!(self.toks[self.pos].tok, Tok::Newline | Tok::Semi) {
-                self.pos += 1;
-            } else if !matches!(self.toks[self.pos].tok, Tok::RBrace) {
-                let t = self.toks[self.pos].clone();
-                return Err(self.unexpected(&t));
+            if self.la_is(Tok::Newline) || self.la_is(Tok::Semi) {
+                self.take();
+            } else if !self.la_is(Tok::RBrace) {
+                return Err(self.unexpected_la());
             }
         }
     }
 
     fn postfix(&mut self, lhs: Expr<'a>) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
-        let open = self.bump();
-        self.ctx.push(Ctx::Paren);
-        let r = (|| {
+        let open = self.take();
+        {
             let (bracket, name) = match open.tok {
                 Tok::LParen => (false, None),
                 Tok::LBracket => (true, Some("[")),
@@ -1272,7 +1387,7 @@ impl<'a> Parser<'a> {
                             // `xxfuncall` installs the name with GenerateCode
                             // on, reducing on `)` without a lookahead.
                             if name.is_empty() {
-                                self.codegen(self.zero_length_name_error(), close.span.start as usize)?;
+                                self.codegen(self.zero_length_name_error())?;
                             }
                             Expr::Sym(arena.str(&String::from_utf8_lossy(name)), sp)
                         }
@@ -1289,20 +1404,14 @@ impl<'a> Parser<'a> {
                     call2(arena, n, open.span, all, span)
                 }
             })
-        })();
-        self.ctx.pop();
-        r
+        }
     }
 
-    /// Is the current token the given list terminator? Callers are inside
-    /// brackets, where `peek` would skip newlines first.
+    /// Is the next token the given list terminator?
     #[inline]
-    fn at_close(&self, bracket: bool) -> bool {
-        if bracket {
-            matches!(self.toks[self.pos].tok, Tok::RBracket)
-        } else {
-            matches!(self.toks[self.pos].tok, Tok::RParen)
-        }
+    fn at_close(&mut self, bracket: bool) -> Result<bool, ParseError> {
+        let t = &self.peek()?.tok;
+        Ok(if bracket { *t == Tok::RBracket } else { *t == Tok::RParen })
     }
 
     /// Argument list up to (not including) `close`. The hot checks read
@@ -1310,35 +1419,25 @@ impl<'a> Parser<'a> {
     fn args(&mut self, bracket: bool) -> Result<Vec<Arg<'a>>, ParseError> {
         let arena = self.arena;
         let mut out = Vec::new();
-        self.skip_newlines();
-        if self.at_close(bracket) {
+        if self.at_close(bracket)? {
             return Ok(out);
         }
         loop {
-            self.skip_newlines(); // `peek` inside the brackets
-            let arg = if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
+            let arg = if self.at_close(bracket)? || self.la_is(Tok::Comma) {
                 Arg { name: None, value: None }
-            } else {
-                // `name = value`, where name is a symbol, string or NULL.
-                let name_kind = matches!(&self.toks[self.pos].tok, Tok::Sym(_) | Tok::Str(_) | Tok::Const(Const::Null));
-                let named = name_kind && {
-                    let mut j = self.pos + 1;
-                    while matches!(self.toks[j].tok, Tok::Newline) {
-                        j += 1;
-                    }
-                    matches!(self.toks[j].tok, Tok::EqAssign)
-                };
-                if named {
-                    let t = self.bump(); // the name
+            } else if matches!(&self.peek()?.tok, Tok::Sym(_) | Tok::Str(_) | Tok::Const(Const::Null)) {
+                // `name = value`, where name is a symbol, string or NULL:
+                // the token after it decides
+                let t = self.take();
+                if self.peek()?.tok == Tok::EqAssign {
                     let name = match t.tok {
                         Tok::Sym(s) => sym_name(arena, &s),
                         Tok::Str(s) => arena.str(&String::from_utf8_lossy(str_bytes(arena, &s))),
                         Tok::Const(Const::Null) => "NULL",
                         _ => unreachable!("checked above"),
                     };
-                    self.expect(Tok::EqAssign)?;
-                    self.skip_newlines();
-                    let arg = if self.at_close(bracket) || matches!(self.toks[self.pos].tok, Tok::Comma) {
+                    self.take();
+                    let arg = if self.at_close(bracket)? || self.la_is(Tok::Comma) {
                         Arg { name: Some(name), value: None }
                     } else {
                         self.no_eq_next = true;
@@ -1352,21 +1451,25 @@ impl<'a> Parser<'a> {
                     }
                     arg
                 } else {
-                    self.no_eq_next = true;
-                    Arg { name: None, value: Some(self.expr(0)?) }
+                    // `sub: expr_or_help`, which starts with the name
+                    let lhs = self.prefix(t)?;
+                    Arg { name: None, value: Some(self.infix(lhs, 0, true)?) }
                 }
+            } else {
+                self.no_eq_next = true;
+                Arg { name: None, value: Some(self.expr(0)?) }
             };
             out.push(arg);
-            self.skip_newlines();
-            if matches!(self.toks[self.pos].tok, Tok::Comma) {
-                self.bump();
+            if self.peek()?.tok == Tok::Comma {
+                // `sublist cr ',' sub`: `cr` is reduced with the `,` read
+                self.eat_lines = true;
+                self.take();
                 continue;
             }
-            if self.at_close(bracket) {
+            if self.at_close(bracket)? {
                 return Ok(out);
             }
-            let t = self.toks[self.pos].clone();
-            return Err(self.unexpected(&t));
+            return Err(self.unexpected_la());
         }
     }
 }

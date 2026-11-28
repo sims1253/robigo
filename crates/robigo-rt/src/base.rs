@@ -1326,7 +1326,7 @@ fn repl_file(cx: &mut Cx, bytes: &[u8], rho: for<'g> fn(&'g Cx) -> Ref<'g>, expr
                 Err(e) => {
                     // the warnings of the tokens lexed by then (the raise
                     // site's frontier, as the console's parse counts them)
-                    let frontier = p.error_frontier(&e) + 1;
+                    let frontier = p.error_frontier() + 1;
                     parse_err = Some((e, between(start, frontier), start));
                     break;
                 }
