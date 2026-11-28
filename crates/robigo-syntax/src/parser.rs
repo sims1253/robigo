@@ -82,6 +82,10 @@ pub struct Parser<'a> {
     /// parentheses, braces, `function`, `if`, the loops) parse
     /// `expr_or_assign_or_help` and allow it.
     no_eq_next: bool,
+    /// The context depths (`ctx.len()`) of the `if` bodies being parsed
+    /// outside the top level: gram.y's `'i'` contexts (`IfPush`), in which
+    /// yylex reads past a newline to see whether `else` follows.
+    if_bodies: Vec<usize>,
 }
 
 const BP_QUESTION: u8 = 2;
@@ -187,6 +191,7 @@ pub fn parse_console<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) -> Consol
         codegen_err: None,
         trial_frontier: None,
         no_eq_next: false,
+        if_bodies: Vec::new(),
     };
     if matches!(p.toks[p.pos].tok, Tok::Newline) {
         return ConsoleStatus::Null;
@@ -459,6 +464,7 @@ impl<'a> Parser<'a> {
             codegen_err: None,
             trial_frontier: None,
             no_eq_next: false,
+            if_bodies: Vec::new(),
         })
     }
 
@@ -468,6 +474,18 @@ impl<'a> Parser<'a> {
     fn lookahead_start(&mut self) -> usize {
         if self.cur_ctx() == Ctx::Paren {
             self.skip_newlines();
+        }
+        // In an `if` body (an `'i'` context, not inside a bracket opened in
+        // it), yylex returns a newline only after it has read the next
+        // token that is not one, to see whether it is `else`: that is the
+        // token the lexer had read last.
+        // R: gram.y:yylex (`if (*contextp == 'i')`), IfPush
+        if matches!(self.toks[self.pos].tok, Tok::Newline) && self.if_bodies.last() == Some(&self.ctx.len()) {
+            let k = self.toks[self.pos..]
+                .iter()
+                .position(|t| !matches!(t.tok, Tok::Newline))
+                .map_or(self.pos, |k| self.pos + k);
+            return self.toks[k].span.start as usize;
         }
         self.toks[self.pos].span.start as usize
     }
@@ -1112,7 +1130,16 @@ impl<'a> Parser<'a> {
     fn if_expr(&mut self, span: Span) -> Result<Expr<'a>, ParseError> {
         let arena = self.arena;
         let cond = self.paren_cond()?;
-        let then = self.expr(BP_LOW)?;
+        // gram.y's IfPush: an `'i'` context outside the top level
+        let in_context = self.cur_ctx() != Ctx::TopLevel;
+        if in_context {
+            self.if_bodies.push(self.ctx.len());
+        }
+        let then = self.expr(BP_LOW);
+        if in_context {
+            self.if_bodies.pop();
+        }
+        let then = then?;
         // Look for `else`. Outside of the top level, it may follow newlines.
         let save = self.pos;
         if self.cur_ctx() != Ctx::TopLevel {

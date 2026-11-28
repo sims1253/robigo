@@ -72,3 +72,5 @@ S4: character(0) "2"
 "1 |> 2 `a\r" "error" | "2" character(0) 
 "1 |> 2 r\"(a\r" "error" | "2" character(0) 
 "1 |> 2 \"a\\\r" "error" | "2" character(0) 
+"{if(TRUE) 1 |> 2\r" "error" | "2" character(0) 
+"if(TRUE) 1 |> 2\r" "error" | character(0) "2" 
