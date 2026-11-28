@@ -5,8 +5,10 @@
 //! open connection that is not a file or has pushed-back input, and
 //! `encoding = "latin1"` in a single-byte locale.
 
+use crate::connections::R_EOF;
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, View};
+use std::ffi::c_int;
 
 /// `getParseFilename`: the srcfile's name, a string's first element or an
 /// environment's `filename` (keep.source = TRUE: srcfilecopy's), "" when
@@ -92,9 +94,9 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             // takes past that is given back (a file's)
             let partial = wasopen && num != i32::MIN && num >= 0;
             let give_back = wasopen && crate::connections::is_file(cx, ifile)?;
-            // (the give-back seeks the file: input that did not come from it,
-            // a pushback, cannot be given back so)
-            if partial && crate::connections::has_pending_input(cx, ifile)? {
+            // (the give-back seeks the file and restores a held character:
+            // a pushback cannot be given back so)
+            if partial && crate::connections::has_push_back(cx, ifile)? {
                 return Err(cx.error(
                     "robigo: parse(n = ) from an open connection with pushed-back input is not implemented yet",
                 ));
@@ -111,14 +113,27 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                 if !crate::connections::flags(cx, ifile)?.canread {
                     return Err(cx.error("cannot read from this connection"));
                 }
-                let mut src = crate::connections::read_to_end(cx, ifile)?;
+                // what Rconn_fgetc gives before the stream (a held
+                // character), then the stream with its line ends mapped
+                let (given, raw) = crate::connections::read_to_end(cx, ifile)?;
+                let raw_len = raw.len();
+                let (mapped, line_ends) = map_line_ends(raw);
+                let given_len = given.len();
+                let mut src = if given.is_empty() {
+                    mapped
+                } else if mapped.is_empty() {
+                    given
+                } else {
+                    [given, mapped].concat()
+                };
                 let read = src.len();
+                debug_assert!(line_ends.as_ref().is_none_or(|m| m.behind.len() == read - given_len));
                 // con_getc: a final newline for an incomplete last line
                 if !src.is_empty() && !src.ends_with(b"\n") {
                     src.push(b'\n');
                 }
                 let num = if num == i32::MIN { -1 } else { num };
-                let conn = give_back.then_some((ifile, read));
+                let conn = give_back.then_some(ConnRead { ifile, read, given: given_len, raw_len, line_ends });
                 parse_text(cx, &src, known_utf8, num, &srcname, srcfile, conn, out)
             })();
             if !wasopen {
@@ -147,6 +162,106 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
         let known = if all_known { utf8 } else { known_utf8 };
         parse_text(cx, &src, known, num, &srcname, srcfile, None, out)
     })
+}
+
+/// What a parse read from an open file connection: the first `read` bytes
+/// of its text, of which the first `given` are what Rconn_fgetc gave
+/// before the stream (a held character) and the rest came from the
+/// stream's next `raw_len` bytes, with their line ends mapped as
+/// `line_ends` records ([`map_line_ends`]) when they had a CR.
+struct ConnRead {
+    ifile: i32,
+    read: usize,
+    given: usize,
+    raw_len: usize,
+    line_ends: Option<LineEnds>,
+}
+
+/// [`map_line_ends`]'s record of each byte of its result: `behind[i]`
+/// stream bytes had been read when it gave its first `i + 1` bytes, and
+/// after those in `held` (ascending) it held a character (`con->save`).
+struct LineEnds {
+    behind: Vec<usize>,
+    held: Vec<(usize, c_int)>,
+}
+
+impl ConnRead {
+    /// The stream bytes to give back when the parse read the text's first
+    /// `consumed` bytes, and the character Rconn_fgetc then holds; None
+    /// when that cannot be given back: the parse stopped inside pushed-back
+    /// input (with `n`, refused before; without, an error inside it).
+    fn rest(&self, text: &[u8], consumed: usize) -> Option<(usize, Option<c_int>)> {
+        // (past the text: the newline con_getc adds at the end)
+        if consumed > self.read {
+            return Some((0, None));
+        }
+        if consumed < self.given {
+            // inside what was held before the stream: the stream unread and
+            // the held character again, when that is all it was (one byte)
+            return (self.given == 1).then(|| (self.raw_len, Some(text[consumed] as c_int)));
+        }
+        let (behind, held) = match (&self.line_ends, consumed - self.given) {
+            (_, 0) => (0, None),
+            (Some(m), k) => {
+                let held = m.held.binary_search_by_key(&(k - 1), |h| h.0).ok().map(|j| m.held[j].1);
+                (m.behind[k - 1], held)
+            }
+            (None, k) => (k, None),
+        };
+        Some((self.raw_len - behind, held))
+    }
+}
+
+/// `Rconn_fgetc`'s line ends over the stream bytes `raw`, as `con_getc`
+/// (R_ParseConn's) reads them: a CR is a newline, and Rconn_fgetc reads
+/// the character after it at once. A LF is taken with it (CR LF is one
+/// newline); anything else is held (`con->save`) and given next as it is:
+/// a second CR as a newline, the end of input as the end. With a CR in
+/// `raw`, also how many stream bytes are behind each byte of the result
+/// and what is held after it.
+// R: connections.c:Rconn_fgetc
+fn map_line_ends(raw: Vec<u8>) -> (Vec<u8>, Option<LineEnds>) {
+    if !raw.contains(&b'\r') {
+        return (raw, None);
+    }
+    let mut out = Vec::with_capacity(raw.len());
+    let mut behind = Vec::with_capacity(raw.len());
+    let mut held = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        let c = raw[i];
+        i += 1;
+        if c != b'\r' {
+            out.push(c);
+            behind.push(i);
+            continue;
+        }
+        let next = raw.get(i).copied();
+        if next == Some(b'\n') {
+            i += 1;
+            out.push(b'\n');
+            behind.push(i);
+            continue;
+        }
+        // the newline, with the next character read and held
+        let h = match next {
+            Some(b'\r') => b'\n' as c_int,
+            Some(b) => b as c_int,
+            None => R_EOF,
+        };
+        if next.is_some() {
+            i += 1;
+        }
+        held.push((out.len(), h));
+        out.push(b'\n');
+        behind.push(i);
+        // and the held character, given next as it is
+        if next.is_some() {
+            out.push(h as u8);
+            behind.push(i);
+        }
+    }
+    (out, Some(LineEnds { behind, held }))
 }
 
 /// `.Internal(str2lang(s))`: the one expression the string `s` parses to.
@@ -231,7 +346,7 @@ fn parse_text(
     num: i32,
     srcname: &str,
     srcfile: Option<Root<'_>>,
-    conn: Option<(i32, usize)>,
+    conn: Option<ConnRead>,
     out: Out<'_>,
 ) -> RResult<()> {
     let text = robigo_syntax::lexable(src);
@@ -246,7 +361,7 @@ fn parse_text(
         }
         Err(_) => (Vec::new(), vec![false; if srcfile.is_some() { src.len() } else { 0 }]),
     };
-    // `conn`: the open file connection the `read` bytes of `src` came from.
+    // `conn`: the open file connection the text came from ([`ConnRead`]).
     // R_ParseConn reads it through con_getc, so whatever the parse signals
     // (a lexer warning, the error, a classed condition) finds the
     // connection where the parse stopped reading: the rest is given back
@@ -254,13 +369,17 @@ fn parse_text(
     // while the lexer is at its token, before the rest of the statement is
     // read; here it comes after the statement, so a handler that reads the
     // connection finds it at the statement's end.) False when the rest
-    // could not be given back: that is reported once the parse has
-    // signalled what it signals ([`lost_rest`]).
+    // could not be given back: that is reported after the lexer's warnings,
+    // in place of the parse error ([`lost_rest`]).
     // R: gram.y:R_ParseConn, con_getc
     let give_back = |cx: &mut Cx, consumed: usize| -> RResult<bool> {
-        match conn {
-            Some((ifile, read)) if consumed < read => crate::connections::unread(cx, ifile, read - consumed),
-            _ => Ok(true),
+        match &conn {
+            Some(c) => match c.rest(src, consumed) {
+                Some((0, None)) => Ok(true),
+                Some((k, held)) => crate::connections::unread(cx, c.ifile, k, held),
+                None => Ok(false),
+            },
+            None => Ok(true),
         }
     };
     let lost_rest = |cx: &mut Cx| cx.error("robigo: parse() could not leave the rest of the connection unread");
@@ -294,25 +413,35 @@ fn parse_text(
                 // the lexer folds its errors into invalid tokens, so
                 // Parser::new does not fail; the fallback is the error's
                 // end.)
+                // (past the text when the lexer fetched the end of input,
+                // and a held end with it: nothing to give back)
                 let consumed = frontier.map_or(e.end.max(e.offset).min(src.len()), |f| f.1);
                 gave = give_back(cx, consumed)?;
             }
             signal(cx, if e.incomplete { usize::MAX } else { frontier.map_or(e.offset, |f| f.0) })?;
-            let err = match e.style {
+            // (raised in place of the parse error: raising that signals it,
+            // and an exiting handler is on its way)
+            if !gave {
+                return Err(lost_rest(cx));
+            }
+            return Err(match e.style {
                 robigo_syntax::ErrorStyle::Grammar => cx.error(&robigo_syntax::format_parse_error(source, srcname, &e)),
                 robigo_syntax::ErrorStyle::RError => cx.error(&e.message),
                 robigo_syntax::ErrorStyle::Condition => {
                     let f = crate::reader::error_filename(cx, src, known_utf8, srcfile, &in_string, e.offset);
                     crate::parse_cond::signal(cx, source, &e, &String::from_utf8_lossy(&f))
                 }
-            };
-            return Err(if gave { err } else { lost_rest(cx) });
+            });
         }
     };
     crate::reader::check_non_ascii_locale(cx, src)?;
     // the lexer's warnings up to the last expression's terminator
     let consumed = if num < 0 { src.len() } else { end };
-    let gave = give_back(cx, consumed)?;
+    // with fewer than `n` expressions (or no `n`), R_Parse read on to the
+    // end of input: a held end (a final CR's) was read too, and nothing is
+    // left to give back
+    let ran_out = num < 0 || exprs.len() < num as usize;
+    let gave = give_back(cx, if ran_out { usize::MAX } else { consumed })?;
     signal(cx, if num < 0 { usize::MAX } else { end.saturating_sub(1) })?;
     if !gave {
         return Err(lost_rest(cx));

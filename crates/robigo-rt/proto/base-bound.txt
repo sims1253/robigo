@@ -29,6 +29,7 @@ closure .getRequiredPackages2 library.R
 closure .gt sort.R
 closure .gtn sort.R
 closure .handleSimpleError conditions.R
+closure .isOpen srcfile.R
 closure .libPaths zdynvars.R
 closure .makeMessage message.R
 closure .make_numeric_version version.R
@@ -89,6 +90,7 @@ closure as.array as.R
 closure as.array.default as.R
 closure as.character.default as.R
 closure as.character.factor factor.R
+closure as.character.srcref srcfile.R
 closure as.data.frame dataframe.R
 closure as.data.frame.default dataframe.R
 closure as.data.frame.matrix dataframe.R
@@ -203,6 +205,7 @@ closure getNamespaceVersion namespace.R
 closure getNativeSymbolInfo dynload.R
 closure getOption options.R
 closure getRversion version.R
+closure getSrcLines srcfile.R
 closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
@@ -293,6 +296,7 @@ closure normalizePath files.R
 closure nrow matrix.R
 closure numeric vector.R
 closure numeric_version version.R
+closure open connections.R
 closure options options.R
 closure order sort.R
 closure ordered factor.R
@@ -323,6 +327,7 @@ closure print.factor factor.R
 closure print.function print.R
 closure print.restart conditions.R
 closure print.warnings warnings.R
+closure pushBack connections.R
 closure rank rank.R
 closure rapply lapply.R
 closure raw raw.R
@@ -777,6 +782,7 @@ internal pmin
 internal print.default
 internal printDeferredWarnings
 internal psort
+internal pushBack
 internal putconst
 internal qsort
 internal radixsort
