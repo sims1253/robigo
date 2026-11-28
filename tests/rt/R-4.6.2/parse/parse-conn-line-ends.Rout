@@ -43,3 +43,14 @@ con    0a 22 5c 55 7b 31 32 33 34 35 36 37 38 0d 22 3b 54 41 49 4c | invalidUnic
 "1 +\r2\rNEXT" 1 + 2 | 1 4e 45 58 54 
 "f(\r\n1)\r\nNEXT" f(1) | 1 4e 45 58 54 
 "# c\r\n1\r\nNEXT" 1 | 1 4e 45 58 54 
+"1\r\r\n2\n" | 1 2 | left character(0) 
+"1\r2\r3\n" | 1 2 3 | left character(0) 
+"1\r\r2\n" | 1 2 | left character(0) 
+"1\r\n2\r\n3" | 1 2 3 | left character(0) 
+"1\r\r\r2\n" | 1 2 | left character(0) 
+"1\r2\n" | readChar "\n" | readLines "2" 
+"1\r\r2\n" | readChar "2" | readLines c("", "") 
+"1\r" | readChar character(0) | readLines character(0) 
+pushBack file: 61 0d 62 2 
+pushBack text: 61 0d 62 2 
+S4: character(0) "2" 

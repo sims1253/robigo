@@ -7,6 +7,7 @@
 
 use robigo_heap::types::*;
 use robigo_rtcore::{Args, Char, Cx, Out, RResult, Ref, Root, View};
+use std::ffi::c_int;
 
 /// `getParseFilename`: the srcfile's name, a string's first element or an
 /// environment's `filename` (keep.source = TRUE: srcfilecopy's), "" when
@@ -92,9 +93,9 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
             // takes past that is given back (a file's)
             let partial = wasopen && num != i32::MIN && num >= 0;
             let give_back = wasopen && crate::connections::is_file(cx, ifile)?;
-            // (the give-back seeks the file: input that did not come from it,
-            // a pushback, cannot be given back so)
-            if partial && crate::connections::has_pending_input(cx, ifile)? {
+            // (the give-back seeks the file and restores a held character:
+            // a pushback cannot be given back so)
+            if partial && crate::connections::has_push_back(cx, ifile)? {
                 return Err(cx.error(
                     "robigo: parse(n = ) from an open connection with pushed-back input is not implemented yet",
                 ));
@@ -111,16 +112,20 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
                 if !crate::connections::flags(cx, ifile)?.canread {
                     return Err(cx.error("cannot read from this connection"));
                 }
-                let raw = crate::connections::read_to_end(cx, ifile)?;
+                // what Rconn_fgetc gives before the stream (a held
+                // character), then the stream with its line ends mapped
+                let (given, raw) = crate::connections::read_to_end(cx, ifile)?;
                 let raw_len = raw.len();
-                let (mut src, line_ends) = map_line_ends(raw);
+                let (mapped, line_ends) = map_line_ends(raw);
+                let given_len = given.len();
+                let mut src = if given.is_empty() { mapped } else { [given, mapped].concat() };
                 let read = src.len();
                 // con_getc: a final newline for an incomplete last line
                 if !src.is_empty() && !src.ends_with(b"\n") {
                     src.push(b'\n');
                 }
                 let num = if num == i32::MIN { -1 } else { num };
-                let conn = give_back.then_some(ConnRead { ifile, read, raw_len, line_ends });
+                let conn = give_back.then(|| ConnRead { ifile, read, given: given_len, raw_len, line_ends });
                 parse_text(cx, &src, known_utf8, num, &srcname, srcfile, conn, out)
             })();
             if !wasopen {
@@ -152,54 +157,65 @@ pub fn do_parse(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>, out
 }
 
 /// What a parse read from an open file connection: the first `read` bytes
-/// of its text, which came from the connection's next `raw_len` bytes, and
-/// how the line ends were mapped ([`map_line_ends`]), if they were.
+/// of its text, of which the first `given` are what Rconn_fgetc gave
+/// before the stream (a held character) and the rest came from the
+/// stream's next `raw_len` bytes, with their line ends mapped as
+/// `line_ends` records ([`map_line_ends`]) when they had a CR.
 struct ConnRead {
     ifile: i32,
     read: usize,
+    given: usize,
     raw_len: usize,
     line_ends: Option<LineEnds>,
 }
 
-/// [`map_line_ends`]'s record: `behind[i]` connection bytes lie behind the
-/// text's first `i + 1` bytes, and after each first newline of a CR CR
-/// pair (`held`, ascending) Rconn_fgetc holds the second one.
+/// [`map_line_ends`]'s record of each byte of its result: `behind[i]`
+/// stream bytes had been read when it gave its first `i + 1` bytes, and
+/// after those in `held` (ascending) it held a character (`con->save`).
 struct LineEnds {
     behind: Vec<usize>,
-    held: Vec<usize>,
+    held: Vec<(usize, c_int)>,
 }
 
 impl ConnRead {
-    /// The connection bytes to give back when the parse read the text's
-    /// first `consumed` bytes, and the character to hold (`con->save`).
-    fn rest(&self, consumed: usize) -> (usize, Option<u8>) {
-        if consumed >= self.read {
+    /// The stream bytes to give back when the parse read the text's first
+    /// `consumed` bytes, and the character Rconn_fgetc then holds.
+    fn rest(&self, text: &[u8], consumed: usize) -> (usize, Option<c_int>) {
+        // (past the text: the newline con_getc adds at the end)
+        if consumed > self.read {
             return (0, None);
         }
-        let (behind, held) = match (&self.line_ends, consumed) {
+        if consumed < self.given {
+            // inside what was held before the stream: the stream unread,
+            // the held character (one byte: a pushback is refused) again
+            return (self.raw_len, Some(text[consumed] as c_int));
+        }
+        let (behind, held) = match (&self.line_ends, consumed - self.given) {
             (_, 0) => (0, None),
-            (Some(m), k) => (m.behind[k - 1], m.held.binary_search(&(k - 1)).is_ok().then_some(b'\n')),
+            (Some(m), k) => {
+                let held = m.held.binary_search_by_key(&(k - 1), |h| h.0).ok().map(|j| m.held[j].1);
+                (m.behind[k - 1], held)
+            }
             (None, k) => (k, None),
         };
         (self.raw_len - behind, held)
     }
 }
 
-/// `Rconn_fgetc`'s line ends, which `con_getc` (R_ParseConn's) reads
-/// through: CR and CR LF are each a newline; the character after a CR is
-/// held (`con->save`) and given next as it is, except a second CR, which
-/// is a newline too. With a CR in `raw`, also the connection bytes behind
-/// each byte of the result (a held character other than that newline is
-/// not yet behind it: reading it again gives the same).
-/// (Pushed-back input, which Rconn_fgetc gives unmapped, is mapped too; a
-/// parse that reads it with `n` is refused before this.)
+/// `Rconn_fgetc`'s line ends over the stream bytes `raw`, as `con_getc`
+/// (R_ParseConn's) reads them: a CR is a newline, and Rconn_fgetc reads
+/// the character after it at once. A LF is taken with it (CR LF is one
+/// newline); anything else is held (`con->save`) and given next as it is:
+/// a second CR as a newline, the end of input as the end. With a CR in
+/// `raw`, also how many stream bytes are behind each byte of the result
+/// and what is held after it.
 // R: connections.c:Rconn_fgetc
 fn map_line_ends(raw: Vec<u8>) -> (Vec<u8>, Option<LineEnds>) {
     if !raw.contains(&b'\r') {
         return (raw, None);
     }
     let mut out = Vec::with_capacity(raw.len());
-    let mut ends = Vec::with_capacity(raw.len());
+    let mut behind = Vec::with_capacity(raw.len());
     let mut held = Vec::new();
     let mut i = 0;
     while i < raw.len() {
@@ -207,32 +223,39 @@ fn map_line_ends(raw: Vec<u8>) -> (Vec<u8>, Option<LineEnds>) {
         i += 1;
         if c != b'\r' {
             out.push(c);
-            ends.push(i);
+            behind.push(i);
             continue;
         }
-        match raw.get(i) {
-            // CR LF
-            Some(b'\n') => {
-                i += 1;
-                out.push(b'\n');
-                ends.push(i);
-            }
-            // CR CR: the second is held as a newline
-            Some(b'\r') => {
-                i += 1;
-                held.push(out.len());
-                out.extend_from_slice(b"\n\n");
-                ends.extend_from_slice(&[i, i]);
-            }
-            // CR, then a held character (or the end)
-            _ => {
-                out.push(b'\n');
-                ends.push(i);
-            }
+        let next = raw.get(i).copied();
+        if next == Some(b'\n') {
+            i += 1;
+            out.push(b'\n');
+            behind.push(i);
+            continue;
+        }
+        // the newline, with the next character read and held
+        let h = match next {
+            Some(b'\r') => b'\n' as c_int,
+            Some(b) => b as c_int,
+            None => R_EOF,
+        };
+        if next.is_some() {
+            i += 1;
+        }
+        held.push((out.len(), h));
+        out.push(b'\n');
+        behind.push(i);
+        // and the held character, given next as it is
+        if next.is_some() {
+            out.push(h as u8);
+            behind.push(i);
         }
     }
-    (out, Some(LineEnds { behind: ends, held }))
+    (out, Some(LineEnds { behind, held }))
 }
+
+/// Rconn_fgetc's end of input (`R_EOF`), as a held character.
+const R_EOF: c_int = -1;
 
 /// `.Internal(str2lang(s))`: the one expression the string `s` parses to.
 // R: coerce.c:do_str2lang (op 0)
@@ -344,7 +367,7 @@ fn parse_text(
     // R: gram.y:R_ParseConn, con_getc
     let give_back = |cx: &mut Cx, consumed: usize| -> RResult<bool> {
         match &conn {
-            Some(c) => match c.rest(consumed) {
+            Some(c) => match c.rest(src, consumed) {
                 (0, None) => Ok(true),
                 (k, held) => crate::connections::unread(cx, c.ifile, k, held),
             },

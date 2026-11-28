@@ -54,3 +54,27 @@ rest <- function(txt) {
 for (txt in c("1\rx", "1\r\nx", "1\r\rx", "1\r\r\nx", "1\r", "1\r\r", "x <- )\r\nNEXT", "x <- )\rNEXT", "y z\r\nNEXT",
               "'a\rb'\rNEXT", "1 +\r2\rNEXT", "f(\r\n1)\r\nNEXT", "# c\r\n1\r\nNEXT"))
   rest(txt)
+
+# what Rconn_fgetc holds (con->save) across parses: the character after a
+# CR is read at once, a second CR is held as a newline, the end of input as
+# the end; pushed-back input is given as it is
+wr <- function(txt) { f <- tempfile(); writeLines(txt, f, sep = "", useBytes = TRUE); f }
+# S1: consecutive parses over a held newline (CR CR LF), and over each line end
+for (txt in c("1\r\r\n2\n", "1\r2\r3\n", "1\r\r2\n", "1\r\n2\r\n3", "1\r\r\r2\n")) {
+  con <- file(wr(txt), "r")
+  got <- character()
+  repeat { e <- tryCatch(parse(con, n = 1), error = function(e) "error"); if (!length(e) || identical(e, "error")) break; got <- c(got, deparse(e[[1]])) }
+  cat(deparse(txt), "|", got, "| left", deparse(readLines(con, warn = FALSE)), "\n"); close(con)
+}
+# S2: the character after a CR is read; readChar bypasses the held one
+for (txt in c("1\r2\n", "1\r\r2\n", "1\r")) {
+  con <- file(wr(txt), "rb"); p <- parse(con, n = 1)
+  cat(deparse(txt), "| readChar", deparse(readChar(con, 1L, useBytes = TRUE)), "| readLines", deparse(readLines(con, warn = FALSE)), "\n"); close(con)
+}
+# S3: pushed-back input keeps its CR (pushBack text is given as it is)
+con <- file(wr("NEXT\n"), "r"); pushBack("'a\rb'", con); e <- parse(con); cat("pushBack file:", hex(e[[1]]), length(e), "\n"); close(con)
+tc <- textConnection("NEXT"); pushBack("'a\rb'", tc); e <- parse(tc); cat("pushBack text:", hex(e[[1]]), length(e), "\n"); close(tc)
+# S4: a held end of input, then more appended
+f <- wr("1\r"); con <- file(f, "r"); p <- parse(con, n = 1)
+a <- file(f, "a"); writeLines("2", a); close(a)
+cat("S4:", deparse(readLines(con, warn = FALSE)), deparse(readLines(con, warn = FALSE)), "\n"); close(con)
