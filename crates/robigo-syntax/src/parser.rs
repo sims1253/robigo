@@ -852,24 +852,21 @@ impl<'a> Parser<'a> {
     }
 
     fn syntax_error(&self, t: &Token) -> ParseError {
-        // The newline an if body's newline scan returned when the scan read
-        // the end of input (`EndOfFile`): the statement is incomplete
+        // The newline an if body's newline scan returned: when the scan read
+        // the end of input (`EndOfFile`: the end token, a token the end cut
+        // short, a look past the last byte) the statement is incomplete
         // (`R_Parse1`'s PARSE_INCOMPLETE: the console reads another line).
-        // At the end token the error is placed there; in a token the end
-        // cut short (a string), at that token.
+        // At the end token the error is placed there, else at the token.
         if std::ptr::eq(t, &self.nl)
             && let Some(i) = self.saved
         {
-            match &self.toks[i].tok {
-                Tok::Eof => {
-                    return ParseError { message: "unexpected end of line".into(), ..self.syntax_error(&self.toks[i]) };
-                }
-                Tok::Invalid(le) if le.incomplete => {
-                    let nl = Token { tok: Tok::Newline, span: t.span };
-                    return ParseError { incomplete: true, ..self.syntax_error(&nl) };
-                }
-                _ => {}
+            if matches!(self.toks[i].tok, Tok::Eof) {
+                return ParseError { message: "unexpected end of line".into(), ..self.syntax_error(&self.toks[i]) };
             }
+            let e = self.syntax_error(&Token { tok: Tok::Newline, span: t.span });
+            // (the pushed-back token is the last one read)
+            let incomplete = self.read_to(&e) > self.source.raw().len();
+            return ParseError { incomplete, ..e };
         }
         ParseError {
             // `PLACEHOLDER` is reported as "unexpected input", a deliberate
@@ -1811,6 +1808,10 @@ mod tests {
         assert!(error("(if (TRUE) 1\n+ 2)\n", "unexpected end of line"));
         // ... or a string the end of the chunk cuts short
         assert!(incomplete("(if (TRUE) 1\n\"abc\n"));
+        // ... or a token whose look past it reads the end (the console
+        // buffer cut the line after it)
+        assert!(incomplete("(if (TRUE) 1\n    r"));
+        assert!(error("(if (TRUE) 1\n    r\n", "unexpected end of line"));
         assert!(error("(if (TRUE) 1\n\"abc\nxyz\\q\"\n", "'\\q' is an unrecognized escape in character string"));
         // A statement without its terminator (a line cut at the console
         // buffer size) needs more input.
