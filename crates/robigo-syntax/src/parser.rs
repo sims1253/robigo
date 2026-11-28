@@ -306,19 +306,23 @@ pub fn parse_conn_statement<'a>(arena: &'a Arena, src: impl Into<Source<'a>>) ->
 /// has read the character it rejected.
 fn lex_error_of(toks: &[Token<'_>]) -> Option<LexError> {
     match toks.len().checked_sub(2).map(|k| &toks[k]) {
-        Some(Token { tok: Tok::Invalid(le), span }) => {
-            Some(LexError { at: span.start as usize, raised: (le.style == ErrorStyle::Condition).then_some(le.end) })
-        }
+        Some(Token { tok: Tok::Invalid(le), span }) => Some(LexError {
+            at: span.start as usize,
+            raised: (le.style == ErrorStyle::Condition).then_some(le.end),
+            incomplete: le.incomplete,
+        }),
         _ => None,
     }
 }
 
-/// The invalid token that ended a chunk's tokens: where it starts, and for
-/// a `raiseLexError` where reading stopped.
+/// The invalid token that ended a chunk's tokens: where it starts, for a
+/// `raiseLexError` where reading stopped, and whether the end of input cut
+/// it short (an unterminated string: the lexer read to the end).
 #[derive(Clone, Copy)]
 struct LexError {
     at: usize,
     raised: Option<usize>,
+    incomplete: bool,
 }
 
 /// What GNU R's `token()` reads past the token `tok` to see where it ends,
@@ -374,37 +378,48 @@ impl<'a> Parser<'a> {
     /// token it lexed (the error token, or the lookahead of the action
     /// that failed) and the character it looked at past that token, or
     /// to where reading stopped inside a token for a `raiseLexError`. An
-    /// invalid token has already read the character it rejected.
+    /// invalid token has already read the character it rejected. The end of
+    /// input counts as one byte past the text: `raw.len() + 1` when the
+    /// lexer had fetched it (the end token, a token the end cut short, a
+    /// look past the last byte).
     fn read_to(&self, e: &ParseError, lex_error: Option<LexError>) -> usize {
+        let raw = self.source.raw();
+        let past_end = raw.len() + 1;
         let frontier = self.trial_frontier.unwrap_or(e.offset);
-        if let Some(LexError { at, raised: Some(end) }) = lex_error
+        if let Some(LexError { at, raised: Some(end), .. }) = lex_error
             && frontier >= at
         {
-            return end.min(self.source.raw().len());
+            return end.min(past_end);
         }
-        let raw = self.source.raw();
         let k = self.toks.partition_point(|t| t.span.start as usize <= frontier);
         let Some(t) = k.checked_sub(1).map(|k| &self.toks[k]) else {
-            return e.end.min(raw.len());
+            return e.end.min(past_end);
         };
         // A bumped token keeps its span (see `bump`), so read its bytes. (An
-        // error at the end of input has a span past it.)
+        // invalid token and the end token after it share a span; an error at
+        // the end of input has a span past it.)
         let end = (t.span.end as usize).min(raw.len());
         let start = (t.span.start as usize).min(end);
+        let invalid = lex_error.filter(|le| le.at == start);
+        match invalid {
+            Some(le) if le.incomplete => return past_end,
+            None if matches!(t.tok, Tok::Eof) => return past_end,
+            _ => {}
+        }
         let tok = &raw[start..end];
-        let la = if lex_error.is_some_and(|le| le.at == start) { invalid_lookahead(tok) } else { lookahead(tok) };
+        let la = if invalid.is_some() { invalid_lookahead(tok) } else { lookahead(tok) };
         let mut lexed = match la {
-            _ if end >= raw.len() => end,
             Lookahead::None => end,
+            _ if end >= raw.len() => past_end,
             Lookahead::Byte => end + 1,
-            Lookahead::Char => (end + crate::utf8clen(raw[end])).min(raw.len()),
+            Lookahead::Char => end + crate::utf8clen(raw[end]),
         };
         // an invalid token has read the whole character it rejected
         // (`mbcs_get_next`), not its first byte
-        if lex_error.is_some_and(|le| le.at == start) && start < raw.len() {
-            lexed = lexed.max((start + crate::utf8clen(raw[start])).min(raw.len()));
+        if invalid.is_some() && start < raw.len() {
+            lexed = lexed.max(start + crate::utf8clen(raw[start]));
         }
-        lexed.max(e.end).min(raw.len())
+        lexed.max(e.end).min(past_end)
     }
 
     /// The lexer's warnings as GNU R's REPL signals them for this chunk
@@ -656,8 +671,9 @@ impl<'a> Parser<'a> {
     /// Where GNU R's lexer had stopped reading when `e` was raised
     /// ([`Parser::read_to`]): through the error token and what it looked at
     /// past it, the lookahead a failing action reduced with, or where a
-    /// `raiseLexError` stopped. The bytes after it stay unread on a
-    /// connection (`R_ParseConn`'s `con_getc`).
+    /// `raiseLexError` stopped; one past the text when it had fetched the
+    /// end of input. The bytes after it stay unread on a connection
+    /// (`R_ParseConn`'s `con_getc`).
     pub fn error_read_to(&self, e: &ParseError) -> usize {
         self.read_to(e, self.lex_error())
     }

@@ -1,0 +1,74 @@
+con    22 5c 0d 22 3b 54 41 49 4c | OK | "TAIL" 
+con    22 5c 75 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    22 5c 55 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 32 3a 30 29 | "\";TAIL" 
+con    22 5c 75 7b 31 32 33 34 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    22 5c 55 7b 31 32 33 34 35 36 37 38 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 32 3a 30 29 | "\";TAIL" 
+con    79 20 22 5c 0d 22 3b 54 41 49 4c | simpleError | 31 3a 33 3a 20 75 6e 65 78 70 65 63 74 65 64 20 73 74 72 69 6e 67 20 63 6f 6e 73 74 61 6e 74 0a 31 3a 20 79 20 22 5c 0a 32 3a 20 22 0a 20 20 20 20 20 5e | ";TAIL" 
+con    79 20 22 5c 75 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    79 20 22 5c 55 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 32 3a 30 29 | "\";TAIL" 
+con    79 20 22 5c 75 7b 31 32 33 34 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    79 20 22 5c 55 7b 31 32 33 34 35 36 37 38 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 32 3a 30 29 | "\";TAIL" 
+con    09 22 5c 0d 22 3b 54 41 49 4c | OK | "TAIL" 
+con    09 22 5c 75 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    09 22 5c 55 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 32 3a 30 29 | "\";TAIL" 
+con    09 22 5c 75 7b 31 32 33 34 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    09 22 5c 55 7b 31 32 33 34 35 36 37 38 0d 22 3b 54 41 49 4c | invalidUnicode 2 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 32 3a 30 29 | "\";TAIL" 
+con    0a 22 5c 0d 22 3b 54 41 49 4c | OK | "TAIL" 
+con    0a 22 5c 75 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 3 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    0a 22 5c 55 7b 31 0d 22 3b 54 41 49 4c | invalidUnicode 3 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 33 3a 30 29 | "\";TAIL" 
+con    0a 22 5c 75 7b 31 32 33 34 0d 22 3b 54 41 49 4c | invalidUnicode 3 0 | 28 47 4e 55 20 52 27 73 20 75 6e 69 6e 69 74 69 61 6c 69 7a 65 64 20 6c 69 6e 65 20 6e 75 6d 62 65 72 3a 20 6d 65 73 73 61 67 65 20 6f 6d 69 74 74 65 64 29 | "\";TAIL" 
+con    0a 22 5c 55 7b 31 32 33 34 35 36 37 38 0d 22 3b 54 41 49 4c | invalidUnicode 3 0 | 69 6e 76 61 6c 69 64 20 5c 55 7b 78 78 78 78 78 78 78 78 7d 20 73 65 71 75 65 6e 63 65 20 28 3c 69 6e 70 75 74 3e 3a 33 3a 30 29 | "\";TAIL" 
+3 | x <- 1 y <- "a\nb" z 
+  srcref: 1,1,1,6,1,6,1,1 2,1,3,2,1,2,2,3 4,1,4,1,1,1,4,4 
+  text: 78 20 3c 2d 20 31 79 20 3c 2d 20 27 61 7c 62 27 7a 
+  n=1 rest: c("y <- 'a", "b'", "z") 
+3 | x <- 1 y <- 2 z <- 3 
+  srcref: 1,1,1,6,1,6,1,1 2,1,2,6,1,6,2,2 5,1,5,6,1,6,5,5 
+  text: 78 20 3c 2d 20 31 79 20 3c 2d 20 32 7a 20 3c 2d 20 33 
+  n=1 rest: c("y <- 2", "", "", "z <- 3") 
+1 | f <- function(a) {     a } 
+  srcref: 1,1,4,1,1,1,1,4 
+  text: 66 20 3c 2d 20 66 75 6e 63 74 69 6f 6e 28 61 29 7c 7b 7c 20 20 61 7c 7d 
+  n=1 rest: character(0) 
+"1\rx" 1 | 1 78 
+"1\r\nx" 1 | 1 78 
+"1\r\rx" 1 | 2 7c 78 
+"1\r\r\nx" 1 | 3 7c 7c 78 
+"1\r" 1 | 0  
+"1\r\r" 1 | 1  
+"x <- )\r\nNEXT" error | 2 7c 4e 45 58 54 
+"x <- )\rNEXT" error | 2 7c 4e 45 58 54 
+"y z\r\nNEXT" error | 1 4e 45 58 54 
+"'a\rb'\rNEXT" "a\nb" | 1 4e 45 58 54 
+"1 +\r2\rNEXT" 1 + 2 | 1 4e 45 58 54 
+"f(\r\n1)\r\nNEXT" f(1) | 1 4e 45 58 54 
+"# c\r\n1\r\nNEXT" 1 | 1 4e 45 58 54 
+"1\r\r\n2\n" | 1 2 | left character(0) 
+"1\r2\r3\n" | 1 2 3 | left character(0) 
+"1\r\r2\n" | 1 2 | left character(0) 
+"1\r\n2\r\n3" | 1 2 3 | left character(0) 
+"1\r\r\r2\n" | 1 2 | left character(0) 
+"1\r2\n" | readChar "\n" | readLines "2" 
+"1\r\r2\n" | readChar "2" | readLines c("", "") 
+"1\r" | readChar character(0) | readLines character(0) 
+pushBack file: 61 0d 62 2 
+pushBack text: 61 0d 62 2 
+S4: character(0) "2" 
+"\r" 1 0 | "2" character(0) 
+"1\r" 1 1 | character(0) "2" 
+"1\r" 2 1 | "2" character(0) 
+"1\r" NA 1 | "2" character(0) 
+"\r\r" 1 0 | "2" character(0) 
+"1\r\r" 1 1 | c("", "2") character(0) 
+"(1 |> 2\r" "error" | "2" character(0) 
+"1 |> 2\r" "error" | character(0) "2" 
+"(1 |> 2)\r" "error" | c("", "2") character(0) 
+"{1 |> 2\r" "error" | character(0) "2" 
+"f(_)\r" "error" | character(0) "2" 
+"(f(_))\r" "error" | character(0) "2" 
+"x <- )\r" "error" | c("", "2") character(0) 
+"``\r" "error" | c("", "2") character(0) 
+"1 |> 2 \"a\r" "error" | "2" character(0) 
+"1 |> 2 `a\r" "error" | "2" character(0) 
+"1 |> 2 r\"(a\r" "error" | "2" character(0) 
+"1 |> 2 \"a\\\r" "error" | "2" character(0) 

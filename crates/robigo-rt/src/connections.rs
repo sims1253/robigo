@@ -2546,12 +2546,15 @@ pub fn open(cx: &mut Cx, n: i32) -> RResult<bool> {
     }
 }
 
-/// Everything left to read on connection `n` (`Rconn_fgetc` to the end,
-/// as `R_ParseConn` reads it). A read the system fails ends the input, as
+/// Everything left to read on connection `n`, in two parts: what
+/// `Rconn_fgetc` gives before the stream (a held character, the pushback;
+/// all of a text connection), as it gives them, and then the stream's
+/// bytes as they are (`Rconn_fgetc` would map their line ends: the caller
+/// does, [`crate::source`]). A read the system fails ends the input, as
 /// `fgetc`'s EOF does there; robigo-rt's own refusals (a connection it
 /// cannot read yet) are errors.
-// R: connections.c:file_fgetc_internal, source.c:R_ParseConn
-pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<Vec<u8>> {
+// R: connections.c:Rconn_fgetc, file_fgetc_internal, source.c:R_ParseConn
+pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<(Vec<u8>, Vec<u8>)> {
     let ours = our_fgetc(cx);
     let r = with_conn(cx, n, |c| {
         let mut all = Vec::new();
@@ -2563,17 +2566,18 @@ pub fn read_to_end(cx: &mut Cx, n: i32) -> RResult<Vec<u8>> {
             || matches!(c.imp, Imp::Text(_))
         {
             match conn_fgetc(c, ours)? {
-                R_EOF => return Ok(all),
+                R_EOF => return Ok((all, Vec::new())),
                 ch => all.push(ch as u8),
             }
         }
+        let mut raw = Vec::new();
         let mut buf = vec![0u8; 65536];
         loop {
             match conn_read(c, &mut buf) {
-                Ok(0) => return Ok(all),
-                Ok(k) => all.extend_from_slice(&buf[..k]),
+                Ok(0) => return Ok((all, raw)),
+                Ok(k) => raw.extend_from_slice(&buf[..k]),
                 Err(e) if e.raw_os_error().is_none() => return Err(e.to_string()),
-                Err(_) => return Ok(all),
+                Err(_) => return Ok((all, raw)),
             }
         }
     })?;
@@ -2680,23 +2684,33 @@ pub fn do_writelines(cx: &mut Cx, call: Root<'_>, args: Args<'_>, _env: Root<'_>
 
 /// Give the last `k` bytes read from a file connection back, so the next
 /// read starts there (what `R_ParseConn` leaves unread when it stops after
-/// the `n`-th expression). False for any other connection.
-pub fn unread(cx: &mut Cx, n: i32, k: usize) -> RResult<bool> {
-    with_conn(cx, n, |c| match &mut c.imp {
-        Imp::File(f) => match f.fp.as_mut() {
-            Some(fp) if !f.last_was_write => fp.fseeko(-(k as i64), stdio::Whence::Cur) == 0,
+/// the `n`-th expression), and with `held` the character Rconn_fgetc holds
+/// to give first (`con->save`: what it read after a CR, the newline a
+/// second CR stands for, or the end of input). False for any other
+/// connection.
+pub fn unread(cx: &mut Cx, n: i32, k: usize, held: Option<std::ffi::c_int>) -> RResult<bool> {
+    with_conn(cx, n, |c| {
+        let back = match &mut c.imp {
+            Imp::File(f) => match f.fp.as_mut() {
+                // nothing to give back but the held character: no seek (a
+                // fifo cannot)
+                Some(_) if k == 0 => true,
+                Some(fp) if !f.last_was_write => fp.fseeko(-(k as i64), stdio::Whence::Cur) == 0,
+                _ => false,
+            },
             _ => false,
-        },
-        _ => false,
+        };
+        if back && let Some(h) = held {
+            c.c.save = h;
+        }
+        back
     })
 }
 
-/// Whether connection `n` has input Rconn_fgetc gives before its stream
-/// (a saved character, the pushback).
-pub fn has_pending_input(cx: &mut Cx, n: i32) -> RResult<bool> {
-    with_conn(cx, n, |c| {
-        c.c.save2 != crate::rconn::NO_SAVE || c.push_back_len() > 0 || c.c.save != crate::rconn::NO_SAVE
-    })
+/// Whether connection `n` has pushed-back input, which Rconn_fgetc gives
+/// before its stream (and before a held character).
+pub fn has_push_back(cx: &mut Cx, n: i32) -> RResult<bool> {
+    with_conn(cx, n, |c| c.c.save2 != crate::rconn::NO_SAVE || c.push_back_len() > 0)
 }
 
 /// Whether connection `n` is a file connection.

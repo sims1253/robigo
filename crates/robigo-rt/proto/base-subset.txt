@@ -64,6 +64,7 @@ closure append append.R
 closure args New-Internal.R
 closure as.character.default as.R
 closure as.character.factor factor.R
+closure as.character.srcref srcfile.R
 closure as.list as.R
 closure as.list.default as.R
 closure as.list.environment as.R
@@ -95,6 +96,7 @@ closure conditionMessage.condition conditions.R
 closure dQuote character.R
 closure delayedAssign delay.R
 closure deparse New-Internal.R
+closure deparse1 utilities.R
 closure detach attach.R
 closure diff diff.R
 closure diff.default diff.R
@@ -118,6 +120,7 @@ closure factor factor.R
 closure file connections.R
 closure file.exists files.R
 closure file.info files.R
+closure file.mtime files.R
 closure file.path files.R
 closure file.remove files.R
 closure file.size files.R
@@ -133,9 +136,11 @@ closure getHook userhooks.R
 closure getNamespace namespace.R
 closure getNamespaceName namespace.R
 closure getOption options.R
+closure getSrcLines srcfile.R
 closure geterrmessage New-Internal.R
 closure gettext stop.R
 closure gettextf stop.R
+closure getwd files.R
 closure gregexpr grep.R
 closure grep grep.R
 closure grepl grep.R
@@ -219,6 +224,7 @@ closure print.factor factor.R
 closure print.function print.R
 closure print.restart conditions.R
 closure print.warnings warnings.R
+closure pushBack connections.R
 closure rank rank.R
 closure raw raw.R
 closure rawToChar raw.R
@@ -257,6 +263,7 @@ closure sort.default sort.R
 closure sort.int sort.R
 closure sort.list sort.R
 closure sprintf New-Internal.R
+closure srcfilecopy srcfile.R
 closure startsWith character.R
 closure stderr connections.R
 closure stdin connections.R
@@ -270,6 +277,7 @@ closure strsplit grep.R
 closure structure structure.R
 closure sub grep.R
 closure substr character.R
+closure substring character.R
 closure summary summary.R
 closure summary.connection connections.R
 closure suppressWarnings conditions.R
@@ -282,6 +290,7 @@ closure sys.parent sys.R
 closure sys.source source.R
 closure tempdir temp.R
 closure tempfile temp.R
+closure textConnection connections.R
 closure topenv namespace.R
 closure traceback traceback.R
 closure try New-Internal.R
@@ -404,6 +413,7 @@ primitive length<-
 primitive levels<-
 primitive list
 primitive max
+primitive min
 primitive missing
 primitive names
 primitive names<-
@@ -507,6 +517,7 @@ internal getVarsFromFrame
 internal getconst
 internal geterrmessage
 internal gettext
+internal getwd
 internal gregexpr
 internal grep
 internal grepl
@@ -564,6 +575,7 @@ internal pmin
 internal print.default
 internal printDeferredWarnings
 internal psort
+internal pushBack
 internal putconst
 internal qsort
 internal radixsort
@@ -611,6 +623,7 @@ internal sys.nframe
 internal sys.parent
 internal tempdir
 internal tempfile
+internal textConnection
 internal topenv
 internal traceback
 internal typeof
