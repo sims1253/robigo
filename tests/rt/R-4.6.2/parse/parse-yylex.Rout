@@ -1,0 +1,92 @@
+"(if (TRUE) 1\n+ 2)" => <simpleError> <text>:2:1: unexpected end of line
+1: (if (TRUE) 1
+2: +
+   ^ 
+"f(if (a) 1\n^ 2)" => <simpleError> <text>:2:1: unexpected end of line
+1: f(if (a) 1
+2: ^
+   ^ 
+"f(if(a) 1 |> 2\n^ 3)" => <RHSnotFnCall> The pipe operator requires a function call as RHS (<input>:1:14) 
+"a::\nb" => <simpleError> <text>:2:0: unexpected end of line
+1: a::
+   ^ 
+"{a::\nb}" => <simpleError> <text>:2:0: unexpected end of line
+1: {a::
+   ^ 
+"{if(a) 1 |> 2\n\"\\q\";TAIL\n" => <unrecognizedEscape> '\q' is an unrecognized escape in character string (<input>:2:3) 
+"{if (a) 1\nelse 2}" => {     if (a)          1     else 2 } 
+"{if (a) 1\n\n\nelse 2}" => {     if (a)          1     else 2 } 
+"if (a) 1\nelse 2" => <simpleError> <text>:2:1: unexpected 'else'
+1: if (a) 1
+2: else
+   ^ 
+"{if (a) if (b) 1\nelse 2\nelse 3}" => {     if (a)          if (b)              1         else 2     else 3 } 
+"f(if (a) 1\n, 2)" => f(if (a) 1, 2) 
+"f(if (a) 1\n)" => f(if (a) 1) 
+"x[if (a) 1\n]" => x[if (a) 1] 
+"{if (a) 1\n}" => {     if (a)          1 } 
+"\\\n(x) x" => <simpleError> <text>:2:0: unexpected end of line
+1: \
+   ^ 
+"f <- \\\n(x) x" => f <- function(x) x 
+"function(x)\n\nx" => function(x) x 
+"while (a)\nb" => while (a) b 
+"for (i in 1)\n\ni" => for (i in 1) i 
+"if (a)\n\nb" => if (a) b 
+"if\n(a) b" => if (a) b 
+"{ }\n+1" => { } ;; +1 
+"x$\ny" => x$y 
+"x@\ny" => x@y 
+"x[[\n1\n]]" => x[[1]] 
+"x |>\nf()" => f(x) 
+"{if (a) 1 else\n2}" => {     if (a)          1     else 2 } 
+"repeat\nbreak" => repeat break 
+"function\n(x) x" => function(x) x 
+"{function(x) if (a) 1\nelse 2}" => {     function(x) if (a)          1     else 2 } 
+"(function(x) if (a) 1\nelse 2)" => (function(x) if (a) 1 else 2) 
+"{if (a) {1}\nelse 2}" => {     if (a) {         1     }     else 2 } 
+"{if (a) (1)\nelse 2}" => {     if (a)          (1)     else 2 } 
+"{if (a) f(1)\nelse 2}" => {     if (a)          f(1)     else 2 } 
+"{if (a) x[1]\nelse 2}" => {     if (a)          x[1]     else 2 } 
+"{if (a) 1; else 2}" => <simpleError> <text>:1:12: unexpected 'else'
+1: {if (a) 1; else
+               ^ 
+"((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))" => <contextstackOverflow> contextstack overflow (<input>:1:50) 
+"((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))" => ((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))) 
+"(((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))" => (((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))) 
+"{((((((((((((((((((((((((((((((((((((((((((((((((if(a) 1))))))))))))))))))))))))))))))))))))))))))))))))}" => <contextstackOverflow> contextstack overflow (<input>:1:51) 
+"f(a=\n1)" => f(a = 1) 
+"f(a\n=1)" => f(a = 1) 
+"function(a\n=1) a" => function(a = 1) a 
+"-\n1" => -1 
+"{x <- \n 1}" => {     x <- 1 } 
+"{1 ->\n x}" => {     x <- 1 } 
+"{if (a) 1\n# c\nelse 2}" => {     if (a)          1     else 2 } 
+"(if (TRUE) 1" => <simpleError> <text>:2:0: unexpected end of line
+1: (if (TRUE) 1
+   ^ 
+"(if (TRUE) 1\n" => <simpleError> <text>:3:0: unexpected end of line
+1: (if (TRUE) 1
+2: 
+  ^ 
+"f(if (TRUE) 1\n\n" => <simpleError> <text>:4:0: unexpected end of line
+2: 
+3: 
+  ^ 
+"{if (TRUE) 1" => <simpleError> <text>:2:0: unexpected end of input
+1: {if (TRUE) 1
+   ^ 
+"f(if(a) 1 |> 2\n^\r" RHSnotFnCall | "" 
+"f(if(a) 1 |> 2\n^ 3)\nNEXT\n" RHSnotFnCall | c(" 3)", "NEXT") 
+"{if(a) 1 |> 2\n\"\\q\";TAIL\n" unrecognizedEscape | "\";TAIL" 
+"(if (TRUE) 1\n+ 2)\nNEXT\n" simpleError | c(" 2)", "NEXT") 
+"a::\nb\nNEXT\n" simpleError | c("b", "NEXT") 
+"{a::\nb}\nNEXT\n" simpleError | c("b}", "NEXT") 
+"\\\n(x) x\nNEXT\n" simpleError | c("(x) x", "NEXT") 
+"((((((((((((((((((((((((((((((((((((((((((((((((((1\nNEXT\n" contextstackOverflow | c("1", "NEXT") 
+"{((((((((((((((((((((((((((((((((((((((((((((((((if(a) 1\nNEXT\n" contextstackOverflow | c("a) 1", "NEXT") 
+"{if(a) 1\n+ 2}\nNEXT\n" ok | "NEXT" 
+"(if (TRUE) 1\n)\nNEXT\n" ok | "NEXT" 
+"{if (TRUE) 1\n\n}\nNEXT\n" ok | "NEXT" 
+[1] "RHSnotFnCall"
+[1] "2"

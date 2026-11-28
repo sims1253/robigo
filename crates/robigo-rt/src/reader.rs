@@ -89,7 +89,7 @@ pub fn parse_bytes(cx: &mut Cx, src: &[u8], n: i32, out: Out<'_>) -> RResult<(Pa
     // (how far the lexer had read at an error: an action's lookahead)
     let mut frontier = None;
     let parsed = robigo_syntax::parser::Parser::new(&arena, source)
-        .and_then(|mut p| p.program().inspect_err(|e| frontier = Some(p.error_frontier(e))));
+        .and_then(|mut p| p.program().inspect_err(|_| frontier = Some(p.error_frontier())));
     let exprs = match parsed {
         Ok(r) => r,
         Err(e) => {

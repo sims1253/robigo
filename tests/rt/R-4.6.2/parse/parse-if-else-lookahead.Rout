@@ -1,0 +1,243 @@
+"{if(TRUE) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("bar", "NEXT") 
+"{if(TRUE) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | "NEXT" 
+"{if(TRUE) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{if(TRUE) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{if(TRUE) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("3}", "NEXT") 
+"{if(TRUE) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("+ 1", "NEXT") 
+"{if(TRUE) f(_)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(TRUE) f(_)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(TRUE) f(_)\n}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{if(TRUE) f(_)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(TRUE) f(_)\nelse 3}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{if(TRUE) f(_)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(TRUE) 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(TRUE) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(TRUE) 1 |> f(y = _)\n}\nNEXT\n" ok | "NEXT" 
+"{if(TRUE) 1 |> f(y = _)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(TRUE) 1 |> f(y = _)\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{if(TRUE) 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(TRUE) x |> _$a\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(TRUE) x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(TRUE) x |> _$a\n}\nNEXT\n" ok | "NEXT" 
+"{if(TRUE) x |> _$a\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(TRUE) x |> _$a\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{if(TRUE) x |> _$a\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) if(b) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("bar", "NEXT") 
+"{if(a) if(b) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | "NEXT" 
+"{if(a) if(b) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{if(a) if(b) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{if(a) if(b) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("3}", "NEXT") 
+"{if(a) if(b) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("+ 1", "NEXT") 
+"{if(a) if(b) f(_)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) if(b) f(_)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) if(b) f(_)\n}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{if(a) if(b) f(_)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) if(b) f(_)\nelse 3}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{if(a) if(b) f(_)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) if(b) 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) if(b) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) if(b) 1 |> f(y = _)\n}\nNEXT\n" ok | "NEXT" 
+"{if(a) if(b) 1 |> f(y = _)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) if(b) 1 |> f(y = _)\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{if(a) if(b) 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) if(b) x |> _$a\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) if(b) x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) if(b) x |> _$a\n}\nNEXT\n" ok | "NEXT" 
+"{if(a) if(b) x |> _$a\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) if(b) x |> _$a\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{if(a) if(b) x |> _$a\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{function() if(a) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("bar", "NEXT") 
+"{function() if(a) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | "NEXT" 
+"{function() if(a) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{function() if(a) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{function() if(a) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("3}", "NEXT") 
+"{function() if(a) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("+ 1", "NEXT") 
+"{function() if(a) f(_)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{function() if(a) f(_)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{function() if(a) f(_)\n}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{function() if(a) f(_)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{function() if(a) f(_)\nelse 3}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{function() if(a) f(_)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{function() if(a) 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{function() if(a) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{function() if(a) 1 |> f(y = _)\n}\nNEXT\n" ok | "NEXT" 
+"{function() if(a) 1 |> f(y = _)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{function() if(a) 1 |> f(y = _)\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{function() if(a) 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{function() if(a) x |> _$a\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{function() if(a) x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{function() if(a) x |> _$a\n}\nNEXT\n" ok | "NEXT" 
+"{function() if(a) x |> _$a\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{function() if(a) x |> _$a\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{function() if(a) x |> _$a\n12 + 1\nNEXT\n" simpleError | character(0) 
+"(if(a) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("bar", "NEXT") 
+"(if(a) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | "NEXT" 
+"(if(a) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"(if(a) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"(if(a) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("3}", "NEXT") 
+"(if(a) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("+ 1", "NEXT") 
+"(if(a) f(_)\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"(if(a) f(_)\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"(if(a) f(_)\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"(if(a) f(_)\n)\nNEXT\n" invalidPlaceholder | "NEXT" 
+"(if(a) f(_)\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"(if(a) f(_)\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"(if(a) 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"(if(a) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"(if(a) 1 |> f(y = _)\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"(if(a) 1 |> f(y = _)\n)\nNEXT\n" ok | "NEXT" 
+"(if(a) 1 |> f(y = _)\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"(if(a) 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"(if(a) x |> _$a\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"(if(a) x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"(if(a) x |> _$a\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"(if(a) x |> _$a\n)\nNEXT\n" ok | "NEXT" 
+"(if(a) x |> _$a\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"(if(a) x |> _$a\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"x[if(a) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("bar", "NEXT") 
+"x[if(a) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | "NEXT" 
+"x[if(a) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"x[if(a) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"x[if(a) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("3}", "NEXT") 
+"x[if(a) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("+ 1", "NEXT") 
+"x[if(a) f(_)\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"x[if(a) f(_)\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"x[if(a) f(_)\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) f(_)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) f(_)\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) f(_)\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"x[if(a) 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"x[if(a) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"x[if(a) 1 |> f(y = _)\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) 1 |> f(y = _)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) 1 |> f(y = _)\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"x[if(a) x |> _$a\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"x[if(a) x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"x[if(a) x |> _$a\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) x |> _$a\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) x |> _$a\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"x[if(a) x |> _$a\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"if(a) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("foo bar", "NEXT") 
+"if(a) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | c("", "# c", "  foo", "NEXT") 
+"if(a) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("}", "NEXT") 
+"if(a) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c(")", "NEXT") 
+"if(a) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("else 3}", "NEXT") 
+"if(a) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("12 + 1", "NEXT") 
+"if(a) f(_)\nfoo bar\nNEXT\n" invalidPlaceholder | c("foo bar", "NEXT") 
+"if(a) f(_)\n\n# c\n  foo\nNEXT\n" invalidPlaceholder | c("", "# c", "  foo", "NEXT") 
+"if(a) f(_)\n}\nNEXT\n" invalidPlaceholder | c("}", "NEXT") 
+"if(a) f(_)\n)\nNEXT\n" invalidPlaceholder | c(")", "NEXT") 
+"if(a) f(_)\nelse 3}\nNEXT\n" invalidPlaceholder | c("else 3}", "NEXT") 
+"if(a) f(_)\n12 + 1\nNEXT\n" invalidPlaceholder | c("12 + 1", "NEXT") 
+"if(a) 1 |> f(y = _)\nfoo bar\nNEXT\n" ok | c("foo bar", "NEXT") 
+"if(a) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" ok | c("", "# c", "  foo", "NEXT") 
+"if(a) 1 |> f(y = _)\n}\nNEXT\n" ok | c("}", "NEXT") 
+"if(a) 1 |> f(y = _)\n)\nNEXT\n" ok | c(")", "NEXT") 
+"if(a) 1 |> f(y = _)\nelse 3}\nNEXT\n" ok | c("else 3}", "NEXT") 
+"if(a) 1 |> f(y = _)\n12 + 1\nNEXT\n" ok | c("12 + 1", "NEXT") 
+"if(a) x |> _$a\nfoo bar\nNEXT\n" ok | c("foo bar", "NEXT") 
+"if(a) x |> _$a\n\n# c\n  foo\nNEXT\n" ok | c("", "# c", "  foo", "NEXT") 
+"if(a) x |> _$a\n}\nNEXT\n" ok | c("}", "NEXT") 
+"if(a) x |> _$a\n)\nNEXT\n" ok | c(")", "NEXT") 
+"if(a) x |> _$a\nelse 3}\nNEXT\n" ok | c("else 3}", "NEXT") 
+"if(a) x |> _$a\n12 + 1\nNEXT\n" ok | c("12 + 1", "NEXT") 
+"{if(a) 1 else 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("foo bar", "NEXT") 
+"{if(a) 1 else 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | c("", "# c", "  foo", "NEXT") 
+"{if(a) 1 else 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("}", "NEXT") 
+"{if(a) 1 else 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c(")", "NEXT") 
+"{if(a) 1 else 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("else 3}", "NEXT") 
+"{if(a) 1 else 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("12 + 1", "NEXT") 
+"{if(a) 1 else f(_)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) 1 else f(_)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) 1 else f(_)\n}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{if(a) 1 else f(_)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) 1 else f(_)\nelse 3}\nNEXT\n" simpleError | c("3}", "NEXT") 
+"{if(a) 1 else f(_)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) 1 else 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) 1 else 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) 1 else 1 |> f(y = _)\n}\nNEXT\n" ok | "NEXT" 
+"{if(a) 1 else 1 |> f(y = _)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) 1 else 1 |> f(y = _)\nelse 3}\nNEXT\n" simpleError | c("3}", "NEXT") 
+"{if(a) 1 else 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) 1 else x |> _$a\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) 1 else x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) 1 else x |> _$a\n}\nNEXT\n" ok | "NEXT" 
+"{if(a) 1 else x |> _$a\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) 1 else x |> _$a\nelse 3}\nNEXT\n" simpleError | c("3}", "NEXT") 
+"{if(a) 1 else x |> _$a\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) {1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("foo bar", "NEXT") 
+"{if(a) {1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | c("", "# c", "  foo", "NEXT") 
+"{if(a) {1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("}", "NEXT") 
+"{if(a) {1 |> 2\n)\nNEXT\n" RHSnotFnCall | c(")", "NEXT") 
+"{if(a) {1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("else 3}", "NEXT") 
+"{if(a) {1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("12 + 1", "NEXT") 
+"{if(a) {f(_)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) {f(_)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) {f(_)\n}\nNEXT\n" simpleError | character(0) 
+"{if(a) {f(_)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) {f(_)\nelse 3}\nNEXT\n" simpleError | c("3}", "NEXT") 
+"{if(a) {f(_)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) {1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) {1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) {1 |> f(y = _)\n}\nNEXT\n" simpleError | character(0) 
+"{if(a) {1 |> f(y = _)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) {1 |> f(y = _)\nelse 3}\nNEXT\n" simpleError | c("3}", "NEXT") 
+"{if(a) {1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{if(a) {x |> _$a\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{if(a) {x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{if(a) {x |> _$a\n}\nNEXT\n" simpleError | character(0) 
+"{if(a) {x |> _$a\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{if(a) {x |> _$a\nelse 3}\nNEXT\n" simpleError | c("3}", "NEXT") 
+"{if(a) {x |> _$a\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{for(i in 1) if(a) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("bar", "NEXT") 
+"{for(i in 1) if(a) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | "NEXT" 
+"{for(i in 1) if(a) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{for(i in 1) if(a) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"{for(i in 1) if(a) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("3}", "NEXT") 
+"{for(i in 1) if(a) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("+ 1", "NEXT") 
+"{for(i in 1) if(a) f(_)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{for(i in 1) if(a) f(_)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{for(i in 1) if(a) f(_)\n}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{for(i in 1) if(a) f(_)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{for(i in 1) if(a) f(_)\nelse 3}\nNEXT\n" invalidPlaceholder | "NEXT" 
+"{for(i in 1) if(a) f(_)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{for(i in 1) if(a) 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{for(i in 1) if(a) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{for(i in 1) if(a) 1 |> f(y = _)\n}\nNEXT\n" ok | "NEXT" 
+"{for(i in 1) if(a) 1 |> f(y = _)\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{for(i in 1) if(a) 1 |> f(y = _)\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{for(i in 1) if(a) 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | character(0) 
+"{for(i in 1) if(a) x |> _$a\nfoo bar\nNEXT\n" simpleError | "NEXT" 
+"{for(i in 1) if(a) x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | character(0) 
+"{for(i in 1) if(a) x |> _$a\n}\nNEXT\n" ok | "NEXT" 
+"{for(i in 1) if(a) x |> _$a\n)\nNEXT\n" simpleError | c("", "NEXT") 
+"{for(i in 1) if(a) x |> _$a\nelse 3}\nNEXT\n" ok | "NEXT" 
+"{for(i in 1) if(a) x |> _$a\n12 + 1\nNEXT\n" simpleError | character(0) 
+"f(if(a) 1 |> 2\nfoo bar\nNEXT\n" RHSnotFnCall | c("bar", "NEXT") 
+"f(if(a) 1 |> 2\n\n# c\n  foo\nNEXT\n" RHSnotFnCall | "NEXT" 
+"f(if(a) 1 |> 2\n}\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"f(if(a) 1 |> 2\n)\nNEXT\n" RHSnotFnCall | c("", "NEXT") 
+"f(if(a) 1 |> 2\nelse 3}\nNEXT\n" RHSnotFnCall | c("3}", "NEXT") 
+"f(if(a) 1 |> 2\n12 + 1\nNEXT\n" RHSnotFnCall | c("+ 1", "NEXT") 
+"f(if(a) f(_)\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"f(if(a) f(_)\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"f(if(a) f(_)\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"f(if(a) f(_)\n)\nNEXT\n" invalidPlaceholder | "NEXT" 
+"f(if(a) f(_)\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"f(if(a) f(_)\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"f(if(a) 1 |> f(y = _)\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"f(if(a) 1 |> f(y = _)\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"f(if(a) 1 |> f(y = _)\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"f(if(a) 1 |> f(y = _)\n)\nNEXT\n" ok | "NEXT" 
+"f(if(a) 1 |> f(y = _)\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"f(if(a) 1 |> f(y = _)\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"f(if(a) x |> _$a\nfoo bar\nNEXT\n" simpleError | c("bar", "NEXT") 
+"f(if(a) x |> _$a\n\n# c\n  foo\nNEXT\n" simpleError | "NEXT" 
+"f(if(a) x |> _$a\n}\nNEXT\n" simpleError | c("", "NEXT") 
+"f(if(a) x |> _$a\n)\nNEXT\n" ok | "NEXT" 
+"f(if(a) x |> _$a\nelse 3}\nNEXT\n" simpleError | c("", "NEXT") 
+"f(if(a) x |> _$a\n12 + 1\nNEXT\n" simpleError | c("+ 1", "NEXT") 
+"{if(a) 1 |> 2, foo\nNEXT\n" RHSnotFnCall | c(" foo", "NEXT") 
+"f(if(a) 1 |> 2, foo)\nNEXT\n" RHSnotFnCall | c(" foo)", "NEXT") 
+"{if(a) 1 |> 2; foo\nNEXT\n" RHSnotFnCall | c(" foo", "NEXT") 
